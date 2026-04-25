@@ -47,6 +47,8 @@ pub use format::{ImageFormat, MountHandle, SimpleMountHandle};
 pub use formats::DirectoryFormat;
 #[cfg(feature = "qcow2")]
 pub use formats::Qcow2Format;
-pub use manifest::{BlobRef, DeltaRef, Entry, EntryType, Manifest, ManifestHeader};
+pub use manifest::{
+    BlobRef, Entry, EntryType, Manifest, ManifestHeader, Metadata, PatchRef, MANIFEST_VERSION,
+};
 pub use routing::{ElfRule, FileInfo, GlobRule, MagicRule, RouterEncoder, RoutingRule, SizeRule};
 pub use storage::{BlobCandidate, ImageMeta, ImageStatus, Storage};

@@ -1,108 +1,87 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Serde helper: serialises `Option<[u8; 32]>` as a lowercase hex string in
-/// human-readable formats (JSON) and as raw bytes (msgpack bin) in binary ones.
-/// Combined with `skip_serializing_if = "Option::is_none"` and `default`,
-/// the field is completely absent from the serialised form when `None`.
-mod hex_sha256_opt {
-    use serde::{de::Error as _, Deserialize, Deserializer, Serializer};
+/// Manifest format version stored in every [`ManifestHeader`].
+///
+/// Increment this constant on every breaking schema change so that older
+/// decompressors can refuse to process manifests they don't understand.
+pub const MANIFEST_VERSION: u32 = 1;
 
-    pub fn serialize<S: Serializer>(opt: &Option<[u8; 32]>, s: S) -> Result<S::Ok, S::Error> {
-        match opt {
-            None => s.serialize_none(),
-            Some(bytes) => {
-                if s.is_human_readable() {
-                    s.serialize_some(&hex::encode(bytes))
-                } else {
-                    // msgpack bin format: compact, no per-byte overhead
-                    s.serialize_some(serde_bytes::Bytes::new(bytes))
-                }
-            }
-        }
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[u8; 32]>, D::Error> {
-        if d.is_human_readable() {
-            let s = <Option<String>>::deserialize(d)?;
-            match s {
-                None => Ok(None),
-                Some(hex_str) => {
-                    let vec = hex::decode(&hex_str).map_err(D::Error::custom)?;
-                    Ok(Some(vec.as_slice().try_into().map_err(|_| {
-                        D::Error::custom(
-                            "sha256 hex string must be exactly 64 characters (32 bytes)",
-                        )
-                    })?))
-                }
-            }
-        } else {
-            let b = <Option<serde_bytes::ByteBuf>>::deserialize(d)?;
-            match b {
-                None => Ok(None),
-                Some(buf) => Ok(Some(buf.as_slice().try_into().map_err(|_| {
-                    D::Error::custom("sha256 must be exactly 32 bytes in binary encoding")
-                })?)),
-            }
-        }
-    }
+/// Returns `true` if `b` is `false` — used as `skip_serializing_if` predicate
+/// for boolean fields that should be omitted when their value is the zero/default.
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 /// Top-level manifest describing how a target image was compressed relative to
 /// a base image.  Serialised as MessagePack for storage; JSON for debugging.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Manifest {
     pub header: ManifestHeader,
     pub entries: Vec<Entry>,
 }
 
 /// Immutable metadata written once at compression time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManifestHeader {
+    /// Manifest schema version — always [`MANIFEST_VERSION`] when writing.
+    /// Readers must reject manifests with an unsupported version.
+    pub version: u32,
     /// Provider-assigned identifier for the compressed image.
     pub image_id: String,
     /// Provider-assigned identifier for the base image used as delta source.
+    /// `None` for root images that have no base.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub base_image_id: Option<String>,
     /// Image format used at compression time (`"directory"`, `"qcow2"`, …).
     pub format: String,
     /// Unix timestamp (seconds) when the manifest was created.
     pub created_at: u64,
+    /// `true` → patches stored as `patches.tar.gz`;
+    /// `false` → patches stored as `patches.tar`.
+    ///
+    /// Stored in the manifest so that decompression works without querying
+    /// the database.
+    pub patches_compressed: bool,
 }
 
-/// One entry in the manifest — corresponds to a single path in the filesystem.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One entry in the manifest — corresponds to a single changed path in the
+/// filesystem.  Unchanged files are **not** recorded; they are taken from the
+/// base image as-is during decompression.
+///
+/// Interpretation table:
+///
+/// | `blob` | `patch` | Meaning                                                 |
+/// |--------|---------|---------------------------------------------------------|
+/// | None   | None    | Only metadata changed (chmod, chown, rename, …)         |
+/// | Some   | None    | New file — content = blob in its entirety               |
+/// | None   | Some    | Existing file patched against its counterpart in base   |
+/// | Some   | Some    | BlobPatch: download blob, apply patch on top            |
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Entry {
     /// Path relative to the filesystem root, UTF-8, forward-slash separated.
     pub path: String,
     pub entry_type: EntryType,
-    /// Uncompressed size in bytes (0 for directories/symlinks).
+    /// Uncompressed size in bytes (0 for directories and symlinks).
     pub size: u64,
-    /// SHA-256 of the file content, if applicable.
-    #[serde(
-        with = "hex_sha256_opt",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    pub sha256: Option<[u8; 32]>,
-    /// Unix permission bits.
-    pub mode: u32,
-    pub uid: u32,
-    pub gid: u32,
-    /// Modification time as Unix timestamp (seconds).
-    pub mtime: i64,
-    /// Present when this file was stored as a delta against a base blob.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub delta: Option<DeltaRef>,
-    /// Present when this file was stored as a verbatim blob (no base, or passthrough).
+    /// Present when this file's content was stored as a verbatim blob.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub blob: Option<BlobRef>,
-    /// Symlink target, present when `entry_type == EntryType::Symlink`.
+    /// Present when a VCDIFF patch was computed for this file.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub link_target: Option<String>,
-    /// Path of the first occurrence, present when `entry_type == EntryType::Hardlink`.
+    pub patch: Option<PatchRef>,
+    /// Changed filesystem attributes.  `None` when only content changed and
+    /// all metadata (mode, uid, gid, mtime) is identical to the base image.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub hardlink_to: Option<String>,
+    pub metadata: Option<Metadata>,
+    /// Path of the link target, present when `entry_type == EntryType::Hardlink`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub hardlink_target: Option<String>,
+    /// `true` when this path was deleted relative to the base image.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub removed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -115,39 +94,74 @@ pub enum EntryType {
     Other,
 }
 
-/// Reference to a delta blob and its base.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeltaRef {
-    /// UUID of the blob containing the delta bytes.
-    pub blob_id: Uuid,
-    /// UUID of the base blob that must be present to decode.
-    pub base_blob_id: Uuid,
+/// Reference to an entry inside the `patches.tar[.gz]` archive that is stored
+/// alongside the manifest in S3.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PatchRef {
+    /// Name of the member file inside the patches tar archive.
+    pub archive_entry: String,
+    /// Lowercase hex SHA-256 of the patch bytes — verified after extraction.
+    pub sha256: String,
     /// Algorithm identifier matching [`DeltaEncoder::algorithm_id`].
+    ///
+    /// [`DeltaEncoder::algorithm_id`]: crate::DeltaEncoder::algorithm_id
     pub algorithm: String,
-    /// Size of the stored (compressed) delta in bytes.
-    pub compressed_size: u64,
 }
 
-/// Reference to a verbatim (non-delta) blob.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Reference to a verbatim (non-delta) blob stored in the blob store.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BlobRef {
     pub blob_id: Uuid,
     pub size: u64,
+}
+
+/// Filesystem attributes that changed relative to the base image.
+///
+/// Only the fields that actually changed are populated; `None` means "same as
+/// base image, nothing to do during decompression".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Metadata {
+    /// New path after a rename.  Applied **after** content is written.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub new_path: Option<String>,
+    /// Unix permission bits.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mode: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub uid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub gid: Option<u32>,
+    /// Modification time as Unix timestamp (seconds).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mtime: Option<i64>,
+    /// Symlink target string, present when `entry_type == EntryType::Symlink`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub link_target: Option<String>,
+    /// Extended attributes (e.g. security capabilities).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub xattrs: Option<HashMap<String, Vec<u8>>>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Helper: build a minimal manifest with one file entry.
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    fn make_header() -> ManifestHeader {
+        ManifestHeader {
+            version: MANIFEST_VERSION,
+            image_id: "img-test-001".into(),
+            base_image_id: Some("img-base-001".into()),
+            format: "directory".into(),
+            created_at: 1_714_000_000,
+            patches_compressed: false,
+        }
+    }
+
     fn make_manifest(entries: Vec<Entry>) -> Manifest {
         Manifest {
-            header: ManifestHeader {
-                image_id: "img-test-001".into(),
-                base_image_id: Some("img-base-001".into()),
-                format: "directory".into(),
-                created_at: 1_714_000_000,
-            },
+            header: make_header(),
             entries,
         }
     }
@@ -157,15 +171,19 @@ mod tests {
             path: path.into(),
             entry_type: EntryType::File,
             size: 42,
-            sha256: None,
-            mode: 0o644,
-            uid: 1000,
-            gid: 1000,
-            mtime: 1_714_000_000,
-            delta: None,
             blob: None,
-            link_target: None,
-            hardlink_to: None,
+            patch: None,
+            metadata: None,
+            hardlink_target: None,
+            removed: false,
+        }
+    }
+
+    fn simple_patch_ref(name: &str) -> PatchRef {
+        PatchRef {
+            archive_entry: name.into(),
+            sha256: "ab".repeat(32),
+            algorithm: "xdelta3".into(),
         }
     }
 
@@ -182,6 +200,28 @@ mod tests {
         rmp_serde::from_slice(bytes).unwrap()
     }
 
+    fn assert_absent(json: &str, key: &str) {
+        let needle = format!("\"{}\"", key);
+        assert!(
+            !json.contains(&needle),
+            "field '{}' should be absent when None/false, found in: {}",
+            key,
+            json
+        );
+    }
+
+    fn assert_present(json: &str, key: &str) {
+        let needle = format!("\"{}\"", key);
+        assert!(
+            json.contains(&needle),
+            "field '{}' should be present but not found in: {}",
+            key,
+            json
+        );
+    }
+
+    // ── Round-trip tests ──────────────────────────────────────────────────────
+
     // 1. MessagePack round-trip preserves all fields.
     #[test]
     fn manifest_msgpack_roundtrip() {
@@ -190,9 +230,7 @@ mod tests {
         let bytes = to_msgpack(&original);
         let recovered: Manifest = from_msgpack(&bytes);
 
-        assert_eq!(recovered.header.image_id, original.header.image_id);
-        assert_eq!(recovered.entries.len(), 1);
-        assert_eq!(recovered.entries[0].path, "usr/bin/ls");
+        assert_eq!(recovered, original);
     }
 
     // 2. JSON round-trip preserves all fields.
@@ -203,8 +241,7 @@ mod tests {
         let json = serde_json::to_string(&original).unwrap();
         let recovered: Manifest = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(recovered.header.image_id, original.header.image_id);
-        assert_eq!(recovered.entries[0].path, "etc/passwd");
+        assert_eq!(recovered, original);
     }
 
     // 3. Manifest with empty entries list serialises and deserialises cleanly.
@@ -252,105 +289,99 @@ mod tests {
         assert_eq!(blob.size, 2_000_000);
     }
 
-    // 6. Entry with DeltaRef round-trips correctly.
+    // 6. Entry with PatchRef round-trips correctly.
     #[test]
-    fn entry_with_delta_ref_roundtrip() {
-        let blob_id = Uuid::new_v4();
-        let base_blob_id = Uuid::new_v4();
+    fn entry_with_patch_ref_roundtrip() {
         let mut entry = simple_entry("usr/lib/firmware.bin");
-        entry.delta = Some(DeltaRef {
-            blob_id,
-            base_blob_id,
-            algorithm: "xdelta3".into(),
-            compressed_size: 1024,
+        entry.patch = Some(simple_patch_ref("usr_lib_firmware.bin.vcdiff"));
+
+        let bytes = to_msgpack(&entry);
+        let recovered: Entry = from_msgpack(&bytes);
+
+        let patch = recovered.patch.unwrap();
+        assert_eq!(patch.archive_entry, "usr_lib_firmware.bin.vcdiff");
+        assert_eq!(patch.algorithm, "xdelta3");
+        assert_eq!(patch.sha256, "ab".repeat(32));
+    }
+
+    // 7. Header without base_image_id round-trips with None preserved.
+    #[test]
+    fn header_without_base_image_roundtrip() {
+        let header = ManifestHeader {
+            version: MANIFEST_VERSION,
+            image_id: "root-img".into(),
+            base_image_id: None,
+            format: "qcow2".into(),
+            created_at: 0,
+            patches_compressed: true,
+        };
+
+        let bytes = to_msgpack(&header);
+        let recovered: ManifestHeader = from_msgpack(&bytes);
+
+        assert_eq!(recovered, header);
+        assert!(recovered.base_image_id.is_none());
+        assert!(recovered.patches_compressed);
+    }
+
+    // 8. Header with base_image_id = Some(...) round-trips correctly.
+    #[test]
+    fn header_with_base_image_roundtrip() {
+        let header = ManifestHeader {
+            version: MANIFEST_VERSION,
+            image_id: "child-img".into(),
+            base_image_id: Some("parent-img".into()),
+            format: "directory".into(),
+            created_at: 42,
+            patches_compressed: false,
+        };
+
+        let bytes = to_msgpack(&header);
+        let recovered: ManifestHeader = from_msgpack(&bytes);
+
+        assert_eq!(recovered, header);
+        assert_eq!(recovered.base_image_id.as_deref(), Some("parent-img"));
+    }
+
+    // 9. Symlink entry: link_target stored inside Metadata.
+    #[test]
+    fn entry_symlink_roundtrip() {
+        let mut entry = simple_entry("lib64");
+        entry.entry_type = EntryType::Symlink;
+        entry.size = 0;
+        entry.metadata = Some(Metadata {
+            link_target: Some("/lib".into()),
+            ..Default::default()
         });
 
         let bytes = to_msgpack(&entry);
         let recovered: Entry = from_msgpack(&bytes);
 
-        let delta = recovered.delta.unwrap();
-        assert_eq!(delta.blob_id, blob_id);
-        assert_eq!(delta.algorithm, "xdelta3");
-        assert_eq!(delta.compressed_size, 1024);
-    }
-
-    // 7. Header with base_image_id = None.
-    #[test]
-    fn header_without_base_image_roundtrip() {
-        let header = ManifestHeader {
-            image_id: "root-img".into(),
-            base_image_id: None,
-            format: "qcow2".into(),
-            created_at: 0,
-        };
-
-        let bytes = to_msgpack(&header);
-        let recovered: ManifestHeader = from_msgpack(&bytes);
-
-        assert!(recovered.base_image_id.is_none());
-        assert_eq!(recovered.format, "qcow2");
-    }
-
-    // 8. Header with base_image_id = Some(...).
-    #[test]
-    fn header_with_base_image_roundtrip() {
-        let header = ManifestHeader {
-            image_id: "child-img".into(),
-            base_image_id: Some("parent-img".into()),
-            format: "directory".into(),
-            created_at: 42,
-        };
-
-        let bytes = to_msgpack(&header);
-        let recovered: ManifestHeader = from_msgpack(&bytes);
-
-        assert_eq!(recovered.base_image_id.as_deref(), Some("parent-img"));
-    }
-
-    // 9. Symlink entry round-trips with link_target preserved.
-    #[test]
-    fn entry_symlink_roundtrip() {
-        let mut entry = simple_entry("lib64");
-        entry.entry_type = EntryType::Symlink;
-        entry.link_target = Some("/lib".into());
-
-        let bytes = to_msgpack(&entry);
-        let recovered: Entry = from_msgpack(&bytes);
-
         assert_eq!(recovered.entry_type, EntryType::Symlink);
-        assert_eq!(recovered.link_target.as_deref(), Some("/lib"));
+        assert_eq!(
+            recovered.metadata.unwrap().link_target.as_deref(),
+            Some("/lib")
+        );
     }
 
-    // 10. Hardlink entry round-trips with hardlink_to preserved.
+    // 10. Hardlink entry: hardlink_target field round-trips correctly.
     #[test]
     fn entry_hardlink_roundtrip() {
         let mut entry = simple_entry("usr/sbin/init");
         entry.entry_type = EntryType::Hardlink;
-        entry.hardlink_to = Some("usr/lib/systemd/systemd".into());
+        entry.hardlink_target = Some("usr/lib/systemd/systemd".into());
 
         let bytes = to_msgpack(&entry);
         let recovered: Entry = from_msgpack(&bytes);
 
         assert_eq!(recovered.entry_type, EntryType::Hardlink);
         assert_eq!(
-            recovered.hardlink_to.as_deref(),
+            recovered.hardlink_target.as_deref(),
             Some("usr/lib/systemd/systemd")
         );
     }
 
     // 11. MessagePack encoding is smaller than JSON for a realistic manifest.
-    //
-    // The manifest contains a heterogeneous mix of entry types:
-    //   - plain files (no optional fields)
-    //   - files with sha256 + blob ref (verbatim storage)
-    //   - files with sha256 + delta ref (delta storage)
-    //   - directories
-    //   - symlinks (with link_target)
-    //   - hardlinks (with hardlink_to)
-    //
-    // This exercises the fact that `to_vec_named` (map encoding) omits keys
-    // for None fields, keeping the msgpack payload smaller than the equivalent
-    // JSON even with field-name strings included.
     #[test]
     fn msgpack_is_smaller_than_json() {
         let mut entries: Vec<Entry> = Vec::new();
@@ -360,10 +391,9 @@ mod tests {
             entries.push(simple_entry(&format!("usr/lib/libfoo{i}.so")));
         }
 
-        // 5 files stored as verbatim blobs (sha256 + blob ref).
+        // 5 files stored as verbatim blobs.
         for i in 0..5 {
             let mut e = simple_entry(&format!("usr/lib/libbar{i}.so"));
-            e.sha256 = Some([i as u8; 32]);
             e.blob = Some(BlobRef {
                 blob_id: Uuid::new_v4(),
                 size: 1024 * (i as u64 + 1),
@@ -371,15 +401,13 @@ mod tests {
             entries.push(e);
         }
 
-        // 5 files stored as deltas (sha256 + delta ref).
+        // 5 files stored as patches inside the tar archive.
         for i in 0..5 {
             let mut e = simple_entry(&format!("usr/lib/libbaz{i}.so"));
-            e.sha256 = Some([0x80 | i as u8; 32]);
-            e.delta = Some(DeltaRef {
-                blob_id: Uuid::new_v4(),
-                base_blob_id: Uuid::new_v4(),
+            e.patch = Some(PatchRef {
+                archive_entry: format!("usr_lib_libbaz{i}.vcdiff"),
+                sha256: format!("{:064x}", i),
                 algorithm: "xdelta3".into(),
-                compressed_size: 256 * (i as u64 + 1),
             });
             entries.push(e);
         }
@@ -392,7 +420,7 @@ mod tests {
             entries.push(e);
         }
 
-        // 4 symlinks.
+        // 4 symlinks — link_target lives inside Metadata.
         for (link, target) in [
             ("lib64", "/lib"),
             ("lib", "usr/lib"),
@@ -402,7 +430,10 @@ mod tests {
             let mut e = simple_entry(link);
             e.entry_type = EntryType::Symlink;
             e.size = 0;
-            e.link_target = Some(target.into());
+            e.metadata = Some(Metadata {
+                link_target: Some(target.into()),
+                ..Default::default()
+            });
             entries.push(e);
         }
 
@@ -410,7 +441,14 @@ mod tests {
         for i in 0..4u8 {
             let mut e = simple_entry(&format!("usr/bin/tool{i}"));
             e.entry_type = EntryType::Hardlink;
-            e.hardlink_to = Some(format!("usr/lib/tool{i}.real"));
+            e.hardlink_target = Some(format!("usr/lib/tool{i}.real"));
+            entries.push(e);
+        }
+
+        // 4 removed entries.
+        for i in 0..4u8 {
+            let mut e = simple_entry(&format!("usr/lib/old_lib{i}.so"));
+            e.removed = true;
             entries.push(e);
         }
 
@@ -426,113 +464,27 @@ mod tests {
             json_bytes.len()
         );
 
-        // Sanity: the manifest has the expected number of entries.
-        // 5 plain + 5 blob + 5 delta + 4 dir + 4 symlink + 4 hardlink = 27.
-        assert_eq!(manifest.entries.len(), 27);
+        // 5 plain + 5 blob + 5 patch + 4 dir + 4 symlink + 4 hardlink + 4 removed = 31.
+        assert_eq!(manifest.entries.len(), 31);
     }
 
-    // ── skip_serializing_if tests ─────────────────────────────────────────────
-    // Strategy: serialise to JSON (which is human-readable) and assert that the
-    // key is absent when the field is None and present when it is Some.
-    // The same skip logic applies to MessagePack; we additionally check that the
-    // msgpack bytes shrink when None fields are added.
+    // ── skip_serializing_if / default tests ───────────────────────────────────
 
-    fn assert_absent(json: &str, key: &str) {
-        let needle = format!("\"{}\"", key);
-        assert!(
-            !json.contains(&needle),
-            "field '{}' should be absent when None, but found in: {}",
-            key,
-            json
-        );
-    }
-
-    fn assert_present(json: &str, key: &str) {
-        let needle = format!("\"{}\"", key);
-        assert!(
-            json.contains(&needle),
-            "field '{}' should be present when Some, but not found in: {}",
-            key,
-            json
-        );
-    }
-
-    // 12. sha256: absent when None, present when Some.
-    //     In JSON: stored as a lowercase hex string (64 chars), not a byte array.
-    //     In msgpack: stored as bin (raw 32 bytes), not a hex string.
+    // 12. `patch` field: absent when None, present when Some.
     #[test]
-    fn skip_none_sha256() {
-        let mut entry = simple_entry("bin/ls");
-        assert!(entry.sha256.is_none());
-
-        let json_none = serde_json::to_string(&entry).unwrap();
-        assert_absent(&json_none, "sha256");
-
-        entry.sha256 = Some([0xAB; 32]);
-
-        // JSON: must be a 64-char hex string, not an array of integers.
-        let json_some = serde_json::to_string(&entry).unwrap();
-        assert_present(&json_some, "sha256");
-        // Parse back as Value and inspect the sha256 field.
-        let v: serde_json::Value = serde_json::from_str(&json_some).unwrap();
-        let sha_val = &v["sha256"];
-        assert!(
-            sha_val.is_string(),
-            "sha256 in JSON should be a string, got: {sha_val}"
-        );
-        let hex_str = sha_val.as_str().unwrap();
-        assert_eq!(
-            hex_str.len(),
-            64,
-            "sha256 hex string should be 64 chars (32 bytes), got {} chars: {hex_str}",
-            hex_str.len()
-        );
-        assert!(
-            hex_str.chars().all(|c| c.is_ascii_hexdigit()),
-            "sha256 should only contain hex digits, got: {hex_str}"
-        );
-        assert_eq!(hex_str, "ab".repeat(32), "unexpected sha256 hex value");
-
-        // msgpack: the field value must be raw 32 bytes (bin format), not a
-        // 64-byte hex string.  We verify this by round-tripping and checking
-        // that the total serialised size is nowhere near 64 extra bytes.
-        let msgpack_some = to_msgpack(&entry);
-        let recovered: Entry = from_msgpack(&msgpack_some);
-        assert_eq!(recovered.sha256, Some([0xAB; 32]));
-
-        // msgpack: field overhead = key "sha256" (7 bytes, fixstr) +
-        //   bin8 header (2 bytes) + 32 payload bytes = 41 bytes.
-        // A hex string encoding would cost 7 + 2 + 64 = 73 bytes.
-        // Assert we're well below the hex threshold (< 50) to confirm bin format.
-        let msgpack_none = to_msgpack(&simple_entry("bin/ls"));
-        let sha256_overhead = msgpack_some.len() - msgpack_none.len();
-        assert!(
-            sha256_overhead < 50,
-            "sha256 should cost < 50 bytes in msgpack (bin format = 41), got {sha256_overhead}; \
-             hex format would cost ~73 bytes"
-        );
-    }
-
-    // 13. delta: absent when None, present when Some.
-    #[test]
-    fn skip_none_delta() {
+    fn skip_none_patch() {
         let mut entry = simple_entry("lib/libm.so");
-        assert!(entry.delta.is_none());
+        assert!(entry.patch.is_none());
 
         let json_none = serde_json::to_string(&entry).unwrap();
-        assert_absent(&json_none, "delta");
+        assert_absent(&json_none, "patch");
 
-        entry.delta = Some(DeltaRef {
-            blob_id: Uuid::new_v4(),
-            base_blob_id: Uuid::new_v4(),
-            algorithm: "xdelta3".into(),
-            compressed_size: 512,
-        });
+        entry.patch = Some(simple_patch_ref("lib_libm.so.vcdiff"));
         let json_some = serde_json::to_string(&entry).unwrap();
-        assert_present(&json_some, "delta");
+        assert_present(&json_some, "patch");
     }
 
-    // 14. blob: absent when None, present when Some.
+    // 13. `blob` field: absent when None, present when Some.
     #[test]
     fn skip_none_blob() {
         let mut entry = simple_entry("lib/libpthread.so");
@@ -549,44 +501,63 @@ mod tests {
         assert_present(&json_some, "blob");
     }
 
-    // 15. link_target: absent when None, present when Some.
+    // 14. `metadata` field: absent when None, present when Some.
     #[test]
-    fn skip_none_link_target() {
-        let mut entry = simple_entry("lib64");
-        entry.entry_type = EntryType::Symlink;
-        // link_target intentionally left None to test absence.
+    fn skip_none_metadata() {
+        let mut entry = simple_entry("etc/passwd");
+        assert!(entry.metadata.is_none());
 
         let json_none = serde_json::to_string(&entry).unwrap();
-        assert_absent(&json_none, "link_target");
+        assert_absent(&json_none, "metadata");
 
-        entry.link_target = Some("/lib".into());
+        entry.metadata = Some(Metadata {
+            mode: Some(0o644),
+            uid: Some(0),
+            ..Default::default()
+        });
         let json_some = serde_json::to_string(&entry).unwrap();
-        assert_present(&json_some, "link_target");
+        assert_present(&json_some, "metadata");
     }
 
-    // 16. hardlink_to: absent when None, present when Some.
+    // 15. `hardlink_target` field: absent when None, present when Some.
     #[test]
-    fn skip_none_hardlink_to() {
+    fn skip_none_hardlink_target() {
         let mut entry = simple_entry("sbin/init");
         entry.entry_type = EntryType::Hardlink;
-        // hardlink_to intentionally left None.
+        assert!(entry.hardlink_target.is_none());
 
         let json_none = serde_json::to_string(&entry).unwrap();
-        assert_absent(&json_none, "hardlink_to");
+        assert_absent(&json_none, "hardlink_target");
 
-        entry.hardlink_to = Some("usr/lib/systemd/systemd".into());
+        entry.hardlink_target = Some("usr/lib/systemd/systemd".into());
         let json_some = serde_json::to_string(&entry).unwrap();
-        assert_present(&json_some, "hardlink_to");
+        assert_present(&json_some, "hardlink_target");
     }
 
-    // 17. base_image_id in ManifestHeader: absent when None, present when Some.
+    // 16. `removed` field: absent when false, present when true.
+    #[test]
+    fn skip_false_removed() {
+        let mut entry = simple_entry("usr/lib/libold.so");
+        assert!(!entry.removed);
+
+        let json_false = serde_json::to_string(&entry).unwrap();
+        assert_absent(&json_false, "removed");
+
+        entry.removed = true;
+        let json_true = serde_json::to_string(&entry).unwrap();
+        assert_present(&json_true, "removed");
+    }
+
+    // 17. `base_image_id` in ManifestHeader: absent when None, present when Some.
     #[test]
     fn skip_none_base_image_id() {
         let header_none = ManifestHeader {
+            version: MANIFEST_VERSION,
             image_id: "img-root".into(),
             base_image_id: None,
             format: "directory".into(),
             created_at: 0,
+            patches_compressed: false,
         };
         let json_none = serde_json::to_string(&header_none).unwrap();
         assert_absent(&json_none, "base_image_id");
@@ -599,26 +570,99 @@ mod tests {
         assert_present(&json_some, "base_image_id");
     }
 
-    // 18. Minimal entry (all Option fields None) produces strictly fewer msgpack
-    //     bytes than an entry with all optional fields populated.
+    // 18. Metadata: None sub-fields are absent; only populated ones are present.
+    #[test]
+    fn metadata_sparse_serialization() {
+        let meta = Metadata {
+            mode: Some(0o755),
+            uid: Some(1000),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&meta).unwrap();
+        assert_present(&json, "mode");
+        assert_present(&json, "uid");
+        assert_absent(&json, "gid");
+        assert_absent(&json, "mtime");
+        assert_absent(&json, "new_path");
+        assert_absent(&json, "link_target");
+        assert_absent(&json, "xattrs");
+
+        // Round-trip preserves values.
+        let recovered: Metadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.mode, Some(0o755));
+        assert_eq!(recovered.uid, Some(1000));
+        assert_eq!(recovered.gid, None);
+    }
+
+    // 19. ManifestHeader: version and patches_compressed round-trip correctly.
+    #[test]
+    fn header_version_and_patches_compressed() {
+        let header = ManifestHeader {
+            version: MANIFEST_VERSION,
+            image_id: "test-img".into(),
+            base_image_id: None,
+            format: "directory".into(),
+            created_at: 1_714_000_000,
+            patches_compressed: true,
+        };
+
+        // msgpack round-trip
+        let bytes = to_msgpack(&header);
+        let recovered: ManifestHeader = from_msgpack(&bytes);
+        assert_eq!(recovered.version, MANIFEST_VERSION);
+        assert!(recovered.patches_compressed);
+
+        // JSON: both fields must be present (they are not Option).
+        let json = serde_json::to_string(&header).unwrap();
+        assert_present(&json, "version");
+        assert_present(&json, "patches_compressed");
+    }
+
+    // 20. Deserialising entries with no optional keys produces correct defaults.
+    #[test]
+    fn deserialize_missing_optional_fields_gives_defaults() {
+        let json = serde_json::json!({
+            "path": "etc/hostname",
+            "entry_type": "file",
+            "size": 8
+        })
+        .to_string();
+
+        let entry: Entry = serde_json::from_str(&json).unwrap();
+
+        assert!(entry.blob.is_none(), "blob should default to None");
+        assert!(entry.patch.is_none(), "patch should default to None");
+        assert!(entry.metadata.is_none(), "metadata should default to None");
+        assert!(
+            entry.hardlink_target.is_none(),
+            "hardlink_target should default to None"
+        );
+        assert!(!entry.removed, "removed should default to false");
+    }
+
+    // 21. Minimal entry (no optional fields) is strictly smaller than a fully
+    //     populated entry in msgpack.
     #[test]
     fn msgpack_none_fields_reduce_size() {
         let minimal = simple_entry("etc/os-release");
 
         let mut full = minimal.clone();
-        full.sha256 = Some([0x00; 32]);
         full.blob = Some(BlobRef {
             blob_id: Uuid::new_v4(),
             size: 4096,
         });
-        full.delta = Some(DeltaRef {
-            blob_id: Uuid::new_v4(),
-            base_blob_id: Uuid::new_v4(),
-            algorithm: "xdelta3".into(),
-            compressed_size: 256,
+        full.patch = Some(simple_patch_ref("etc_os-release.vcdiff"));
+        full.hardlink_target = Some("/etc/os-release.hard".into());
+        full.metadata = Some(Metadata {
+            new_path: Some("/etc/os-release.real".into()),
+            mode: Some(0o644),
+            uid: Some(0),
+            gid: Some(0),
+            mtime: Some(1_714_000_000),
+            link_target: Some("/etc/os-release.target".into()),
+            xattrs: None,
         });
-        full.link_target = Some("/etc/os-release.real".into());
-        full.hardlink_to = Some("/etc/os-release.hard".into());
 
         let bytes_minimal = to_msgpack(&minimal);
         let bytes_full = to_msgpack(&full);
@@ -629,50 +673,5 @@ mod tests {
             bytes_minimal.len(),
             bytes_full.len()
         );
-    }
-
-    // 19. Deserialising from JSON that has no optional keys produces None fields.
-    //     (Validates that `#[serde(default)]` is set correctly.)
-    #[test]
-    fn deserialize_missing_optional_fields_gives_none() {
-        // Manually craft minimal JSON with no optional keys.
-        let json = serde_json::json!({
-            "path": "etc/hostname",
-            "entry_type": "file",
-            "size": 8,
-            "mode": 0o644u32,
-            "uid": 0,
-            "gid": 0,
-            "mtime": 0
-        })
-        .to_string();
-
-        let entry: Entry = serde_json::from_str(&json).unwrap();
-
-        assert!(entry.sha256.is_none(), "sha256 should default to None");
-        assert!(entry.delta.is_none(), "delta should default to None");
-        assert!(entry.blob.is_none(), "blob should default to None");
-        assert!(
-            entry.link_target.is_none(),
-            "link_target should default to None"
-        );
-        assert!(
-            entry.hardlink_to.is_none(),
-            "hardlink_to should default to None"
-        );
-    }
-
-    // 20. Deserialising a header with no base_image_id key gives None.
-    #[test]
-    fn deserialize_missing_base_image_id_gives_none() {
-        let json = serde_json::json!({
-            "image_id": "img-root",
-            "format": "directory",
-            "created_at": 0u64
-        })
-        .to_string();
-
-        let header: ManifestHeader = serde_json::from_str(&json).unwrap();
-        assert!(header.base_image_id.is_none());
     }
 }
