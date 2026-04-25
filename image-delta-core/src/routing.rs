@@ -57,7 +57,7 @@ impl DeltaEncoder for RouterEncoder {
         unimplemented!("use RouterEncoder::select() to obtain the concrete encoder first")
     }
 
-    fn decode(&self, _source: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
+    fn decode(&self, _source: &[u8], _delta: &[u8]) -> Result<Vec<u8>> {
         // Decoding is dispatched by algorithm_id stored in the manifest, not by
         // routing rules — so this path is never reached in production.
         unimplemented!("decoder is selected by algorithm_id from the manifest, not by routing")

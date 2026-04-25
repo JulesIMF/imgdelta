@@ -34,9 +34,9 @@ impl Default for PathMatchConfig {
 /// Currently infallible; returns `Ok` always.  The `Result` wrapper exists for
 /// future extension (e.g. loading a pre-computed index from disk).
 pub fn find_best_matches(
-    base_paths: &[String],
-    target_paths: &[String],
-    config: &PathMatchConfig,
+    _base_paths: &[String],
+    _target_paths: &[String],
+    _config: &PathMatchConfig,
 ) -> crate::Result<Vec<PathMatch>> {
     todo!("Phase 3: path similarity algorithm from playground/find_best_path_match_rust/")
 }

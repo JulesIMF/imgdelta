@@ -1,3 +1,7 @@
+// Scheduler is fully implemented in Phase 4. All items in this module
+// are intentionally unused in the current phase.
+#![allow(dead_code)]
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 

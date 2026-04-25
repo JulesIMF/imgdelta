@@ -52,6 +52,6 @@ impl DiffResult {
 /// # Errors
 ///
 /// Returns [`crate::Error::Io`] if either tree cannot be read.
-pub fn diff_dirs(base: &Path, target: &Path) -> crate::Result<DiffResult> {
+pub fn diff_dirs(_base: &Path, _target: &Path) -> crate::Result<DiffResult> {
     todo!("Phase 3: walkdir + SHA-256 comparison")
 }

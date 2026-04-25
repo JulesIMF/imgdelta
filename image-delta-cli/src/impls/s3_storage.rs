@@ -1,4 +1,6 @@
 // Phase 5: S3 + PostgreSQL implementation of the Storage trait.
+// Fully implemented in Phase 5; stubs are dead code until then.
+#![allow(dead_code)]
 //
 // Dependencies (added to Cargo.toml in Phase 5):
 //   aws-sdk-s3, aws-config  — S3 operations

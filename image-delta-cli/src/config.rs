@@ -1,3 +1,6 @@
+// Config structs are used in Phase 5/6 when CLI commands are wired up.
+#![allow(dead_code)]
+
 use serde::Deserialize;
 use std::collections::HashMap;
 

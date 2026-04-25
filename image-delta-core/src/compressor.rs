@@ -79,7 +79,9 @@ pub trait Compressor: Send + Sync {
 ///
 /// [`RouterEncoder`]: crate::RouterEncoder
 pub struct DefaultCompressor {
+    #[allow(dead_code)] // used in Phase 4
     storage: Arc<dyn Storage>,
+    #[allow(dead_code)] // used in Phase 4
     encoder: Arc<dyn DeltaEncoder>,
 }
 
