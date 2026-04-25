@@ -1,0 +1,24 @@
+[package]
+name = "image-delta-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Core library for per-file delta compression of cloud OS images"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+walkdir = "2"
+sha2 = "0.10"
+glob = "0.3"
+thiserror = "1"
+tempfile = "3"
+
+# [build-dependencies]  # Phase 2: xdelta3 FFI
+# cc = "1"
+
+[features]
+default = []
+qcow2 = []   # Qcow2Format — requires Linux + qemu-nbd in PATH

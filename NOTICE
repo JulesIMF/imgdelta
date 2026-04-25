@@ -1,0 +1,11 @@
+imgdelta
+Copyright 2026 Ivan Doroshenko
+
+This product includes the following third-party software:
+
+xdelta3
+Source: vendor/xdelta3.c
+Origin: https://github.com/jmacd/xdelta-gpl
+Copyright (C) 2007-2014 Joshua MacDonald
+License: Apache License, Version 2.0
+The original copyright notice and license are preserved in vendor/xdelta3.c.

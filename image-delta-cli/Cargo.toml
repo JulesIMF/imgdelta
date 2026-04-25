@@ -1,0 +1,30 @@
+[package]
+name = "image-delta-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "CLI tool for per-file delta compression of cloud OS images"
+
+[[bin]]
+name = "imgdelta"
+path = "src/main.rs"
+
+[dependencies]
+image-delta-core = { path = "../image-delta-core" }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+indicatif = "0.17"
+tracing-indicatif = "0.3"
+
+# Storage dependencies added in Phase 5:
+# aws-sdk-s3 = "1"
+# aws-config = "1"
+# sqlx = { version = "0.7", features = ["postgres", "runtime-tokio", "tls-native-tls"] }
+# tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# tar = "0.4"
+# flate2 = "1"

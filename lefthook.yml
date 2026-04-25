@@ -1,0 +1,26 @@
+# lefthook — git hooks runner
+# Install: https://github.com/evilmartians/lefthook#installation
+# After cloning run: lefthook install
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt-rust:
+      glob: "*.rs"
+      run: cargo fmt --all
+      stage_fixed: true
+
+    fmt-toml:
+      glob: "*.toml"
+      run: taplo fmt {staged_files}
+      stage_fixed: true
+
+    fmt-yaml:
+      glob: "*.{yaml,yml}"
+      run: prettier --write {staged_files}
+      stage_fixed: true
+
+    fmt-markdown:
+      glob: "*.md"
+      run: prettier --write {staged_files}
+      stage_fixed: true

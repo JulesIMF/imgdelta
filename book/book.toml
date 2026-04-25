@@ -1,0 +1,10 @@
+[book]
+title = "imgdelta"
+description = "Delta compression tool for cloud OS images"
+language = "en"
+src = "src"
+
+[output.html]
+site-url = "/imgdelta/"
+git-repository-url = "https://github.com/JulesIMF/imgdelta"
+edit-url-template = "https://github.com/JulesIMF/imgdelta/edit/main/book/src/{path}"
