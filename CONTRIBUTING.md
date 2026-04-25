@@ -53,3 +53,26 @@ example (these run as doc-tests in CI).
 
 - **L1 (unit + integration)**: `cargo test --all` — runs on any machine, no external deps
 - **L2 (real images)**: `docs/yc-benchmark.sh` — requires a Yandex Cloud VM with attached disk
+
+## Commit message format
+
+```
+{scope}: {message}
+```
+
+**Scope** follows the changed code path:
+
+| Scope                | When to use                                                |
+| -------------------- | ---------------------------------------------------------- |
+| `core/manifest`      | changes to `image-delta-core/src/manifest.rs`              |
+| `core/formats/qcow2` | changes specific to the qcow2 format                       |
+| `core/formats`       | changes to the shared format traits                        |
+| `cli/export`         | changes to a specific CLI subcommand                       |
+| `git`                | changes to git hooks, lefthook config, `.gitmodules`, etc. |
+| `all`                | wide-ranging changes that touch many modules               |
+
+Rules:
+
+- Use `cli/` prefix for `image-delta-cli`, `core/` for `image-delta-core`.
+- Append sub-path components when the change is narrower (`core/encoders/vcdiff`).
+- Keep the subject line ≤ 72 characters, imperative mood, no trailing period.
