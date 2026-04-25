@@ -1,0 +1,2 @@
+createSrcSidebar('[["image_delta_core",["",[["encoders",[["passthrough",[],["mod.rs"]],["text_diff",[],["mod.rs"]],["vcdiff",[],["ffi.rs","mod.rs"]]],["mod.rs"]],["formats",[],["directory.rs","mod.rs"]],["fs_diff",[],["mod.rs"]],["path_match",[],["mod.rs"]]],["compressor.rs","encoder.rs","error.rs","format.rs","lib.rs","manifest.rs","routing.rs","scheduler.rs","storage.rs"]]]]');
+//{"start":19,"fragment_lengths":[359]}

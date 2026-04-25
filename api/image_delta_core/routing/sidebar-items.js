@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["ElfRule","FileInfo","GlobRule","MagicRule","RouterEncoder","SizeRule"],"trait":["RoutingRule"]};

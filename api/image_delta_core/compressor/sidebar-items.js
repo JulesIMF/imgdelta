@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["CompressOptions","CompressionStats","DecompressOptions","DecompressionStats","DefaultCompressor"],"trait":["Compressor"]};

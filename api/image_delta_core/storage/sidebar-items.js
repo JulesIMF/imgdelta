@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ImageStatus"],"struct":["BlobCandidate","ImageMeta"],"trait":["Storage"]};

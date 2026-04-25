@@ -1,0 +1,1 @@
+rd_("A`image_delta_core")
