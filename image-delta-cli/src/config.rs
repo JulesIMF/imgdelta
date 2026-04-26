@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use image_delta_core::{
-    DeltaEncoder, ElfRule, GlobRule, MagicRule, PassthroughEncoder, RouterEncoder, RoutingRule,
+    ElfRule, GlobRule, MagicRule, PassthroughEncoder, PatchEncoder, RouterEncoder, RoutingRule,
     SizeRule, Storage, TextDiffEncoder, Xdelta3Encoder,
 };
 
@@ -159,16 +159,13 @@ pub struct CompressorConfig {
 }
 
 impl CompressorConfig {
-    /// Build a [`DeltaEncoder`] from this configuration.
+    /// Build a [`RouterEncoder`] from this configuration.
     ///
-    /// If no routing rules are configured, returns the `default_encoder` directly.
-    /// Otherwise wraps it with a [`RouterEncoder`].
-    pub fn build_encoder(&self) -> anyhow::Result<Arc<dyn DeltaEncoder>> {
-        let fallback: Arc<dyn DeltaEncoder> = make_encoder(&self.default_encoder);
-
-        if self.routing.is_empty() {
-            return Ok(fallback);
-        }
+    /// If no routing rules are configured, wraps the `default_encoder` in a
+    /// [`RouterEncoder`] with no rules.  This guarantees the caller always
+    /// receives a `RouterEncoder` regardless of config.
+    pub fn build_router(&self) -> anyhow::Result<Arc<RouterEncoder>> {
+        let fallback: Arc<dyn PatchEncoder> = make_encoder(&self.default_encoder);
 
         let mut rules: Vec<Box<dyn RoutingRule>> = Vec::new();
         for rule_cfg in &self.routing {
@@ -193,7 +190,7 @@ impl CompressorConfig {
     }
 }
 
-fn make_encoder(kind: &EncoderKind) -> Arc<dyn DeltaEncoder> {
+fn make_encoder(kind: &EncoderKind) -> Arc<dyn PatchEncoder> {
     match kind {
         EncoderKind::Xdelta3 => Arc::new(Xdelta3Encoder::new()),
         EncoderKind::TextDiff => Arc::new(TextDiffEncoder::new()),

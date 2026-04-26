@@ -29,8 +29,8 @@ pub fn run(args: DecompressArgs, config_path: Option<&Path>) -> anyhow::Result<(
     let config = load_config(config_path)?;
 
     let storage = config.storage.build()?;
-    let encoder = config.compressor.build_encoder()?;
-    let compressor = DefaultCompressor::new(Arc::clone(&storage), encoder);
+    let router = config.compressor.build_router()?;
+    let compressor = DefaultCompressor::new(Arc::clone(&storage), router);
 
     let opts = DecompressOptions {
         image_id: args.image_id.clone(),
