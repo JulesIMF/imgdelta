@@ -1,8 +1,18 @@
 // Config structs are used in Phase 5/6 when CLI commands are wired up.
 #![allow(dead_code)]
 
-use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use serde::Deserialize;
+
+use image_delta_core::{
+    DeltaEncoder, ElfRule, GlobRule, MagicRule, PassthroughEncoder, RouterEncoder, RoutingRule,
+    SizeRule, Storage, TextDiffEncoder, Xdelta3Encoder,
+};
+
+use crate::impls::local_storage::LocalStorage;
 
 /// Which delta encoder to use (fixed set — no runtime string lookup).
 #[derive(Debug, Clone, Deserialize)]
@@ -83,15 +93,53 @@ impl Default for LoggingConfig {
     }
 }
 
-/// S3 + PostgreSQL storage configuration.
+/// Storage backend configuration.
+///
+/// Two backends are supported:
+/// - `local` — file-based storage in a local directory (no S3/PostgreSQL needed)
+/// - `s3` — S3 + PostgreSQL (production; implemented in Phase 5)
+///
+/// ```toml
+/// [storage]
+/// type = "local"
+/// local_dir = "/var/lib/imgdelta"
+///
+/// # — or —
+///
+/// [storage]
+/// type = "s3"
+/// s3_bucket = "my-images"
+/// database_url = "postgres://user:pass@localhost/imgdelta"
+/// ```
 #[derive(Debug, Deserialize)]
-pub struct StorageConfig {
-    pub s3_bucket: String,
-    pub s3_region: Option<String>,
-    /// Override S3 endpoint URL (useful for MinIO / YC Object Storage).
-    pub s3_endpoint: Option<String>,
-    /// PostgreSQL DSN, e.g. `postgres://user:pass@localhost/imgdelta`.
-    pub database_url: String,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StorageConfig {
+    Local {
+        local_dir: PathBuf,
+    },
+    S3 {
+        s3_bucket: String,
+        s3_region: Option<String>,
+        /// Override S3 endpoint URL (useful for MinIO / YC Object Storage).
+        s3_endpoint: Option<String>,
+        /// PostgreSQL DSN, e.g. `postgres://user:pass@localhost/imgdelta`.
+        database_url: String,
+    },
+}
+
+impl StorageConfig {
+    /// Build the appropriate [`Storage`] implementation.
+    pub fn build(&self) -> anyhow::Result<Arc<dyn Storage>> {
+        match self {
+            StorageConfig::Local { local_dir } => {
+                let s = LocalStorage::new(local_dir.clone())?;
+                Ok(Arc::new(s))
+            }
+            StorageConfig::S3 { .. } => {
+                anyhow::bail!("S3 storage is not yet implemented (Phase 5)")
+            }
+        }
+    }
 }
 
 /// Compressor behaviour configuration.
@@ -110,6 +158,49 @@ pub struct CompressorConfig {
     pub routing: Vec<RoutingRuleConfig>,
 }
 
+impl CompressorConfig {
+    /// Build a [`DeltaEncoder`] from this configuration.
+    ///
+    /// If no routing rules are configured, returns the `default_encoder` directly.
+    /// Otherwise wraps it with a [`RouterEncoder`].
+    pub fn build_encoder(&self) -> anyhow::Result<Arc<dyn DeltaEncoder>> {
+        let fallback: Arc<dyn DeltaEncoder> = make_encoder(&self.default_encoder);
+
+        if self.routing.is_empty() {
+            return Ok(fallback);
+        }
+
+        let mut rules: Vec<Box<dyn RoutingRule>> = Vec::new();
+        for rule_cfg in &self.routing {
+            let rule: Box<dyn RoutingRule> = match rule_cfg {
+                RoutingRuleConfig::Glob { pattern, encoder } => {
+                    Box::new(GlobRule::new(pattern, make_encoder(encoder))?)
+                }
+                RoutingRuleConfig::Elf { encoder } => Box::new(ElfRule::new(make_encoder(encoder))),
+                RoutingRuleConfig::Size { max_bytes, encoder } => {
+                    Box::new(SizeRule::new(*max_bytes, make_encoder(encoder)))
+                }
+                RoutingRuleConfig::Magic { hex, encoder } => {
+                    let magic_bytes = hex::decode(hex)
+                        .map_err(|e| anyhow::anyhow!("invalid magic hex '{}': {}", hex, e))?;
+                    Box::new(MagicRule::new(magic_bytes, make_encoder(encoder)))
+                }
+            };
+            rules.push(rule);
+        }
+
+        Ok(Arc::new(RouterEncoder::new(rules, fallback)))
+    }
+}
+
+fn make_encoder(kind: &EncoderKind) -> Arc<dyn DeltaEncoder> {
+    match kind {
+        EncoderKind::Xdelta3 => Arc::new(Xdelta3Encoder::new()),
+        EncoderKind::TextDiff => Arc::new(TextDiffEncoder::new()),
+        EncoderKind::Passthrough => Arc::new(PassthroughEncoder::new()),
+    }
+}
+
 fn default_workers() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -126,8 +217,8 @@ fn default_passthrough_threshold() -> f64 {
 ///
 /// ```toml
 /// [storage]
-/// s3_bucket = "my-images"
-/// database_url = "postgres://user:pass@localhost/imgdelta"
+/// type = "local"
+/// local_dir = "/var/lib/imgdelta"
 ///
 /// [compressor]
 /// workers = 8
@@ -148,6 +239,9 @@ pub struct Config {
 
 impl Config {
     /// Load and parse a TOML configuration file.
+    ///
+    /// Returns an error if the file cannot be read or does not contain valid TOML
+    /// matching the expected schema.
     pub fn from_file(path: &std::path::Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
