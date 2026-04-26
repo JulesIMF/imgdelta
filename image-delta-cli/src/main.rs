@@ -39,6 +39,13 @@ enum Commands {
     /// Manifest inspection subcommands.
     #[command(subcommand)]
     Manifest(commands::ManifestCommands),
+
+    /// Debug-only subcommands for inspecting internals against real data.
+    ///
+    /// Available only in debug builds (`cargo build`).
+    #[cfg(debug_assertions)]
+    #[command(subcommand)]
+    Debug(commands::DebugCommands),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -51,5 +58,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Decompress(args) => commands::decompress::run(args),
         Commands::Image(cmd) => commands::image::run(cmd),
         Commands::Manifest(cmd) => commands::manifest::run(cmd),
+        #[cfg(debug_assertions)]
+        Commands::Debug(cmd) => commands::debug::run(cmd),
     }
 }
