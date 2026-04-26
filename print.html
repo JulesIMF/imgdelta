@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d37a4208.js";
+            window.path_to_searchindex_js = "searchindex-e746d648.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -199,35 +199,727 @@ routed per file type via TOML configuration</li>
 (e.g. nightly Debian builds) in cold/archive object storage and need to reduce
 storage costs without sacrificing decompression throughput.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="quickstart"><a class="header" href="#quickstart">Quickstart</a></h1>
-<blockquote>
-<p><em>To be written.</em></p>
-</blockquote>
+<h1 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h1>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Requirement</th><th>Version</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>Rust</td><td>stable</td><td><code>rustup toolchain install stable</code></td></tr>
+<tr><td>C compiler</td><td>any</td><td><code>gcc</code> or <code>clang</code> — for vendored <code>xdelta3.c</code></td></tr>
+<tr><td>S3-compatible storage</td><td>—</td><td>AWS S3, Yandex Cloud Object Storage, or MinIO</td></tr>
+<tr><td>PostgreSQL</td><td>≥ 14</td><td>image metadata index</td></tr>
+</tbody>
+</table>
+</div>
+<p>For L1 tests only (no S3/DB): just Rust + C compiler.</p>
+<h2 id="install"><a class="header" href="#install">Install</a></h2>
+<pre><code class="language-sh">git clone https://github.com/JulesIMF/imgdelta
+cd imgdelta
+cargo build --release --all
+# add ./target/release to PATH or copy imgdelta to /usr/local/bin
+</code></pre>
+<h2 id="minimal-configuration"><a class="header" href="#minimal-configuration">Minimal configuration</a></h2>
+<p>Create <code>imgdelta.toml</code>:</p>
+<pre><code class="language-toml">[storage]
+s3_bucket    = "my-images"
+s3_region    = "us-east-1"
+database_url = "postgres://user:pass@localhost/imgdelta"
+
+[compressor]
+workers               = 8
+default_encoder       = "xdelta3"
+passthrough_threshold = 1.0
+
+# Already-compressed formats → store verbatim
+[[compressor.routing]]
+type    = "glob"
+pattern = "**/*.{gz,zst,xz,bz2,lz4,br}"
+encoder = "passthrough"
+
+# ELF binaries → xdelta3 VCDIFF
+[[compressor.routing]]
+type    = "elf"
+encoder = "xdelta3"
+</code></pre>
+<h2 id="compress-a-new-image"><a class="header" href="#compress-a-new-image">Compress a new image</a></h2>
+<pre><code class="language-sh">imgdelta compress \
+  --image         /mnt/new-image \
+  --image-id      debian-11-20260502 \
+  --base-image-id debian-11-20260401 \
+  --config        imgdelta.toml
+</code></pre>
+<p>On completion, imgdelta prints a summary:</p>
+<pre><code>Compressed debian-11-20260502 (base: debian-11-20260401)
+  patched:  4 312 files  (87.3 MiB → 3.1 MiB, ratio 0.035)
+  added:      127 files  (12.4 MiB verbatim)
+  removed:     89 files
+  elapsed:   14.2 s
+</code></pre>
+<h2 id="decompress-reconstruct"><a class="header" href="#decompress-reconstruct">Decompress (reconstruct)</a></h2>
+<pre><code class="language-sh">imgdelta decompress \
+  --image-id  debian-11-20260502 \
+  --base-root /mnt/base-image \
+  --output    /mnt/restored \
+  --config    imgdelta.toml
+</code></pre>
+<p>After decompression the directory <code>/mnt/restored</code> contains an exact
+replica of the target filesystem with all file attributes (mode, uid/gid,
+mtime, symlinks, hardlinks, xattrs) preserved.</p>
+<h2 id="inspect-a-manifest"><a class="header" href="#inspect-a-manifest">Inspect a manifest</a></h2>
+<pre><code class="language-sh"># Pretty-print as JSON
+imgdelta manifest inspect --image-id debian-11-20260502 --format json | jq .
+
+# Check image status
+imgdelta image status --image-id debian-11-20260502
+
+# List all known images
+imgdelta image list
+</code></pre>
+<h2 id="debug-development-builds"><a class="header" href="#debug-development-builds">Debug (development builds)</a></h2>
+<p>Debug builds include the <code>debug</code> subcommand for inspecting real directory
+pairs without running a full compress cycle:</p>
+<pre><code class="language-sh">cargo build   # debug profile
+./target/debug/imgdelta debug walkdir /mnt/base /mnt/new
+</code></pre>
+<p>Example output:</p>
+<pre><code>~ usr/bin/grep
++ usr/lib/systemd/system/systemd-resolved.service
+- usr/lib/systemd/system/ifupdown.service
+M etc/sudoers
+
+─── diff summary ────────────────────────
+  +  added:          1
+  -  removed:        1
+  ~  changed:        1
+  M  metadata-only:  1
+  ─────────────────────────────────────────
+     total diffs:    4
+
+─── tree stats ──────────────────────────
+  old (base)    45 231 files    2.1 GiB    3 812 dirs    1 024 symlinks
+  new (target)  45 267 files    2.1 GiB    3 815 dirs    1 025 symlinks
+</code></pre>
+<h2 id="run-tests"><a class="header" href="#run-tests">Run tests</a></h2>
+<pre><code class="language-sh"># All 85 L1 tests (no external deps)
+cargo test --all
+
+# Specific integration file
+cargo test --test compress_decompress -- --nocapture
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="configuration"><a class="header" href="#configuration">Configuration</a></h1>
-<blockquote>
-<p><em>To be written.</em></p>
-</blockquote>
+<h1 id="configuration-reference"><a class="header" href="#configuration-reference">Configuration Reference</a></h1>
+<p>imgdelta is configured via a TOML file (passed with <code>--config imgdelta.toml</code>).
+All fields have documented defaults.</p>
+<h2 id="storage"><a class="header" href="#storage"><code>[storage]</code></a></h2>
+<p>S3 + PostgreSQL backend.</p>
+<pre><code class="language-toml">[storage]
+s3_bucket    = "my-images"          # required
+s3_region    = "us-east-1"          # optional, defaults to AWS_REGION env var
+s3_endpoint  = "https://s3.yandexcloud.net"  # optional, override for non-AWS
+database_url = "postgres://user:pass@localhost/imgdelta"  # required
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>s3_bucket</code></td><td>string</td><td>—</td><td>S3 bucket name</td></tr>
+<tr><td><code>s3_region</code></td><td>string</td><td>env <code>AWS_REGION</code></td><td>AWS region</td></tr>
+<tr><td><code>s3_endpoint</code></td><td>string</td><td>AWS default</td><td>Override endpoint (MinIO, YC)</td></tr>
+<tr><td><code>database_url</code></td><td>string</td><td>—</td><td>PostgreSQL connection string</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="compressor"><a class="header" href="#compressor"><code>[compressor]</code></a></h2>
+<p>Controls parallelism, fallback behaviour, default encoder, and routing rules.</p>
+<pre><code class="language-toml">[compressor]
+workers               = 8       # default: number of logical CPUs
+passthrough_threshold = 1.0     # store verbatim if delta &gt;= original * threshold
+default_encoder       = "xdelta3"
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>workers</code></td><td>integer</td><td><code>num_cpus</code></td><td>Parallel worker threads</td></tr>
+<tr><td><code>passthrough_threshold</code></td><td>float</td><td><code>1.0</code></td><td>Delta/original size ratio cutoff</td></tr>
+<tr><td><code>default_encoder</code></td><td>enum</td><td><code>"xdelta3"</code></td><td>Fallback when no routing rule matches</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="encoder-values"><a class="header" href="#encoder-values">Encoder values</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Value</th><th>Algorithm</th></tr>
+</thead>
+<tbody>
+<tr><td><code>"xdelta3"</code></td><td>VCDIFF binary delta (vendored xdelta3)</td></tr>
+<tr><td><code>"text_diff"</code></td><td>Myers line-level diff (pure Rust)</td></tr>
+<tr><td><code>"passthrough"</code></td><td>Verbatim blob (no delta)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="compressorrouting"><a class="header" href="#compressorrouting"><code>[[compressor.routing]]</code></a></h2>
+<p>An ordered list of rules. The first rule whose predicate matches a file wins.
+Files that match no rule use <code>default_encoder</code>.</p>
+<h3 id="type--glob"><a class="header" href="#type--glob"><code>type = "glob"</code></a></h3>
+<pre><code class="language-toml">[[compressor.routing]]
+type    = "glob"
+pattern = "**/*.{gz,zst,xz,bz2,lz4,br,zip}"
+encoder = "passthrough"
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>pattern</code></td><td>Glob pattern matched against the relative file path</td></tr>
+<tr><td><code>encoder</code></td><td>Encoder to use for matching files</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="type--elf"><a class="header" href="#type--elf"><code>type = "elf"</code></a></h3>
+<p>Matches files whose first 4 bytes are <code>\x7fELF</code> (Linux ELF binaries and shared libraries).</p>
+<pre><code class="language-toml">[[compressor.routing]]
+type    = "elf"
+encoder = "xdelta3"
+</code></pre>
+<h3 id="type--size"><a class="header" href="#type--size"><code>type = "size"</code></a></h3>
+<p>Matches files smaller than <code>max_bytes</code>.</p>
+<pre><code class="language-toml">[[compressor.routing]]
+type      = "size"
+max_bytes = 512
+encoder   = "passthrough"
+</code></pre>
+<h3 id="type--magic"><a class="header" href="#type--magic"><code>type = "magic"</code></a></h3>
+<p>Matches files whose bytes at <code>offset</code> start with the given hex sequence.</p>
+<pre><code class="language-toml">[[compressor.routing]]
+type    = "magic"
+offset  = 0
+hex     = "89504e47"   # PNG magic bytes
+encoder = "passthrough"
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>offset</code></td><td>Byte offset from file start (default <code>0</code>)</td></tr>
+<tr><td><code>hex</code></td><td>Hex-encoded byte sequence to match</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="logging"><a class="header" href="#logging"><code>[logging]</code></a></h2>
+<pre><code class="language-toml">[logging]
+level = "info"   # error | warn | info | debug | trace
+file  = "/var/log/imgdelta/compress.log"  # optional
+
+[logging.targets]
+"image_delta_core::fs_diff"    = "debug"
+"image_delta_core::path_match" = "debug"
+"image_delta_core::scheduler"  = "warn"
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>level</code></td><td><code>"info"</code></td><td>Global log level</td></tr>
+<tr><td><code>file</code></td><td>—</td><td>Write logs to file in addition to stderr</td></tr>
+<tr><td><code>targets</code></td><td><code>{}</code></td><td>Per-module overrides (tracing target syntax)</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>RUST_LOG</code> environment variable overrides <code>[logging]</code> when set.</p>
+<h2 id="full-example"><a class="header" href="#full-example">Full example</a></h2>
+<pre><code class="language-toml">[storage]
+s3_bucket    = "acme-images"
+s3_region    = "eu-central-1"
+database_url = "postgres://imgdelta:secret@db.internal/imgdelta"
+
+[compressor]
+workers               = 16
+passthrough_threshold = 1.0
+default_encoder       = "xdelta3"
+
+# Already-compressed formats → no delta
+[[compressor.routing]]
+type    = "glob"
+pattern = "**/*.{gz,zst,xz,bz2,lz4,br,zip,png,jpg,mp4,webm}"
+encoder = "passthrough"
+
+# ELF binaries → xdelta3
+[[compressor.routing]]
+type    = "elf"
+encoder = "xdelta3"
+
+# Config and script files → line-level diff
+[[compressor.routing]]
+type    = "glob"
+pattern = "**/*.{conf,cfg,ini,yaml,toml,json,py,sh,rb,pl}"
+encoder = "text_diff"
+
+[logging]
+level = "info"
+file  = "/var/log/imgdelta/last.log"
+
+[logging.targets]
+"image_delta_core::compressor" = "debug"
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="cli-reference"><a class="header" href="#cli-reference">Cli Reference</a></h1>
-<blockquote>
-<p><em>To be written.</em></p>
-</blockquote>
+<h1 id="cli-reference"><a class="header" href="#cli-reference">CLI Reference</a></h1>
+<h2 id="global-flags"><a class="header" href="#global-flags">Global flags</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>-c, --config &lt;FILE&gt;</code></td><td>—</td><td>Path to TOML configuration file</td></tr>
+<tr><td><code>--log-level &lt;LEVEL&gt;</code></td><td><code>info</code></td><td>Override log level (<code>error</code>/<code>warn</code>/<code>info</code>/<code>debug</code>/<code>trace</code>)</td></tr>
+<tr><td><code>-h, --help</code></td><td>—</td><td>Print help</td></tr>
+<tr><td><code>-V, --version</code></td><td>—</td><td>Print version</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="imgdelta-compress"><a class="header" href="#imgdelta-compress"><code>imgdelta compress</code></a></h2>
+<p>Compress a new image relative to a base image and upload patches to S3.</p>
+<pre><code class="language-sh">imgdelta compress \
+  --image         &lt;PATH&gt;         # target filesystem root (or qcow2 path)
+  --image-id      &lt;ID&gt;           # unique ID for the new image
+  --base-image-id &lt;ID&gt;           # ID of the base image (omit for full backup)
+  [--image-format directory|qcow2]   # default: directory
+  [--workers      &lt;N&gt;]           # override config workers
+  --config        &lt;FILE&gt;
+</code></pre>
+<p><strong>Exit codes</strong>: <code>0</code> success, <code>1</code> error (message on stderr).</p>
+<hr>
+<h2 id="imgdelta-decompress"><a class="header" href="#imgdelta-decompress"><code>imgdelta decompress</code></a></h2>
+<p>Reconstruct an image from stored patches.</p>
+<pre><code class="language-sh">imgdelta decompress \
+  --image-id  &lt;ID&gt;      # image to reconstruct
+  --base-root &lt;PATH&gt;    # filesystem root of the base image
+  --output    &lt;PATH&gt;    # directory to write the reconstructed image
+  --config    &lt;FILE&gt;
+</code></pre>
+<p>The output directory is created if it does not exist. On completion all
+file attributes (mode, uid, gid, mtime, symlinks, hardlinks, xattrs) are
+identical to the original target filesystem.</p>
+<hr>
+<h2 id="imgdelta-image"><a class="header" href="#imgdelta-image"><code>imgdelta image</code></a></h2>
+<p>Image management subcommands.</p>
+<h3 id="imgdelta-image-status"><a class="header" href="#imgdelta-image-status"><code>imgdelta image status</code></a></h3>
+<pre><code class="language-sh">imgdelta image status --image-id &lt;ID&gt; --config &lt;FILE&gt;
+</code></pre>
+<p>Prints the lifecycle state of an image (<code>Pending</code> / <code>Compressing</code> /
+<code>Compressed</code> / <code>Failed: &lt;reason&gt;</code>).</p>
+<p>Exit code <code>1</code> if the image is not found.</p>
+<h3 id="imgdelta-image-list"><a class="header" href="#imgdelta-image-list"><code>imgdelta image list</code></a></h3>
+<pre><code class="language-sh">imgdelta image list [--format table|json] --config &lt;FILE&gt;
+</code></pre>
+<p>Lists all known images with their <code>image_id</code>, <code>base_image_id</code>, and status.</p>
+<hr>
+<h2 id="imgdelta-manifest"><a class="header" href="#imgdelta-manifest"><code>imgdelta manifest</code></a></h2>
+<p>Manifest inspection subcommands.</p>
+<h3 id="imgdelta-manifest-inspect"><a class="header" href="#imgdelta-manifest-inspect"><code>imgdelta manifest inspect</code></a></h3>
+<pre><code class="language-sh">imgdelta manifest inspect \
+  --image-id &lt;ID&gt; \
+  [--format msgpack|json]   # default: json
+  --config &lt;FILE&gt;
+</code></pre>
+<p>Downloads and prints the manifest for <code>image-id</code>. Use <code>--format json</code> for
+human-readable output or pipe to <code>jq</code>.</p>
+<h3 id="imgdelta-manifest-diff"><a class="header" href="#imgdelta-manifest-diff"><code>imgdelta manifest diff</code></a></h3>
+<pre><code class="language-sh">imgdelta manifest diff \
+  --from-image-id &lt;ID&gt; \
+  --to-image-id   &lt;ID&gt; \
+  --config &lt;FILE&gt;
+</code></pre>
+<p>Prints a summary of differences between two manifests.</p>
+<hr>
+<h2 id="imgdelta-debug-walkdir-debug-builds-only"><a class="header" href="#imgdelta-debug-walkdir-debug-builds-only"><code>imgdelta debug walkdir</code> <em>(debug builds only)</em></a></h2>
+<p>Available only when built without <code>--release</code> (<code>#[cfg(debug_assertions)]</code>).
+Useful for inspecting real directory pairs without a full compress cycle.</p>
+<pre><code class="language-sh">cargo build
+./target/debug/imgdelta debug walkdir &lt;OLD_PATH&gt; &lt;NEW_PATH&gt; [--show-metadata=true|false]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--show-metadata</code></td><td><code>true</code></td><td>Show <code>M</code> (metadata-only) lines</td></tr>
+</tbody>
+</table>
+</div>
+<p>Output format:</p>
+<pre><code>+ path/to/added/file
+- path/to/removed/file
+~ path/to/changed/file
+M path/to/metadata-only/file
+
+─── diff summary ────────────────────────
+  +  added:         N
+  -  removed:       N
+  ~  changed:       N
+  M  metadata-only: N
+  ─────────────────────────────────────────
+     total diffs:   N
+
+─── tree stats ──────────────────────────
+  old (base)    N files  X.X MiB  N dirs  N symlinks
+  new (target)  N files  X.X MiB  N dirs  N symlinks
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="architecture"><a class="header" href="#architecture">Architecture</a></h1>
-<blockquote>
-<p><em>To be written.</em></p>
-</blockquote>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>imgdelta operates at the <strong>filesystem level</strong>, not at the block device level.
+Instead of computing a binary diff of a raw <code>.qcow2</code> file, it walks both
+image filesystems, detects per-file changes, and encodes each file
+individually using the most appropriate algorithm.</p>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                         compress()                                  │
+│                                                                     │
+│  base FS ──┐                                                        │
+│            ├──▶ diff_dirs() ──▶ path_match() ──▶ RouterEncoder      │
+│  new FS  ──┘         │               │               │             │
+│                       │               │               ▼             │
+│                    DiffResult     rename         encode() ──▶ blob  │
+│                    (4 kinds)      pairs          or patch           │
+│                                                       │             │
+│                                                       ▼             │
+│                                                   Storage           │
+│                                              (S3 + PostgreSQL)      │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="crate-split"><a class="header" href="#crate-split">Crate split</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Type</th><th>Contains</th></tr>
+</thead>
+<tbody>
+<tr><td><code>image-delta-core</code></td><td>library</td><td>All algorithms, traits, data structures</td></tr>
+<tr><td><code>image-delta-cli</code></td><td>binary</td><td>CLI, S3/PostgreSQL <code>Storage</code>, TOML config wiring</td></tr>
+</tbody>
+</table>
+</div>
+<p>The library has zero dependencies on AWS SDK, <code>sqlx</code>, or any other I/O
+framework. A provider can embed <code>image-delta-core</code> directly and supply their
+own <code>Storage</code> implementation.</p>
+<h2 id="module-map--image-delta-core"><a class="header" href="#module-map--image-delta-core">Module map — <code>image-delta-core</code></a></h2>
+<pre><code>image-delta-core/src/
+├── lib.rs              pub use; crate-level doc
+├── encoder.rs          trait DeltaEncoder { encode, decode, algorithm_id }
+├── storage.rs          trait Storage (upload/download blobs, patches, manifests)
+├── format.rs           trait ImageFormat + MountHandle
+├── compressor.rs       trait Compressor + struct DefaultCompressor
+├── routing.rs          RouterEncoder, GlobRule, ElfRule, SizeRule, MagicRule
+├── manifest.rs         Manifest, Entry, BlobRef, PatchRef, Metadata (MessagePack)
+├── error.rs            Error enum, Result alias
+├── scheduler.rs        WorkQueue&lt;T&gt; — thread-safe FIFO (wired up in Phase 5)
+├── encoders/
+│   ├── vcdiff/         Xdelta3Encoder — only file with unsafe (FFI to xdelta3.c)
+│   ├── passthrough/    PassthroughEncoder — stores file verbatim
+│   └── text_diff/      TextDiffEncoder — Myers line diff (pure Rust)
+├── formats/
+│   ├── directory.rs    DirectoryFormat — mount = return the dir as-is
+│   └── qcow2.rs        Qcow2Format — qemu-nbd + mount (feature = "qcow2")
+├── fs_diff/            diff_dirs() → DiffResult, TreeStats
+└── path_match/         find_best_matches() — bijective rename detection
+</code></pre>
+<h2 id="data-flow--compression"><a class="header" href="#data-flow--compression">Data flow — compression</a></h2>
+<ol>
+<li>
+<p><strong><code>diff_dirs(base, target)</code></strong> — walks both trees with <code>walkdir</code>
+(symlinks not followed). Compares: SHA-256 (skipped when mtime+size match),
+mode, uid, gid, mtime. Returns <code>DiffResult { diffs, base: TreeStats, target: TreeStats }</code>.</p>
+</li>
+<li>
+<p><strong><code>find_best_matches(removed, added)</code></strong> — scores path similarity with a
+weighted edit distance. Digits get lower substitution cost (version bumps
+are cheap). Returns a bijective set of <code>PathMatch { source_path, target_path, score }</code>.</p>
+</li>
+<li>
+<p><strong><code>RouterEncoder::select(file_info)</code></strong> — evaluates <code>[[routing]]</code> rules in
+order. First rule whose predicate matches wins. Fallback = <code>default_encoder</code>.</p>
+</li>
+<li>
+<p><strong><code>DeltaEncoder::encode(src, target)</code></strong> — produces a binary delta.
+If <code>delta.len() &gt;= source.len() * passthrough_threshold</code>, the delta is
+discarded and the file is stored verbatim (<code>PassthroughEncoder</code>).</p>
+</li>
+<li>
+<p><strong><code>Storage::upload_blob(data)</code></strong> — stores bytes by content UUID in S3.
+<code>Storage::upload_manifest(image_id, bytes)</code> stores the MessagePack manifest.</p>
+</li>
+</ol>
+<h2 id="data-flow--decompression"><a class="header" href="#data-flow--decompression">Data flow — decompression</a></h2>
+<ol>
+<li>Download manifest → deserialise.</li>
+<li>Download patches tar from S3 → extract to temp directory.</li>
+<li>For each <code>Entry</code> in dependency order:
+<ul>
+<li><code>Added</code> → copy blob to output path</li>
+<li><code>BlobPatch</code> → <code>decode(base_blob, patch)</code> → write output</li>
+<li><code>Removed</code> → skip</li>
+<li><code>MetadataOnly</code> → apply mode/uid/gid/mtime from base, write to output</li>
+<li><code>Hardlink</code> → <code>fs::hard_link(target, output_path)</code></li>
+</ul>
+</li>
+<li>Apply all metadata (mode, uid, gid, mtime) after content phase.</li>
+</ol>
+<h2 id="manifest-format"><a class="header" href="#manifest-format">Manifest format</a></h2>
+<p>Manifests are serialised with <strong>MessagePack</strong> (<code>rmp-serde</code>, <code>to_vec_named</code>).
+Each manifest consists of a <code>ManifestHeader</code> followed by a <code>Vec&lt;Entry&gt;</code>.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>struct ManifestHeader {
+    version:            u32,      // MANIFEST_VERSION = 1
+    image_id:           String,
+    base_image_id:      Option&lt;String&gt;,
+    algorithm_id:       String,   // e.g. "xdelta3"
+    patches_compressed: bool,
+}
+
+struct Entry {
+    path:            String,
+    entry_type:      EntryType,   // Added | Removed | Changed | MetadataOnly | Hardlink
+    blob:            Option&lt;BlobRef&gt;,
+    patch:           Option&lt;PatchRef&gt;,
+    metadata:        Option&lt;Metadata&gt;,
+    hardlink_target: Option&lt;String&gt;,
+}
+<span class="boring">}</span></code></pre>
+<p><code>None</code> fields are skipped during serialisation (<code>skip_serializing_if</code>),
+keeping the manifest compact. JSON equivalent is available for debugging
+via <code>manifest inspect --format json</code>.</p>
+<h2 id="encoding-strategy-per-file-type"><a class="header" href="#encoding-strategy-per-file-type">Encoding strategy per file type</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>File type</th><th>Default encoder</th><th>Rationale</th></tr>
+</thead>
+<tbody>
+<tr><td>ELF binaries (magic <code>7fELF</code>)</td><td><code>xdelta3</code></td><td>VCDIFF excels at binary similarity</td></tr>
+<tr><td>Config/script (<code>*.conf</code>, <code>*.py</code>, …)</td><td><code>text_diff</code></td><td>Line-level diff is more compact</td></tr>
+<tr><td>Already compressed (<code>*.gz</code>, <code>*.zst</code>, …)</td><td><code>passthrough</code></td><td>Re-encoding wastes CPU</td></tr>
+<tr><td>Everything else</td><td><code>xdelta3</code> (default)</td><td>Safe fallback</td></tr>
+</tbody>
+</table>
+</div>
+<p>If a delta is larger than the original (<code>ratio ≥ passthrough_threshold</code>),
+the delta is silently replaced by a verbatim blob — the <code>algorithm_id</code>
+<code>"passthrough"</code> is recorded in the manifest so decompression is symmetric.</p>
+<h2 id="concurrency-model"><a class="header" href="#concurrency-model">Concurrency model</a></h2>
+<p>Phase 4 runs single-threaded. Phase 5 will wire <code>WorkQueue&lt;T&gt;</code> + N worker
+threads (one <code>Xd3Context</code> per thread — the xdelta3 context is not <code>Send</code>).
+The scheduler is an <code>Arc&lt;Mutex&lt;VecDeque&lt;WorkItem&gt;&gt;&gt;</code> + condvar; no tokio
+or async in the hot path.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="responsibility"><a class="header" href="#responsibility">Responsibility</a></h1>
-<blockquote>
-<p><em>To be written.</em></p>
-</blockquote>
+<h1 id="responsibility-split"><a class="header" href="#responsibility-split">Responsibility Split</a></h1>
+<p>imgdelta is designed so that a cloud provider can embed <code>image-delta-core</code>
+as a library and supply their own storage backend, without modifying any
+algorithm code.</p>
+<h2 id="what-imgdelta-owns"><a class="header" href="#what-imgdelta-owns">What imgdelta owns</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Concern</th><th>Where</th></tr>
+</thead>
+<tbody>
+<tr><td>Filesystem walk and diff</td><td><code>image-delta-core::fs_diff</code></td></tr>
+<tr><td>Path similarity / rename detection</td><td><code>image-delta-core::path_match</code></td></tr>
+<tr><td>Binary delta encoding (xdelta3 FFI)</td><td><code>image-delta-core::encoders::vcdiff</code></td></tr>
+<tr><td>Text diff encoding (pure Rust Myers)</td><td><code>image-delta-core::encoders::text_diff</code></td></tr>
+<tr><td>Verbatim blob fallback</td><td><code>image-delta-core::encoders::passthrough</code></td></tr>
+<tr><td>File-type routing</td><td><code>image-delta-core::routing</code></td></tr>
+<tr><td>Manifest serialisation (MessagePack)</td><td><code>image-delta-core::manifest</code></td></tr>
+<tr><td>Compress/decompress orchestration</td><td><code>image-delta-core::compressor</code></td></tr>
+<tr><td><code>DirectoryFormat</code> (plain directory mount)</td><td><code>image-delta-core::formats::directory</code></td></tr>
+<tr><td><code>Qcow2Format</code> (qemu-nbd mount, feature-gated)</td><td><code>image-delta-core::formats::qcow2</code></td></tr>
+<tr><td>CLI binary <code>imgdelta</code></td><td><code>image-delta-cli</code></td></tr>
+<tr><td>S3 + PostgreSQL <code>Storage</code> impl</td><td><code>image-delta-cli::impls::s3_storage</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="what-the-provider-owns"><a class="header" href="#what-the-provider-owns">What the provider owns</a></h2>
+<p>A provider who embeds <code>image-delta-core</code> directly must supply:</p>
+<ol>
+<li><strong><code>impl Storage</code></strong> — plugs into any object store + metadata DB of their choice.</li>
+<li><strong><code>impl ImageFormat</code></strong> (optional) — if images use a format other than plain
+directories or qcow2, implement <code>mount()</code> and <code>pack()</code> accordingly.</li>
+<li><strong>Routing config</strong> — TOML rules or a programmatic <code>Vec&lt;Box&lt;dyn RoutingRule&gt;&gt;</code>
+passed to <code>RouterEncoder::new(rules, fallback)</code>.</li>
+</ol>
+<p>Everything else — the diff algorithm, xdelta3 FFI, path matching, manifest
+format, decompression order — is handled by the library.</p>
+<h2 id="trait-boundaries"><a class="header" href="#trait-boundaries">Trait boundaries</a></h2>
+<pre><code>             ┌─────────────────────────────────┐
+             │       image-delta-core           │
+             │                                 │
+  Storage ◀──┤ DefaultCompressor               │
+  (yours) ───▶  + diff_dirs                    │
+             │  + path_match                   │
+             │  + RouterEncoder → DeltaEncoder │
+             │  + Manifest serde               │
+             └─────────────────────────────────┘
+             ┌─────────────────────────────────┐
+             │       image-delta-cli            │
+             │                                 │
+             │  S3Storage (impl Storage)        │
+             │  CLI argument parsing            │
+             │  TOML config → RouterEncoder     │
+             └─────────────────────────────────┘
+</code></pre>
+<h2 id="provider-integration-example"><a class="header" href="#provider-integration-example">Provider integration example</a></h2>
+<p>See the <a href="#provider-integration">Provider Integration</a> chapter for a complete Rust
+example showing how to instantiate <code>DefaultCompressor</code> with a custom
+<code>Storage</code> implementation.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="integration"><a class="header" href="#integration">Integration</a></h1>
-<blockquote>
-<p><em>To be written.</em></p>
-</blockquote>
+<h1 id="provider-integration"><a class="header" href="#provider-integration">Provider Integration</a></h1>
+<p>This chapter shows how to embed <code>image-delta-core</code> as a library in your
+own Rust codebase, bypassing the CLI and <code>S3Storage</code>.</p>
+<h2 id="add-the-dependency"><a class="header" href="#add-the-dependency">Add the dependency</a></h2>
+<pre><code class="language-toml"># Cargo.toml
+[dependencies]
+image-delta-core = { git = "https://github.com/JulesIMF/imgdelta" }
+</code></pre>
+<h2 id="implement-storage"><a class="header" href="#implement-storage">Implement <code>Storage</code></a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use image_delta_core::{Storage, BlobCandidate, ImageMeta, ImageStatus, Result};
+use uuid::Uuid;
+
+pub struct MyStorage {
+    // your S3 client, DB pool, …
+}
+
+impl Storage for MyStorage {
+    fn upload_blob(&amp;self, data: &amp;[u8]) -&gt; Result&lt;Uuid&gt; {
+        let id = Uuid::new_v4();
+        // store data in your object store under id.to_string()
+        Ok(id)
+    }
+
+    fn download_blob(&amp;self, blob_id: Uuid) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {
+        // fetch from your object store
+        todo!()
+    }
+
+    fn upload_manifest(&amp;self, image_id: &amp;str, bytes: &amp;[u8]) -&gt; Result&lt;()&gt; {
+        todo!()
+    }
+
+    fn download_manifest(&amp;self, image_id: &amp;str) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {
+        todo!()
+    }
+
+    fn find_blob_candidates(&amp;self, base_image_id: &amp;str) -&gt; Result&lt;Vec&lt;BlobCandidate&gt;&gt; {
+        // return BlobCandidate { blob_id, path, size } for each file
+        // stored during the base image's compression
+        todo!()
+    }
+
+    fn save_image_meta(&amp;self, meta: &amp;ImageMeta) -&gt; Result&lt;()&gt; { todo!() }
+    fn get_image_meta(&amp;self, image_id: &amp;str) -&gt; Result&lt;Option&lt;ImageMeta&gt;&gt; { todo!() }
+    fn set_image_status(&amp;self, image_id: &amp;str, status: ImageStatus) -&gt; Result&lt;()&gt; { todo!() }
+    fn list_images(&amp;self) -&gt; Result&lt;Vec&lt;ImageMeta&gt;&gt; { todo!() }
+    fn upload_patches(&amp;self, image_id: &amp;str, data: &amp;[u8]) -&gt; Result&lt;()&gt; { todo!() }
+    fn download_patches(&amp;self, image_id: &amp;str) -&gt; Result&lt;Vec&lt;u8&gt;&gt; { todo!() }
+}
+<span class="boring">}</span></code></pre>
+<h2 id="wire-up-a-compressor"><a class="header" href="#wire-up-a-compressor">Wire up a compressor</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::sync::Arc;
+use image_delta_core::{
+    DefaultCompressor, Xdelta3Encoder, PassthroughEncoder,
+    RouterEncoder, GlobRule, ElfRule,
+    CompressOptions, DecompressOptions,
+};
+use std::path::Path;
+
+fn make_compressor(storage: Arc&lt;dyn image_delta_core::Storage&gt;)
+    -&gt; Arc&lt;DefaultCompressor&gt;
+{
+    // Build routing: already-compressed → passthrough, ELF → xdelta3, default → xdelta3
+    let passthrough = Arc::new(PassthroughEncoder::new());
+    let xdelta3     = Arc::new(Xdelta3Encoder::new());
+
+    let rules: Vec&lt;Box&lt;dyn image_delta_core::RoutingRule&gt;&gt; = vec![
+        Box::new(GlobRule::new("**/*.{gz,zst,xz}", Arc::clone(&amp;passthrough))),
+        Box::new(ElfRule::new(Arc::clone(&amp;xdelta3))),
+    ];
+    let router = Arc::new(RouterEncoder::new(rules, Arc::clone(&amp;xdelta3)));
+
+    Arc::new(DefaultCompressor::new(storage, router))
+}
+
+fn compress_image(
+    storage:       Arc&lt;dyn image_delta_core::Storage&gt;,
+    base_root:     &amp;Path,
+    target_root:   &amp;Path,
+    image_id:      &amp;str,
+    base_image_id: Option&lt;&amp;str&gt;,
+) -&gt; image_delta_core::Result&lt;image_delta_core::CompressionStats&gt; {
+    let compressor = make_compressor(Arc::clone(&amp;storage));
+
+    let opts = CompressOptions {
+        image_id:              image_id.to_string(),
+        base_image_id:         base_image_id.map(str::to_string),
+        workers:               8,
+        passthrough_threshold: 1.0,
+    };
+
+    use image_delta_core::Compressor; // bring trait into scope
+    compressor.compress(base_root, target_root, opts)
+}
+
+fn decompress_image(
+    storage:    Arc&lt;dyn image_delta_core::Storage&gt;,
+    image_id:   &amp;str,
+    base_root:  &amp;Path,
+    output_dir: &amp;Path,
+) -&gt; image_delta_core::Result&lt;image_delta_core::DecompressionStats&gt; {
+    let compressor = make_compressor(Arc::clone(&amp;storage));
+
+    let opts = DecompressOptions {
+        image_id:  image_id.to_string(),
+        base_root: base_root.to_path_buf(),
+        workers:   8,
+    };
+
+    use image_delta_core::Compressor;
+    compressor.decompress(output_dir, opts)
+}
+<span class="boring">}</span></code></pre>
+<h2 id="verify-correctness"><a class="header" href="#verify-correctness">Verify correctness</a></h2>
+<p>After decompression, use <code>compare_dirs</code> from the test helpers to assert
+that the output matches the original target:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// in your integration test — copy compare_dirs from tests/common/mod.rs
+// or use the assertion helpers from fs_diff_integration.rs as a template
+
+let diffs = compare_dirs(&amp;target_root, &amp;output_dir);
+assert!(diffs.is_empty(), "decompression introduced differences: {diffs:#?}");
+<span class="boring">}</span></code></pre>
+<p>The comparison checks: file content (SHA-256), Unix mode, uid, gid, mtime
+(±1 s tolerance), file type, symlink targets, hardlink relationships, and
+extended attributes (<code>xattr</code>).</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="benchmarks"><a class="header" href="#benchmarks">Benchmarks</a></h1>
 <blockquote>

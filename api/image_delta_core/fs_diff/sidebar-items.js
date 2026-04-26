@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["DiffKind"],"fn":["diff_dirs"],"struct":["DiffResult","FileDiff"]};
+window.SIDEBAR_ITEMS = {"enum":["DiffKind"],"fn":["diff_dirs"],"struct":["DiffResult","FileDiff","TreeStats"]};

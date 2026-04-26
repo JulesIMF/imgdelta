@@ -57,7 +57,7 @@
 <a href=#57 id=57 data-nosnippet>57</a>        </span><span class="macro">unimplemented!</span>(<span class="string">"use RouterEncoder::select() to obtain the concrete encoder first"</span>)
 <a href=#58 id=58 data-nosnippet>58</a>    }
 <a href=#59 id=59 data-nosnippet>59</a>
-<a href=#60 id=60 data-nosnippet>60</a>    <span class="kw">fn </span>decode(<span class="kw-2">&amp;</span><span class="self">self</span>, _source: <span class="kw-2">&amp;</span>[u8], delta: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;u8&gt;&gt; {
+<a href=#60 id=60 data-nosnippet>60</a>    <span class="kw">fn </span>decode(<span class="kw-2">&amp;</span><span class="self">self</span>, _source: <span class="kw-2">&amp;</span>[u8], _delta: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;u8&gt;&gt; {
 <a href=#61 id=61 data-nosnippet>61</a>        <span class="comment">// Decoding is dispatched by algorithm_id stored in the manifest, not by
 <a href=#62 id=62 data-nosnippet>62</a>        // routing rules — so this path is never reached in production.
 <a href=#63 id=63 data-nosnippet>63</a>        </span><span class="macro">unimplemented!</span>(<span class="string">"decoder is selected by algorithm_id from the manifest, not by routing"</span>)

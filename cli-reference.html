@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d37a4208.js";
+            window.path_to_searchindex_js = "searchindex-e746d648.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -180,10 +180,111 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="cli-reference"><a class="header" href="#cli-reference">Cli Reference</a></h1>
-<blockquote>
-<p><em>To be written.</em></p>
-</blockquote>
+                        <h1 id="cli-reference"><a class="header" href="#cli-reference">CLI Reference</a></h1>
+<h2 id="global-flags"><a class="header" href="#global-flags">Global flags</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>-c, --config &lt;FILE&gt;</code></td><td>—</td><td>Path to TOML configuration file</td></tr>
+<tr><td><code>--log-level &lt;LEVEL&gt;</code></td><td><code>info</code></td><td>Override log level (<code>error</code>/<code>warn</code>/<code>info</code>/<code>debug</code>/<code>trace</code>)</td></tr>
+<tr><td><code>-h, --help</code></td><td>—</td><td>Print help</td></tr>
+<tr><td><code>-V, --version</code></td><td>—</td><td>Print version</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="imgdelta-compress"><a class="header" href="#imgdelta-compress"><code>imgdelta compress</code></a></h2>
+<p>Compress a new image relative to a base image and upload patches to S3.</p>
+<pre><code class="language-sh">imgdelta compress \
+  --image         &lt;PATH&gt;         # target filesystem root (or qcow2 path)
+  --image-id      &lt;ID&gt;           # unique ID for the new image
+  --base-image-id &lt;ID&gt;           # ID of the base image (omit for full backup)
+  [--image-format directory|qcow2]   # default: directory
+  [--workers      &lt;N&gt;]           # override config workers
+  --config        &lt;FILE&gt;
+</code></pre>
+<p><strong>Exit codes</strong>: <code>0</code> success, <code>1</code> error (message on stderr).</p>
+<hr>
+<h2 id="imgdelta-decompress"><a class="header" href="#imgdelta-decompress"><code>imgdelta decompress</code></a></h2>
+<p>Reconstruct an image from stored patches.</p>
+<pre><code class="language-sh">imgdelta decompress \
+  --image-id  &lt;ID&gt;      # image to reconstruct
+  --base-root &lt;PATH&gt;    # filesystem root of the base image
+  --output    &lt;PATH&gt;    # directory to write the reconstructed image
+  --config    &lt;FILE&gt;
+</code></pre>
+<p>The output directory is created if it does not exist. On completion all
+file attributes (mode, uid, gid, mtime, symlinks, hardlinks, xattrs) are
+identical to the original target filesystem.</p>
+<hr>
+<h2 id="imgdelta-image"><a class="header" href="#imgdelta-image"><code>imgdelta image</code></a></h2>
+<p>Image management subcommands.</p>
+<h3 id="imgdelta-image-status"><a class="header" href="#imgdelta-image-status"><code>imgdelta image status</code></a></h3>
+<pre><code class="language-sh">imgdelta image status --image-id &lt;ID&gt; --config &lt;FILE&gt;
+</code></pre>
+<p>Prints the lifecycle state of an image (<code>Pending</code> / <code>Compressing</code> /
+<code>Compressed</code> / <code>Failed: &lt;reason&gt;</code>).</p>
+<p>Exit code <code>1</code> if the image is not found.</p>
+<h3 id="imgdelta-image-list"><a class="header" href="#imgdelta-image-list"><code>imgdelta image list</code></a></h3>
+<pre><code class="language-sh">imgdelta image list [--format table|json] --config &lt;FILE&gt;
+</code></pre>
+<p>Lists all known images with their <code>image_id</code>, <code>base_image_id</code>, and status.</p>
+<hr>
+<h2 id="imgdelta-manifest"><a class="header" href="#imgdelta-manifest"><code>imgdelta manifest</code></a></h2>
+<p>Manifest inspection subcommands.</p>
+<h3 id="imgdelta-manifest-inspect"><a class="header" href="#imgdelta-manifest-inspect"><code>imgdelta manifest inspect</code></a></h3>
+<pre><code class="language-sh">imgdelta manifest inspect \
+  --image-id &lt;ID&gt; \
+  [--format msgpack|json]   # default: json
+  --config &lt;FILE&gt;
+</code></pre>
+<p>Downloads and prints the manifest for <code>image-id</code>. Use <code>--format json</code> for
+human-readable output or pipe to <code>jq</code>.</p>
+<h3 id="imgdelta-manifest-diff"><a class="header" href="#imgdelta-manifest-diff"><code>imgdelta manifest diff</code></a></h3>
+<pre><code class="language-sh">imgdelta manifest diff \
+  --from-image-id &lt;ID&gt; \
+  --to-image-id   &lt;ID&gt; \
+  --config &lt;FILE&gt;
+</code></pre>
+<p>Prints a summary of differences between two manifests.</p>
+<hr>
+<h2 id="imgdelta-debug-walkdir-debug-builds-only"><a class="header" href="#imgdelta-debug-walkdir-debug-builds-only"><code>imgdelta debug walkdir</code> <em>(debug builds only)</em></a></h2>
+<p>Available only when built without <code>--release</code> (<code>#[cfg(debug_assertions)]</code>).
+Useful for inspecting real directory pairs without a full compress cycle.</p>
+<pre><code class="language-sh">cargo build
+./target/debug/imgdelta debug walkdir &lt;OLD_PATH&gt; &lt;NEW_PATH&gt; [--show-metadata=true|false]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--show-metadata</code></td><td><code>true</code></td><td>Show <code>M</code> (metadata-only) lines</td></tr>
+</tbody>
+</table>
+</div>
+<p>Output format:</p>
+<pre><code>+ path/to/added/file
+- path/to/removed/file
+~ path/to/changed/file
+M path/to/metadata-only/file
+
+─── diff summary ────────────────────────
+  +  added:         N
+  -  removed:       N
+  ~  changed:       N
+  M  metadata-only: N
+  ─────────────────────────────────────────
+     total diffs:   N
+
+─── tree stats ──────────────────────────
+  old (base)    N files  X.X MiB  N dirs  N symlinks
+  new (target)  N files  X.X MiB  N dirs  N symlinks
+</code></pre>
 
                     </main>
 

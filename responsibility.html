@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d37a4208.js";
+            window.path_to_searchindex_js = "searchindex-e746d648.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -180,10 +180,65 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="responsibility"><a class="header" href="#responsibility">Responsibility</a></h1>
-<blockquote>
-<p><em>To be written.</em></p>
-</blockquote>
+                        <h1 id="responsibility-split"><a class="header" href="#responsibility-split">Responsibility Split</a></h1>
+<p>imgdelta is designed so that a cloud provider can embed <code>image-delta-core</code>
+as a library and supply their own storage backend, without modifying any
+algorithm code.</p>
+<h2 id="what-imgdelta-owns"><a class="header" href="#what-imgdelta-owns">What imgdelta owns</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Concern</th><th>Where</th></tr>
+</thead>
+<tbody>
+<tr><td>Filesystem walk and diff</td><td><code>image-delta-core::fs_diff</code></td></tr>
+<tr><td>Path similarity / rename detection</td><td><code>image-delta-core::path_match</code></td></tr>
+<tr><td>Binary delta encoding (xdelta3 FFI)</td><td><code>image-delta-core::encoders::vcdiff</code></td></tr>
+<tr><td>Text diff encoding (pure Rust Myers)</td><td><code>image-delta-core::encoders::text_diff</code></td></tr>
+<tr><td>Verbatim blob fallback</td><td><code>image-delta-core::encoders::passthrough</code></td></tr>
+<tr><td>File-type routing</td><td><code>image-delta-core::routing</code></td></tr>
+<tr><td>Manifest serialisation (MessagePack)</td><td><code>image-delta-core::manifest</code></td></tr>
+<tr><td>Compress/decompress orchestration</td><td><code>image-delta-core::compressor</code></td></tr>
+<tr><td><code>DirectoryFormat</code> (plain directory mount)</td><td><code>image-delta-core::formats::directory</code></td></tr>
+<tr><td><code>Qcow2Format</code> (qemu-nbd mount, feature-gated)</td><td><code>image-delta-core::formats::qcow2</code></td></tr>
+<tr><td>CLI binary <code>imgdelta</code></td><td><code>image-delta-cli</code></td></tr>
+<tr><td>S3 + PostgreSQL <code>Storage</code> impl</td><td><code>image-delta-cli::impls::s3_storage</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="what-the-provider-owns"><a class="header" href="#what-the-provider-owns">What the provider owns</a></h2>
+<p>A provider who embeds <code>image-delta-core</code> directly must supply:</p>
+<ol>
+<li><strong><code>impl Storage</code></strong> — plugs into any object store + metadata DB of their choice.</li>
+<li><strong><code>impl ImageFormat</code></strong> (optional) — if images use a format other than plain
+directories or qcow2, implement <code>mount()</code> and <code>pack()</code> accordingly.</li>
+<li><strong>Routing config</strong> — TOML rules or a programmatic <code>Vec&lt;Box&lt;dyn RoutingRule&gt;&gt;</code>
+passed to <code>RouterEncoder::new(rules, fallback)</code>.</li>
+</ol>
+<p>Everything else — the diff algorithm, xdelta3 FFI, path matching, manifest
+format, decompression order — is handled by the library.</p>
+<h2 id="trait-boundaries"><a class="header" href="#trait-boundaries">Trait boundaries</a></h2>
+<pre><code>             ┌─────────────────────────────────┐
+             │       image-delta-core           │
+             │                                 │
+  Storage ◀──┤ DefaultCompressor               │
+  (yours) ───▶  + diff_dirs                    │
+             │  + path_match                   │
+             │  + RouterEncoder → DeltaEncoder │
+             │  + Manifest serde               │
+             └─────────────────────────────────┘
+             ┌─────────────────────────────────┐
+             │       image-delta-cli            │
+             │                                 │
+             │  S3Storage (impl Storage)        │
+             │  CLI argument parsing            │
+             │  TOML config → RouterEncoder     │
+             └─────────────────────────────────┘
+</code></pre>
+<h2 id="provider-integration-example"><a class="header" href="#provider-integration-example">Provider integration example</a></h2>
+<p>See the <a href="integration.html">Provider Integration</a> chapter for a complete Rust
+example showing how to instantiate <code>DefaultCompressor</code> with a custom
+<code>Storage</code> implementation.</p>
 
                     </main>
 

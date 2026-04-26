@@ -59,5 +59,11 @@
 <a href=#59 id=59 data-nosnippet>59</a>    <span class="kw">fn </span>set_image_status(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str, status: ImageStatus) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
 <a href=#60 id=60 data-nosnippet>60</a>
 <a href=#61 id=61 data-nosnippet>61</a>    <span class="kw">fn </span>list_images(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;ImageMeta&gt;&gt;;
-<a href=#62 id=62 data-nosnippet>62</a>}
+<a href=#62 id=62 data-nosnippet>62</a>
+<a href=#63 id=63 data-nosnippet>63</a>    <span class="doccomment">/// Upload the patches tar (or tar.gz) archive for `image_id`.
+<a href=#64 id=64 data-nosnippet>64</a>    </span><span class="kw">fn </span>upload_patches(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str, data: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#65 id=65 data-nosnippet>65</a>
+<a href=#66 id=66 data-nosnippet>66</a>    <span class="doccomment">/// Download the patches tar (or tar.gz) archive for `image_id`.
+<a href=#67 id=67 data-nosnippet>67</a>    </span><span class="kw">fn </span>download_patches(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;u8&gt;&gt;;
+<a href=#68 id=68 data-nosnippet>68</a>}
 </code></pre></div></section></main></body></html>

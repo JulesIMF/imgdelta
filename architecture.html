@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d37a4208.js";
+            window.path_to_searchindex_js = "searchindex-e746d648.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -181,9 +181,150 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="architecture"><a class="header" href="#architecture">Architecture</a></h1>
-<blockquote>
-<p><em>To be written.</em></p>
-</blockquote>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>imgdelta operates at the <strong>filesystem level</strong>, not at the block device level.
+Instead of computing a binary diff of a raw <code>.qcow2</code> file, it walks both
+image filesystems, detects per-file changes, and encodes each file
+individually using the most appropriate algorithm.</p>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                         compress()                                  │
+│                                                                     │
+│  base FS ──┐                                                        │
+│            ├──▶ diff_dirs() ──▶ path_match() ──▶ RouterEncoder      │
+│  new FS  ──┘         │               │               │             │
+│                       │               │               ▼             │
+│                    DiffResult     rename         encode() ──▶ blob  │
+│                    (4 kinds)      pairs          or patch           │
+│                                                       │             │
+│                                                       ▼             │
+│                                                   Storage           │
+│                                              (S3 + PostgreSQL)      │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="crate-split"><a class="header" href="#crate-split">Crate split</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Type</th><th>Contains</th></tr>
+</thead>
+<tbody>
+<tr><td><code>image-delta-core</code></td><td>library</td><td>All algorithms, traits, data structures</td></tr>
+<tr><td><code>image-delta-cli</code></td><td>binary</td><td>CLI, S3/PostgreSQL <code>Storage</code>, TOML config wiring</td></tr>
+</tbody>
+</table>
+</div>
+<p>The library has zero dependencies on AWS SDK, <code>sqlx</code>, or any other I/O
+framework. A provider can embed <code>image-delta-core</code> directly and supply their
+own <code>Storage</code> implementation.</p>
+<h2 id="module-map--image-delta-core"><a class="header" href="#module-map--image-delta-core">Module map — <code>image-delta-core</code></a></h2>
+<pre><code>image-delta-core/src/
+├── lib.rs              pub use; crate-level doc
+├── encoder.rs          trait DeltaEncoder { encode, decode, algorithm_id }
+├── storage.rs          trait Storage (upload/download blobs, patches, manifests)
+├── format.rs           trait ImageFormat + MountHandle
+├── compressor.rs       trait Compressor + struct DefaultCompressor
+├── routing.rs          RouterEncoder, GlobRule, ElfRule, SizeRule, MagicRule
+├── manifest.rs         Manifest, Entry, BlobRef, PatchRef, Metadata (MessagePack)
+├── error.rs            Error enum, Result alias
+├── scheduler.rs        WorkQueue&lt;T&gt; — thread-safe FIFO (wired up in Phase 5)
+├── encoders/
+│   ├── vcdiff/         Xdelta3Encoder — only file with unsafe (FFI to xdelta3.c)
+│   ├── passthrough/    PassthroughEncoder — stores file verbatim
+│   └── text_diff/      TextDiffEncoder — Myers line diff (pure Rust)
+├── formats/
+│   ├── directory.rs    DirectoryFormat — mount = return the dir as-is
+│   └── qcow2.rs        Qcow2Format — qemu-nbd + mount (feature = "qcow2")
+├── fs_diff/            diff_dirs() → DiffResult, TreeStats
+└── path_match/         find_best_matches() — bijective rename detection
+</code></pre>
+<h2 id="data-flow--compression"><a class="header" href="#data-flow--compression">Data flow — compression</a></h2>
+<ol>
+<li>
+<p><strong><code>diff_dirs(base, target)</code></strong> — walks both trees with <code>walkdir</code>
+(symlinks not followed). Compares: SHA-256 (skipped when mtime+size match),
+mode, uid, gid, mtime. Returns <code>DiffResult { diffs, base: TreeStats, target: TreeStats }</code>.</p>
+</li>
+<li>
+<p><strong><code>find_best_matches(removed, added)</code></strong> — scores path similarity with a
+weighted edit distance. Digits get lower substitution cost (version bumps
+are cheap). Returns a bijective set of <code>PathMatch { source_path, target_path, score }</code>.</p>
+</li>
+<li>
+<p><strong><code>RouterEncoder::select(file_info)</code></strong> — evaluates <code>[[routing]]</code> rules in
+order. First rule whose predicate matches wins. Fallback = <code>default_encoder</code>.</p>
+</li>
+<li>
+<p><strong><code>DeltaEncoder::encode(src, target)</code></strong> — produces a binary delta.
+If <code>delta.len() &gt;= source.len() * passthrough_threshold</code>, the delta is
+discarded and the file is stored verbatim (<code>PassthroughEncoder</code>).</p>
+</li>
+<li>
+<p><strong><code>Storage::upload_blob(data)</code></strong> — stores bytes by content UUID in S3.
+<code>Storage::upload_manifest(image_id, bytes)</code> stores the MessagePack manifest.</p>
+</li>
+</ol>
+<h2 id="data-flow--decompression"><a class="header" href="#data-flow--decompression">Data flow — decompression</a></h2>
+<ol>
+<li>Download manifest → deserialise.</li>
+<li>Download patches tar from S3 → extract to temp directory.</li>
+<li>For each <code>Entry</code> in dependency order:
+<ul>
+<li><code>Added</code> → copy blob to output path</li>
+<li><code>BlobPatch</code> → <code>decode(base_blob, patch)</code> → write output</li>
+<li><code>Removed</code> → skip</li>
+<li><code>MetadataOnly</code> → apply mode/uid/gid/mtime from base, write to output</li>
+<li><code>Hardlink</code> → <code>fs::hard_link(target, output_path)</code></li>
+</ul>
+</li>
+<li>Apply all metadata (mode, uid, gid, mtime) after content phase.</li>
+</ol>
+<h2 id="manifest-format"><a class="header" href="#manifest-format">Manifest format</a></h2>
+<p>Manifests are serialised with <strong>MessagePack</strong> (<code>rmp-serde</code>, <code>to_vec_named</code>).
+Each manifest consists of a <code>ManifestHeader</code> followed by a <code>Vec&lt;Entry&gt;</code>.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>struct ManifestHeader {
+    version:            u32,      // MANIFEST_VERSION = 1
+    image_id:           String,
+    base_image_id:      Option&lt;String&gt;,
+    algorithm_id:       String,   // e.g. "xdelta3"
+    patches_compressed: bool,
+}
+
+struct Entry {
+    path:            String,
+    entry_type:      EntryType,   // Added | Removed | Changed | MetadataOnly | Hardlink
+    blob:            Option&lt;BlobRef&gt;,
+    patch:           Option&lt;PatchRef&gt;,
+    metadata:        Option&lt;Metadata&gt;,
+    hardlink_target: Option&lt;String&gt;,
+}
+<span class="boring">}</span></code></pre>
+<p><code>None</code> fields are skipped during serialisation (<code>skip_serializing_if</code>),
+keeping the manifest compact. JSON equivalent is available for debugging
+via <code>manifest inspect --format json</code>.</p>
+<h2 id="encoding-strategy-per-file-type"><a class="header" href="#encoding-strategy-per-file-type">Encoding strategy per file type</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>File type</th><th>Default encoder</th><th>Rationale</th></tr>
+</thead>
+<tbody>
+<tr><td>ELF binaries (magic <code>7fELF</code>)</td><td><code>xdelta3</code></td><td>VCDIFF excels at binary similarity</td></tr>
+<tr><td>Config/script (<code>*.conf</code>, <code>*.py</code>, …)</td><td><code>text_diff</code></td><td>Line-level diff is more compact</td></tr>
+<tr><td>Already compressed (<code>*.gz</code>, <code>*.zst</code>, …)</td><td><code>passthrough</code></td><td>Re-encoding wastes CPU</td></tr>
+<tr><td>Everything else</td><td><code>xdelta3</code> (default)</td><td>Safe fallback</td></tr>
+</tbody>
+</table>
+</div>
+<p>If a delta is larger than the original (<code>ratio ≥ passthrough_threshold</code>),
+the delta is silently replaced by a verbatim blob — the <code>algorithm_id</code>
+<code>"passthrough"</code> is recorded in the manifest so decompression is symmetric.</p>
+<h2 id="concurrency-model"><a class="header" href="#concurrency-model">Concurrency model</a></h2>
+<p>Phase 4 runs single-threaded. Phase 5 will wire <code>WorkQueue&lt;T&gt;</code> + N worker
+threads (one <code>Xd3Context</code> per thread — the xdelta3 context is not <code>Send</code>).
+The scheduler is an <code>Arc&lt;Mutex&lt;VecDeque&lt;WorkItem&gt;&gt;&gt;</code> + condvar; no tokio
+or async in the hot path.</p>
 
                     </main>
 
