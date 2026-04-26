@@ -7,6 +7,7 @@ description = "Core library for per-file delta compression of cloud OS images"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+num_enum = "0.7"
 serde_bytes = "0.11"
 rmp-serde = "1"
 serde_json = "1"
@@ -27,4 +28,4 @@ cc = "1"
 
 [features]
 default = []
-qcow2 = []   # Qcow2Format — requires Linux + qemu-nbd in PATH
+qcow2 = []   # Qcow2Image — requires Linux + qemu-nbd in PATH
