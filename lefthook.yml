@@ -24,3 +24,7 @@ pre-commit:
       glob: "*.md"
       run: prettier --write {staged_files}
       stage_fixed: true
+
+    clippy:
+      glob: "*.rs"
+      run: cargo clippy --all-targets -- -D warnings
