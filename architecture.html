@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e746d648.js";
+            window.path_to_searchindex_js = "searchindex-565f80e4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -219,9 +219,10 @@ own <code>Storage</code> implementation.</p>
 <h2 id="module-map--image-delta-core"><a class="header" href="#module-map--image-delta-core">Module map — <code>image-delta-core</code></a></h2>
 <pre><code>image-delta-core/src/
 ├── lib.rs              pub use; crate-level doc
-├── encoder.rs          trait DeltaEncoder { encode, decode, algorithm_id }
+├── algorithm.rs        AlgorithmCode (u8 enum) + FilePatch
+├── encoder.rs          trait PatchEncoder { encode→FilePatch, decode, algorithm_code, algorithm_id }
 ├── storage.rs          trait Storage (upload/download blobs, patches, manifests)
-├── format.rs           trait ImageFormat + MountHandle
+├── image.rs           trait Image + MountHandle
 ├── compressor.rs       trait Compressor + struct DefaultCompressor
 ├── routing.rs          RouterEncoder, GlobRule, ElfRule, SizeRule, MagicRule
 ├── manifest.rs         Manifest, Entry, BlobRef, PatchRef, Metadata (MessagePack)
@@ -232,8 +233,8 @@ own <code>Storage</code> implementation.</p>
 │   ├── passthrough/    PassthroughEncoder — stores file verbatim
 │   └── text_diff/      TextDiffEncoder — Myers line diff (pure Rust)
 ├── formats/
-│   ├── directory.rs    DirectoryFormat — mount = return the dir as-is
-│   └── qcow2.rs        Qcow2Format — qemu-nbd + mount (feature = "qcow2")
+│   ├── directory.rs    DirectoryImage — mount = return the dir as-is
+│   └── qcow2.rs        Qcow2Image — qemu-nbd + mount (feature = "qcow2")
 ├── fs_diff/            diff_dirs() → DiffResult, TreeStats
 └── path_match/         find_best_matches() — bijective rename detection
 </code></pre>
@@ -254,12 +255,14 @@ are cheap). Returns a bijective set of <code>PathMatch { source_path, target_pat
 order. First rule whose predicate matches wins. Fallback = <code>default_encoder</code>.</p>
 </li>
 <li>
-<p><strong><code>DeltaEncoder::encode(src, target)</code></strong> — produces a binary delta.
-If <code>delta.len() &gt;= source.len() * passthrough_threshold</code>, the delta is
-discarded and the file is stored verbatim (<code>PassthroughEncoder</code>).</p>
+<p><strong><code>PatchEncoder::encode(src, target) → FilePatch</code></strong> — produces a file-level
+binary patch. <code>FilePatch</code> bundles the patch bytes with an <code>AlgorithmCode</code>
+so <code>RouterEncoder</code> can record the correct decoder in <code>PatchRef</code> without
+a second call. If <code>patch.len() &gt;= source.len() * passthrough_threshold</code>,
+the patch is discarded and the file is stored verbatim (<code>PassthroughEncoder</code>).</p>
 </li>
 <li>
-<p><strong><code>Storage::upload_blob(data)</code></strong> — stores bytes by content UUID in S3.
+<p><strong><code>Storage::upload_blob(sha256, data)</code></strong> — stores bytes by content UUID.
 <code>Storage::upload_manifest(image_id, bytes)</code> stores the MessagePack manifest.</p>
 </li>
 </ol>
@@ -278,22 +281,42 @@ discarded and the file is stored verbatim (<code>PassthroughEncoder</code>).</p>
 </li>
 <li>Apply all metadata (mode, uid, gid, mtime) after content phase.</li>
 </ol>
+<h2 id="terminology"><a class="header" href="#terminology">Terminology</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Term</th><th>Level</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>delta</strong></td><td>image</td><td>Full filesystem diff produced by <code>DefaultCompressor</code> (compress → decompress)</td></tr>
+<tr><td><strong>patch</strong></td><td>file</td><td>Per-file binary diff produced by <code>PatchEncoder::encode</code></td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="manifest-format"><a class="header" href="#manifest-format">Manifest format</a></h2>
 <p>Manifests are serialised with <strong>MessagePack</strong> (<code>rmp-serde</code>, <code>to_vec_named</code>).
-Each manifest consists of a <code>ManifestHeader</code> followed by a <code>Vec&lt;Entry&gt;</code>.</p>
+Each manifest consists of a <code>ManifestHeader</code> followed by a <code>Vec&lt;Entry&gt;</code>.
+Version is currently <code>2</code>.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>struct ManifestHeader {
-    version:            u32,      // MANIFEST_VERSION = 1
+    version:            u32,      // MANIFEST_VERSION = 2
     image_id:           String,
     base_image_id:      Option&lt;String&gt;,
-    algorithm_id:       String,   // e.g. "xdelta3"
+    format:             String,   // e.g. "directory"
     patches_compressed: bool,
+}
+
+struct PatchRef {
+    archive_entry:  String,          // member filename in patches.tar
+    sha256:         String,          // hex SHA-256 of patch bytes
+    algorithm_code: AlgorithmCode,   // u8: 0x00=passthrough, 0x01=xdelta3, 0x02=text-diff, 0xFF=extended
+    algorithm_id:   Option&lt;String&gt;,  // set only when algorithm_code == Extended
 }
 
 struct Entry {
     path:            String,
-    entry_type:      EntryType,   // Added | Removed | Changed | MetadataOnly | Hardlink
+    entry_type:      EntryType,   // File | Directory | Symlink | Hardlink | Other
     blob:            Option&lt;BlobRef&gt;,
     patch:           Option&lt;PatchRef&gt;,
     metadata:        Option&lt;Metadata&gt;,

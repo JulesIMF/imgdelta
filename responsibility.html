@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e746d648.js";
+            window.path_to_searchindex_js = "searchindex-565f80e4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -199,8 +199,8 @@ algorithm code.</p>
 <tr><td>File-type routing</td><td><code>image-delta-core::routing</code></td></tr>
 <tr><td>Manifest serialisation (MessagePack)</td><td><code>image-delta-core::manifest</code></td></tr>
 <tr><td>Compress/decompress orchestration</td><td><code>image-delta-core::compressor</code></td></tr>
-<tr><td><code>DirectoryFormat</code> (plain directory mount)</td><td><code>image-delta-core::formats::directory</code></td></tr>
-<tr><td><code>Qcow2Format</code> (qemu-nbd mount, feature-gated)</td><td><code>image-delta-core::formats::qcow2</code></td></tr>
+<tr><td><code>DirectoryImage</code> (plain directory mount)</td><td><code>image-delta-core::formats::directory</code></td></tr>
+<tr><td><code>Qcow2Image</code> (qemu-nbd mount, feature-gated)</td><td><code>image-delta-core::formats::qcow2</code></td></tr>
 <tr><td>CLI binary <code>imgdelta</code></td><td><code>image-delta-cli</code></td></tr>
 <tr><td>S3 + PostgreSQL <code>Storage</code> impl</td><td><code>image-delta-cli::impls::s3_storage</code></td></tr>
 </tbody>
@@ -210,7 +210,7 @@ algorithm code.</p>
 <p>A provider who embeds <code>image-delta-core</code> directly must supply:</p>
 <ol>
 <li><strong><code>impl Storage</code></strong> — plugs into any object store + metadata DB of their choice.</li>
-<li><strong><code>impl ImageFormat</code></strong> (optional) — if images use a format other than plain
+<li><strong><code>impl Image</code></strong> (optional) — if images use a format other than plain
 directories or qcow2, implement <code>mount()</code> and <code>pack()</code> accordingly.</li>
 <li><strong>Routing config</strong> — TOML rules or a programmatic <code>Vec&lt;Box&lt;dyn RoutingRule&gt;&gt;</code>
 passed to <code>RouterEncoder::new(rules, fallback)</code>.</li>

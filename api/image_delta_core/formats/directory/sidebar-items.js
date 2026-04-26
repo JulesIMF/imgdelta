@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["DirectoryFormat"]};
+window.SIDEBAR_ITEMS = {"struct":["DirectoryImage"]};

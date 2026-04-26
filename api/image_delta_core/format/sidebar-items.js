@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"struct":["SimpleMountHandle"],"trait":["ImageFormat","MountHandle"]};

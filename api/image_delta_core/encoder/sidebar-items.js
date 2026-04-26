@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"trait":["DeltaEncoder"]};
+window.SIDEBAR_ITEMS = {"trait":["PatchEncoder"]};
