@@ -16,11 +16,11 @@ pub trait MountHandle: Send {
 ///
 /// # Implementors
 ///
-/// - [`DirectoryFormat`]: a plain directory; no mounting needed. Used in tests.
-/// - `Qcow2Format` (behind `feature = "qcow2"`): mounts via `qemu-nbd`.
+/// - [`DirectoryImage`]: a plain directory; no mounting needed. Used in tests.
+/// - `Qcow2Image` (behind `feature = "qcow2"`): mounts via `qemu-nbd`.
 ///
-/// [`DirectoryFormat`]: crate::DirectoryFormat
-pub trait ImageFormat: Send + Sync {
+/// [`DirectoryImage`]: crate::DirectoryImage
+pub trait Image: Send + Sync {
     /// Short name stored in the manifest header.
     fn format_name(&self) -> &'static str;
 
@@ -36,21 +36,21 @@ pub trait ImageFormat: Send + Sync {
     /// Pack the filesystem tree rooted at `source_dir` into a container file
     /// (or directory) at `output_path`.
     ///
-    /// For [`DirectoryFormat`] this is a recursive copy.  For container formats
+    /// For [`DirectoryImage`] this is a recursive copy.  For container formats
     /// like qcow2 this would create the image file.
     ///
     /// # Errors
     ///
     /// Returns [`crate::Error::Format`] if packing fails.
     ///
-    /// [`DirectoryFormat`]: crate::DirectoryFormat
+    /// [`DirectoryImage`]: crate::DirectoryImage
     fn pack(&self, source_dir: &Path, output_path: &Path) -> crate::Result<()>;
 }
 
 /// Simple [`MountHandle`] that just wraps a [`PathBuf`].  Used by
-/// [`DirectoryFormat`] and in tests.
+/// [`DirectoryImage`] and in tests.
 ///
-/// [`DirectoryFormat`]: crate::DirectoryFormat
+/// [`DirectoryImage`]: crate::DirectoryImage
 pub struct SimpleMountHandle {
     root: PathBuf,
 }

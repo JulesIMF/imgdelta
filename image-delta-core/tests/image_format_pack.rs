@@ -1,5 +1,5 @@
-/// Tests for [`ImageFormat::pack`] on [`DirectoryFormat`].
-use image_delta_core::{DirectoryFormat, ImageFormat};
+/// Tests for [`Image::pack`] on [`DirectoryImage`].
+use image_delta_core::{DirectoryImage, Image};
 use std::fs;
 use tempfile::tempdir;
 
@@ -16,7 +16,7 @@ fn test_directory_format_pack_copies_tree() {
     fs::write(source.path().join("top.txt"), b"top level").unwrap();
     fs::write(source.path().join("sub").join("nested.txt"), b"nested").unwrap();
 
-    let fmt = DirectoryFormat::new();
+    let fmt = DirectoryImage::new();
     fmt.pack(source.path(), &out_path)
         .expect("pack must succeed");
 
@@ -53,7 +53,7 @@ fn test_directory_format_pack_replaces_existing_output() {
 
     fs::write(source.path().join("fresh.txt"), b"fresh").unwrap();
 
-    let fmt = DirectoryFormat::new();
+    let fmt = DirectoryImage::new();
     fmt.pack(source.path(), &out_path)
         .expect("pack must succeed");
 
@@ -75,7 +75,7 @@ fn test_directory_format_pack_empty_source() {
     let output = tempdir().unwrap();
     let out_path = output.path().join("empty_out");
 
-    let fmt = DirectoryFormat::new();
+    let fmt = DirectoryImage::new();
     fmt.pack(source.path(), &out_path)
         .expect("pack empty source must succeed");
 
@@ -97,7 +97,7 @@ fn test_directory_format_mount_after_pack() {
 
     fs::write(source.path().join("file.txt"), b"data").unwrap();
 
-    let fmt = DirectoryFormat::new();
+    let fmt = DirectoryImage::new();
     fmt.pack(source.path(), &out_path).unwrap();
 
     // Mounting the packed output must return the correct root.

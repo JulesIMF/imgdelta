@@ -1,27 +1,27 @@
-use crate::{format::SimpleMountHandle, ImageFormat, MountHandle, Result};
+use crate::{image::SimpleMountHandle, Image, MountHandle, Result};
 use std::path::Path;
 use walkdir::WalkDir;
 
-/// [`ImageFormat`] implementation for a plain directory.
+/// [`Image`] implementation for a plain directory.
 ///
 /// "Mounting" is a no-op: the directory is used as-is.  No external tools
 /// required.  This is the format used for all L1 and L2 tests, and for
 /// providers whose pipeline already extracts images to directories.
-pub struct DirectoryFormat;
+pub struct DirectoryImage;
 
-impl DirectoryFormat {
+impl DirectoryImage {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for DirectoryFormat {
+impl Default for DirectoryImage {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ImageFormat for DirectoryFormat {
+impl Image for DirectoryImage {
     fn format_name(&self) -> &'static str {
         "directory"
     }
