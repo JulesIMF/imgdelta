@@ -20,6 +20,7 @@ thiserror = "1"
 tempfile = "3"
 filetime = "0.2.27"
 xattr = "1"
+diffy = "0.3"
 
 [build-dependencies]
 cc = "1"
