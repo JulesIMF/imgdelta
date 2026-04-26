@@ -29,10 +29,27 @@ pub enum DiffKind {
     MetadataOnly,
 }
 
+/// Per-tree aggregate statistics collected while walking.
+#[derive(Debug, Default, Clone)]
+pub struct TreeStats {
+    /// Number of regular files.
+    pub files: usize,
+    /// Number of directories (the root itself is excluded).
+    pub dirs: usize,
+    /// Number of symbolic links.
+    pub symlinks: usize,
+    /// Total size in bytes of all regular files.
+    pub total_bytes: u64,
+}
+
 /// Result of comparing two directory trees.
 #[derive(Debug, Default)]
 pub struct DiffResult {
     pub diffs: Vec<FileDiff>,
+    /// Statistics about the base (old) tree.
+    pub base: TreeStats,
+    /// Statistics about the target (new) tree.
+    pub target: TreeStats,
 }
 
 impl DiffResult {
@@ -88,6 +105,9 @@ struct FsEntry {
     /// For symlinks: the link target string.
     link_target: Option<String>,
 
+    /// Size in bytes (only meaningful for regular files; 0 for dirs/symlinks).
+    size: u64,
+
     #[allow(dead_code)]
     /// `(device, inode)` used for hard-link grouping.
     dev_ino: (u64, u64),
@@ -118,6 +138,9 @@ struct FsEntry {
 pub fn diff_dirs(base: &Path, target: &Path) -> crate::Result<DiffResult> {
     let base_map = snapshot(base)?;
     let target_map = snapshot(target)?;
+
+    let base_stats = tree_stats(&base_map);
+    let target_stats = tree_stats(&target_map);
 
     let mut diffs = Vec::new();
 
@@ -151,7 +174,11 @@ pub fn diff_dirs(base: &Path, target: &Path) -> crate::Result<DiffResult> {
         }
     }
 
-    Ok(DiffResult { diffs })
+    Ok(DiffResult {
+        diffs,
+        base: base_stats,
+        target: target_stats,
+    })
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -216,6 +243,7 @@ fn snapshot(root: &Path) -> crate::Result<HashMap<String, FsEntry>> {
             mtime_secs: meta.mtime(),
             sha256,
             link_target,
+            size: if is_file { meta.size() } else { 0 },
             dev_ino: (meta.dev(), meta.ino()),
             nlink: meta.nlink(),
         };
@@ -224,6 +252,22 @@ fn snapshot(root: &Path) -> crate::Result<HashMap<String, FsEntry>> {
     }
 
     Ok(map)
+}
+
+/// Compute aggregate [`TreeStats`] from a snapshot map.
+fn tree_stats(map: &HashMap<String, FsEntry>) -> TreeStats {
+    let mut stats = TreeStats::default();
+    for entry in map.values() {
+        if entry.is_file {
+            stats.files += 1;
+            stats.total_bytes += entry.size;
+        } else if entry.is_dir {
+            stats.dirs += 1;
+        } else if entry.is_symlink {
+            stats.symlinks += 1;
+        }
+    }
+    stats
 }
 
 /// Compute the SHA-256 of a file's content.
@@ -557,5 +601,35 @@ mod tests {
         let result = diff_dirs(base.path(), target.path()).unwrap();
         assert_kind(&result, "a/b/c/new.txt", DiffKind::Added);
         assert_no_diff(&result, "a/b/c/deep.txt");
+    }
+
+    /// `diff_dirs` itself does not detect renames — it reports the old path as
+    /// `Removed` and the new path as `Added`.  The rename is resolved later by
+    /// `DefaultCompressor` via `find_best_matches`.  This test verifies that
+    /// the raw diff correctly surfaces both sides of a version-bump rename.
+    #[test]
+    fn test_rename_detection() {
+        let base = TempDir::new().unwrap();
+        let target = TempDir::new().unwrap();
+
+        write(base.path(), "lib/libfoo-2.31.so", b"ELF binary placeholder");
+        write(
+            target.path(),
+            "lib/libfoo-2.35.so",
+            b"ELF binary placeholder",
+        );
+
+        let result = diff_dirs(base.path(), target.path()).unwrap();
+
+        // The old path must appear as Removed.
+        assert_kind(&result, "lib/libfoo-2.31.so", DiffKind::Removed);
+        // The new path must appear as Added.
+        assert_kind(&result, "lib/libfoo-2.35.so", DiffKind::Added);
+
+        // No Changed or MetadataOnly entries — the file did not change in-place.
+        assert!(
+            result.changed().next().is_none() && result.metadata_only().next().is_none(),
+            "expected no Changed/MetadataOnly in a pure rename scenario"
+        );
     }
 }
