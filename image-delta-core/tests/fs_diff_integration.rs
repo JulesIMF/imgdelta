@@ -304,12 +304,12 @@ fn test_all_four_diff_kinds() {
 fn test_nested_package_upgrade() {
     let s = Scenario::new();
 
-    s.write_both("usr/bin/ls", &vec![0xEF; 1024])
-        .write_base("usr/bin/grep", &vec![0xAB; 2048])
-        .write_target("usr/bin/grep", &vec![0xCD; 2048])
+    s.write_both("usr/bin/ls", &[0xEF; 1024])
+        .write_base("usr/bin/grep", &[0xAB; 2048])
+        .write_target("usr/bin/grep", &[0xCD; 2048])
         .age_base("usr/bin/grep")
-        .write_base("usr/lib/libfoo-2.31.so", &vec![0x7F, 0x45, 0x4C, 0x46])
-        .write_target("usr/lib/libfoo-2.35.so", &vec![0x7F, 0x45, 0x4C, 0x46])
+        .write_base("usr/lib/libfoo-2.31.so", &[0x7F, 0x45, 0x4C, 0x46])
+        .write_target("usr/lib/libfoo-2.35.so", &[0x7F, 0x45, 0x4C, 0x46])
         .write_base("etc/passwd", b"root:x:0:0:root:/root:/bin/bash\n")
         .write_target(
             "etc/passwd",
@@ -561,14 +561,14 @@ fn test_tree_stats_are_populated() {
     let s = Scenario::new();
 
     // base: 3 regular files, 1 symlink, 1 subdir
-    s.write_base("a.txt", &vec![0u8; 100])
-        .write_base("b.txt", &vec![0u8; 200])
-        .write_base("sub/c.txt", &vec![0u8; 300]) // sub/ is auto-created
+    s.write_base("a.txt", &[0u8; 100])
+        .write_base("b.txt", &[0u8; 200])
+        .write_base("sub/c.txt", &[0u8; 300]) // sub/ is auto-created
         .symlink_base("link", "a.txt");
 
     // target: 2 regular files (a.txt + d.txt), 1 symlink
-    s.write_target("a.txt", &vec![0u8; 100])
-        .write_target("d.txt", &vec![0u8; 400])
+    s.write_target("a.txt", &[0u8; 100])
+        .write_target("d.txt", &[0u8; 400])
         .symlink_target("link", "a.txt");
 
     let result = s.diff_forward();
