@@ -59,4 +59,10 @@ pub trait Storage: Send + Sync {
     fn set_image_status(&self, image_id: &str, status: ImageStatus) -> crate::Result<()>;
 
     fn list_images(&self) -> crate::Result<Vec<ImageMeta>>;
+
+    /// Upload the patches tar (or tar.gz) archive for `image_id`.
+    fn upload_patches(&self, image_id: &str, data: &[u8]) -> crate::Result<()>;
+
+    /// Download the patches tar (or tar.gz) archive for `image_id`.
+    fn download_patches(&self, image_id: &str) -> crate::Result<Vec<u8>>;
 }

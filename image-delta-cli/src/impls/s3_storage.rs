@@ -63,4 +63,12 @@ impl Storage for S3Storage {
     fn list_images(&self) -> Result<Vec<ImageMeta>> {
         todo!("Phase 5: sqlx SELECT from images")
     }
+
+    fn upload_patches(&self, _image_id: &str, _data: &[u8]) -> Result<()> {
+        todo!("Phase 5: aws-sdk-s3 put_object patches.tar")
+    }
+
+    fn download_patches(&self, _image_id: &str) -> Result<Vec<u8>> {
+        todo!("Phase 5: aws-sdk-s3 get_object patches.tar")
+    }
 }
