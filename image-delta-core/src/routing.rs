@@ -1,15 +1,17 @@
-use crate::{DeltaEncoder, Entry, Result};
+use crate::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder, Result};
 use std::sync::Arc;
 
-/// Context passed to routing rules so they can inspect file metadata and
-/// raw bytes without loading the full file content.
+/// Context passed to routing rules for per-file encoder selection.
 pub struct FileInfo<'a> {
-    pub entry: &'a Entry,
+    /// Path relative to the filesystem root (forward-slash separated).
+    pub path: &'a str,
+    /// Uncompressed file size in bytes.
+    pub size: u64,
     /// First up to 16 bytes of the file content, for magic-byte detection.
     pub header: &'a [u8],
 }
 
-/// A single routing rule that maps a file to a [`DeltaEncoder`].
+/// A single routing rule that maps a file to a [`PatchEncoder`].
 ///
 /// Rules are evaluated in order by [`RouterEncoder`].  The first rule whose
 /// [`accept`] returns `true` wins.
@@ -20,28 +22,36 @@ pub trait RoutingRule: Send + Sync {
     fn accept(&self, file: &FileInfo<'_>) -> bool;
 
     /// The encoder to use when this rule matches.
-    fn encoder(&self) -> Arc<dyn DeltaEncoder>;
+    fn encoder(&self) -> Arc<dyn PatchEncoder>;
 }
 
-/// A [`DeltaEncoder`] that delegates to the first matching [`RoutingRule`],
+/// A [`PatchEncoder`] that delegates to the first matching [`RoutingRule`],
 /// falling back to a default encoder if no rule matches.
 ///
-/// Note: `RouterEncoder::encode` and `::decode` require `FileInfo` context that
-/// is not available through the raw `DeltaEncoder` interface.  The compressor
-/// uses [`RouterEncoder::select`] directly; the `DeltaEncoder` impl is provided
-/// for trait-object compatibility only.
+/// Unlike concrete encoders, `RouterEncoder` does not have a fixed algorithm —
+/// `algorithm_code()` returns `None` to reflect this.  Use [`select`] to
+/// inspect which encoder would be chosen for a given file, or simply call
+/// [`encode`] and let the router dispatch internally.
+///
+/// [`select`]: RouterEncoder::select
+/// [`encode`]: PatchEncoder::encode
 pub struct RouterEncoder {
     rules: Vec<Box<dyn RoutingRule>>,
-    fallback: Arc<dyn DeltaEncoder>,
+    fallback: Arc<dyn PatchEncoder>,
 }
 
 impl RouterEncoder {
-    pub fn new(rules: Vec<Box<dyn RoutingRule>>, fallback: Arc<dyn DeltaEncoder>) -> Self {
+    pub fn new(rules: Vec<Box<dyn RoutingRule>>, fallback: Arc<dyn PatchEncoder>) -> Self {
         Self { rules, fallback }
     }
 
     /// Select the encoder for a given file, evaluating rules in order.
-    pub fn select(&self, file: &FileInfo<'_>) -> Arc<dyn DeltaEncoder> {
+    ///
+    /// Prefer calling [`PatchEncoder::encode`] on `RouterEncoder` directly —
+    /// that builds a [`FileInfo`] from the [`EncodeRequest`] and calls this
+    /// method internally.  Use `select` only when you need to inspect the
+    /// chosen encoder without encoding.
+    pub fn select(&self, file: &FileInfo<'_>) -> Arc<dyn PatchEncoder> {
         for rule in &self.rules {
             if rule.accept(file) {
                 return rule.encoder();
@@ -49,18 +59,72 @@ impl RouterEncoder {
         }
         Arc::clone(&self.fallback)
     }
+
+    /// Find a decoder matching `code` (or `id` when `code == Extended`).
+    ///
+    /// Checks the fallback encoder and all rule encoders in order.
+    /// Returns `None` if no matching encoder is registered.
+    pub fn find_decoder(
+        &self,
+        code: AlgorithmCode,
+        id: Option<&str>,
+    ) -> Option<Arc<dyn PatchEncoder>> {
+        let all = std::iter::once(Arc::clone(&self.fallback))
+            .chain(self.rules.iter().map(|r| r.encoder()));
+        for enc in all {
+            if code == AlgorithmCode::Extended {
+                if id.is_some_and(|s| s == enc.algorithm_id()) {
+                    return Some(enc);
+                }
+            } else if enc.algorithm_code() == Some(code) {
+                return Some(enc);
+            }
+        }
+        None
+    }
 }
 
-impl DeltaEncoder for RouterEncoder {
-    fn encode(&self, _source: &[u8], _target: &[u8]) -> Result<Vec<u8>> {
-        // RouterEncoder::encode is not called directly; use select() + encode().
-        unimplemented!("use RouterEncoder::select() to obtain the concrete encoder first")
+impl PatchEncoder for RouterEncoder {
+    /// Route to the matching encoder based on `target` metadata, then encode.
+    ///
+    /// Builds a [`FileInfo`] from the target snapshot, calls [`select`] to
+    /// pick the right encoder, then delegates to that encoder.
+    ///
+    /// [`select`]: RouterEncoder::select
+    fn encode(&self, base: &FileSnapshot<'_>, target: &FileSnapshot<'_>) -> Result<FilePatch> {
+        let file_info = FileInfo {
+            path: target.path,
+            size: target.size,
+            header: target.header,
+        };
+        self.select(&file_info).encode(base, target)
     }
 
-    fn decode(&self, _source: &[u8], _delta: &[u8]) -> Result<Vec<u8>> {
-        // Decoding is dispatched by algorithm_id stored in the manifest, not by
-        // routing rules — so this path is never reached in production.
-        unimplemented!("decoder is selected by algorithm_id from the manifest, not by routing")
+    /// Decode `patch` by routing to the encoder that produced it.
+    ///
+    /// Uses `patch.code` (and `patch.algorithm_id` for `Extended`) to select
+    /// the concrete decoder, then delegates decoding to it.  No separate
+    /// `find_decoder` call is needed by the caller.
+    fn decode(&self, source: &[u8], patch: &FilePatch) -> Result<Vec<u8>> {
+        let decoder = self
+            .find_decoder(patch.code, patch.algorithm_id.as_deref())
+            .ok_or_else(|| {
+                crate::Error::Decode(format!(
+                    "RouterEncoder: no decoder registered for algorithm code {:#04x}{}",
+                    patch.code.as_u8(),
+                    patch
+                        .algorithm_id
+                        .as_deref()
+                        .map(|id| format!(" (id: {id})"))
+                        .unwrap_or_default()
+                ))
+            })?;
+        decoder.decode(source, patch)
+    }
+
+    /// Returns `None` — `RouterEncoder` has no single fixed algorithm code.
+    fn algorithm_code(&self) -> Option<AlgorithmCode> {
+        None
     }
 
     fn algorithm_id(&self) -> &'static str {
@@ -86,7 +150,7 @@ impl DeltaEncoder for RouterEncoder {
 /// [`PassthroughEncoder`]: crate::PassthroughEncoder
 pub struct GlobRule {
     pattern: glob::Pattern,
-    encoder: Arc<dyn DeltaEncoder>,
+    encoder: Arc<dyn PatchEncoder>,
 }
 
 impl GlobRule {
@@ -95,7 +159,7 @@ impl GlobRule {
     /// # Errors
     ///
     /// Returns [`Error::Format`] if `pattern` is not a valid glob.
-    pub fn new(pattern: &str, encoder: Arc<dyn DeltaEncoder>) -> Result<Self> {
+    pub fn new(pattern: &str, encoder: Arc<dyn PatchEncoder>) -> Result<Self> {
         let pattern =
             glob::Pattern::new(pattern).map_err(|e| crate::Error::Format(e.to_string()))?;
         Ok(Self { pattern, encoder })
@@ -104,22 +168,22 @@ impl GlobRule {
 
 impl RoutingRule for GlobRule {
     fn accept(&self, file: &FileInfo<'_>) -> bool {
-        self.pattern.matches(&file.entry.path)
+        self.pattern.matches(file.path)
     }
 
-    fn encoder(&self) -> Arc<dyn DeltaEncoder> {
+    fn encoder(&self) -> Arc<dyn PatchEncoder> {
         Arc::clone(&self.encoder)
     }
 }
 
 /// Route ELF binaries (detected by magic bytes `\x7fELF`).
 pub struct ElfRule {
-    encoder: Arc<dyn DeltaEncoder>,
+    encoder: Arc<dyn PatchEncoder>,
 }
 
 impl ElfRule {
     /// Create a new `ElfRule` that routes ELF binaries to `encoder`.
-    pub fn new(encoder: Arc<dyn DeltaEncoder>) -> Self {
+    pub fn new(encoder: Arc<dyn PatchEncoder>) -> Self {
         Self { encoder }
     }
 }
@@ -129,7 +193,7 @@ impl RoutingRule for ElfRule {
         file.header.starts_with(b"\x7fELF")
     }
 
-    fn encoder(&self) -> Arc<dyn DeltaEncoder> {
+    fn encoder(&self) -> Arc<dyn PatchEncoder> {
         Arc::clone(&self.encoder)
     }
 }
@@ -137,22 +201,22 @@ impl RoutingRule for ElfRule {
 /// Route files smaller than a size threshold.
 pub struct SizeRule {
     max_bytes: u64,
-    encoder: Arc<dyn DeltaEncoder>,
+    encoder: Arc<dyn PatchEncoder>,
 }
 
 impl SizeRule {
     /// Create a new `SizeRule` that routes files up to `max_bytes` in size to `encoder`.
-    pub fn new(max_bytes: u64, encoder: Arc<dyn DeltaEncoder>) -> Self {
+    pub fn new(max_bytes: u64, encoder: Arc<dyn PatchEncoder>) -> Self {
         Self { max_bytes, encoder }
     }
 }
 
 impl RoutingRule for SizeRule {
     fn accept(&self, file: &FileInfo<'_>) -> bool {
-        file.entry.size <= self.max_bytes
+        file.size <= self.max_bytes
     }
 
-    fn encoder(&self) -> Arc<dyn DeltaEncoder> {
+    fn encoder(&self) -> Arc<dyn PatchEncoder> {
         Arc::clone(&self.encoder)
     }
 }
@@ -162,12 +226,12 @@ impl RoutingRule for SizeRule {
 /// Useful for already-compressed formats: PNG (`\x89PNG`), gzip (`\x1f\x8b`), etc.
 pub struct MagicRule {
     magic: Vec<u8>,
-    encoder: Arc<dyn DeltaEncoder>,
+    encoder: Arc<dyn PatchEncoder>,
 }
 
 impl MagicRule {
     /// Create a new `MagicRule` that routes files starting with `magic` bytes to `encoder`.
-    pub fn new(magic: impl Into<Vec<u8>>, encoder: Arc<dyn DeltaEncoder>) -> Self {
+    pub fn new(magic: impl Into<Vec<u8>>, encoder: Arc<dyn PatchEncoder>) -> Self {
         Self {
             magic: magic.into(),
             encoder,
@@ -180,7 +244,7 @@ impl RoutingRule for MagicRule {
         file.header.starts_with(&self.magic)
     }
 
-    fn encoder(&self) -> Arc<dyn DeltaEncoder> {
+    fn encoder(&self) -> Arc<dyn PatchEncoder> {
         Arc::clone(&self.encoder)
     }
 }

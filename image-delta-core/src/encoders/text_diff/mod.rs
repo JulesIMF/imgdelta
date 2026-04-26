@@ -1,6 +1,58 @@
-use crate::{DeltaEncoder, Error, Result};
+use crate::encoder::PatchAlgorithm;
+use crate::{AlgorithmCode, Error, FilePatch, FileSnapshot, PatchEncoder, Result};
 
-/// Delta encoder for text files using a Myers diff algorithm.
+// ── MyersAlgorithm ────────────────────────────────────────────────────────────
+
+/// Raw Myers line-diff algorithm (via the `diffy` crate).
+///
+/// Produces a unified-diff patch that is human-readable and compresses well.
+/// Zero-size type — instantiation is free.
+///
+/// # Errors
+///
+/// Both [`encode_raw`] and [`decode_raw`] return [`Error::Encode`] / [`Error::Decode`]
+/// if the bytes are not valid UTF-8.
+///
+/// [`encode_raw`]: MyersAlgorithm::encode_raw
+/// [`decode_raw`]: MyersAlgorithm::decode_raw
+pub(crate) struct MyersAlgorithm;
+
+impl MyersAlgorithm {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+impl PatchAlgorithm for MyersAlgorithm {
+    fn encode_raw(&self, source: &[u8], target: &[u8]) -> Result<Vec<u8>> {
+        let src_str = std::str::from_utf8(source)
+            .map_err(|_| Error::Encode("source is not valid UTF-8".into()))?;
+        let tgt_str = std::str::from_utf8(target)
+            .map_err(|_| Error::Encode("target is not valid UTF-8".into()))?;
+        Ok(diffy::create_patch(src_str, tgt_str)
+            .to_string()
+            .into_bytes())
+    }
+
+    fn decode_raw(&self, source: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
+        let src_str = std::str::from_utf8(source)
+            .map_err(|_| Error::Decode("source is not valid UTF-8".into()))?;
+        let patch_str = std::str::from_utf8(patch)
+            .map_err(|_| Error::Decode("patch is not valid UTF-8".into()))?;
+        let patch_obj = diffy::Patch::from_str(patch_str)
+            .map_err(|e| Error::Decode(format!("malformed patch: {e}")))?;
+        let result = diffy::apply(src_str, &patch_obj)
+            .map_err(|e| Error::Decode(format!("patch apply failed: {e}")))?;
+        Ok(result.into_bytes())
+    }
+}
+
+// ── TextDiffEncoder ───────────────────────────────────────────────────────────
+
+/// Patch encoder for text files using the Myers line-diff algorithm.
+///
+/// Delegates to [`MyersAlgorithm`] per encode/decode call.
+/// Zero-size type — instantiation is free.
 ///
 /// Produces a line-level unified diff patch (via the `diffy` crate) that is
 /// human-readable and compresses well with generic compressors.  Suitable for
@@ -8,12 +60,12 @@ use crate::{DeltaEncoder, Error, Result};
 ///
 /// # Errors
 ///
-/// Both [`encode`] and [`decode`] return [`Error::Encode`] if either the source
-/// or target (or the delta) bytes are not valid UTF-8.  Use a binary encoder
+/// Both [`encode`] and [`decode`] return an error if either the source,
+/// target, or patch bytes are not valid UTF-8.  Use a binary encoder
 /// (e.g. [`Xdelta3Encoder`]) for non-text files.
 ///
-/// [`encode`]: DeltaEncoder::encode
-/// [`decode`]: DeltaEncoder::decode
+/// [`encode`]: PatchEncoder::encode
+/// [`decode`]: PatchEncoder::decode
 /// [`Xdelta3Encoder`]: crate::Xdelta3Encoder
 pub struct TextDiffEncoder;
 
@@ -29,26 +81,18 @@ impl Default for TextDiffEncoder {
     }
 }
 
-impl DeltaEncoder for TextDiffEncoder {
-    fn encode(&self, source: &[u8], target: &[u8]) -> Result<Vec<u8>> {
-        let src_str = std::str::from_utf8(source)
-            .map_err(|_| Error::Encode("source is not valid UTF-8".into()))?;
-        let tgt_str = std::str::from_utf8(target)
-            .map_err(|_| Error::Encode("target is not valid UTF-8".into()))?;
-        let patch = diffy::create_patch(src_str, tgt_str);
-        Ok(patch.to_string().into_bytes())
+impl PatchEncoder for TextDiffEncoder {
+    fn encode(&self, base: &FileSnapshot<'_>, target: &FileSnapshot<'_>) -> Result<FilePatch> {
+        let bytes = MyersAlgorithm::new().encode_raw(base.bytes, target.bytes)?;
+        Ok(FilePatch::new(bytes, AlgorithmCode::TextDiff))
     }
 
-    fn decode(&self, source: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
-        let src_str = std::str::from_utf8(source)
-            .map_err(|_| Error::Encode("source is not valid UTF-8".into()))?;
-        let patch_str = std::str::from_utf8(delta)
-            .map_err(|_| Error::Encode("delta is not valid UTF-8".into()))?;
-        let patch = diffy::Patch::from_str(patch_str)
-            .map_err(|e| Error::Encode(format!("malformed patch: {e}")))?;
-        let result = diffy::apply(src_str, &patch)
-            .map_err(|e| Error::Encode(format!("patch apply failed: {e}")))?;
-        Ok(result.into_bytes())
+    fn decode(&self, source: &[u8], patch: &FilePatch) -> Result<Vec<u8>> {
+        MyersAlgorithm::new().decode_raw(source, &patch.bytes)
+    }
+
+    fn algorithm_code(&self) -> Option<AlgorithmCode> {
+        Some(AlgorithmCode::TextDiff)
     }
 
     fn algorithm_id(&self) -> &'static str {

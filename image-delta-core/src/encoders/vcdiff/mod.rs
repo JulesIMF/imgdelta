@@ -1,44 +1,24 @@
 mod ffi;
 
-use crate::{DeltaEncoder, Error, Result};
+use crate::encoder::PatchAlgorithm;
+use crate::{AlgorithmCode, Error, FilePatch, FileSnapshot, PatchEncoder, Result};
 
-/// Delta encoder backed by xdelta3 (VCDIFF format).
-///
-/// Uses `xd3_encode_memory` / `xd3_decode_memory` via FFI for in-memory
-/// VCDIFF encoding/decoding.  The xdelta3 C library is vendored at
-/// `vendor/xdelta3.c` and compiled by `build.rs`.
-///
-/// # Safety
-///
-/// All unsafe code is isolated in `ffi.rs`.  This module only exposes a safe
-/// Rust API.  Input pointers are valid for the duration of each FFI call, and
-/// output buffers are allocated by Rust and checked for correctness before
-/// returning to callers.
-///
-/// # Example
-///
-/// ```
-/// use image_delta_core::{DeltaEncoder, Xdelta3Encoder};
-///
-/// let encoder = Xdelta3Encoder::new();
-/// let source = b"hello world";
-/// let target = b"hello rust!";
-/// let delta = encoder.encode(source, target).unwrap();
-/// let recovered = encoder.decode(source, &delta).unwrap();
-/// assert_eq!(recovered, target);
-/// ```
-pub struct Xdelta3Encoder;
+// ── Xdelta3Algorithm ──────────────────────────────────────────────────────────
 
-impl Xdelta3Encoder {
-    pub fn new() -> Self {
+/// Raw VCDIFF algorithm implementation via xdelta3 FFI.
+///
+/// This is the low-level worker. [`Xdelta3Encoder`] instantiates it per call.
+/// Zero-size type — instantiation is free.
+pub(crate) struct Xdelta3Algorithm;
+
+impl Xdelta3Algorithm {
+    pub(crate) fn new() -> Self {
         Self
     }
+}
 
-    /// Call `xd3_encode_memory` with automatic output-buffer growth.
-    ///
-    /// Starts with `initial_cap` bytes.  Doubles capacity and retries on
-    /// `ENOSPC` up to 4 times.
-    fn xd3_encode(source: &[u8], target: &[u8]) -> Result<Vec<u8>> {
+impl PatchAlgorithm for Xdelta3Algorithm {
+    fn encode_raw(&self, source: &[u8], target: &[u8]) -> Result<Vec<u8>> {
         // Worst case for VCDIFF: target size + a small header overhead.
         // We start generous and double on ENOSPC.
         let mut cap = (target.len() + 1024).max(1024);
@@ -75,10 +55,9 @@ impl Xdelta3Encoder {
         ))
     }
 
-    /// Call `xd3_decode_memory` with automatic output-buffer growth.
-    fn xd3_decode(source: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
-        // Decoded size is unknown; start with source.len() + delta.len() + slack.
-        let mut cap = (source.len() + delta.len() + 1024).max(1024);
+    fn decode_raw(&self, source: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
+        // Decoded size is unknown; start with source.len() + patch.len() + slack.
+        let mut cap = (source.len() + patch.len() + 1024).max(1024);
 
         for _ in 0..8 {
             let mut buf = vec![0u8; cap];
@@ -86,8 +65,8 @@ impl Xdelta3Encoder {
 
             let ret = unsafe {
                 ffi::xd3_decode_memory(
-                    delta.as_ptr(),
-                    delta.len() as ffi::UsiZeT,
+                    patch.as_ptr(),
+                    patch.len() as ffi::UsiZeT,
                     source.as_ptr(),
                     source.len() as ffi::UsiZeT,
                     buf.as_mut_ptr(),
@@ -113,21 +92,66 @@ impl Xdelta3Encoder {
     }
 }
 
+// ── Xdelta3Encoder ────────────────────────────────────────────────────────────
+
+/// Patch encoder backed by xdelta3 (VCDIFF format).
+///
+/// Uses `xd3_encode_memory` / `xd3_decode_memory` via FFI for in-memory
+/// VCDIFF encoding/decoding.  The xdelta3 C library is vendored at
+/// `vendor/xdelta3.c` and compiled by `build.rs`.
+///
+/// Internally creates a [`Xdelta3Algorithm`] per encode/decode call.
+/// That type is zero-size, so instantiation is free.
+///
+/// # Safety
+///
+/// All unsafe code is isolated in `ffi.rs`.  This module only exposes a safe
+/// Rust API.  Input pointers are valid for the duration of each FFI call, and
+/// output buffers are allocated by Rust and checked for correctness before
+/// returning to callers.
+///
+/// # Example
+///
+/// ```
+/// use image_delta_core::{FileSnapshot, PatchEncoder, Xdelta3Encoder};
+///
+/// let encoder = Xdelta3Encoder::new();
+/// let source = b"hello world";
+/// let target = b"hello rust!";
+/// let base = FileSnapshot { bytes: source, path: "lib/hello.so", size: source.len() as u64, header: source };
+/// let tgt  = FileSnapshot { bytes: target, path: "lib/hello.so", size: target.len() as u64, header: target };
+/// let patch = encoder.encode(&base, &tgt).unwrap();
+/// let recovered = encoder.decode(source, &patch).unwrap();
+/// assert_eq!(recovered, target);
+/// ```
+pub struct Xdelta3Encoder;
+
+impl Xdelta3Encoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 impl Default for Xdelta3Encoder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DeltaEncoder for Xdelta3Encoder {
-    /// Encode `target` as a VCDIFF delta against `source`.
-    fn encode(&self, source: &[u8], target: &[u8]) -> Result<Vec<u8>> {
-        Self::xd3_encode(source, target)
+impl PatchEncoder for Xdelta3Encoder {
+    /// Encode `target.bytes` as a VCDIFF patch against `base.bytes`.
+    fn encode(&self, base: &FileSnapshot<'_>, target: &FileSnapshot<'_>) -> Result<FilePatch> {
+        let bytes = Xdelta3Algorithm::new().encode_raw(base.bytes, target.bytes)?;
+        Ok(FilePatch::new(bytes, AlgorithmCode::Xdelta3))
     }
 
-    /// Decode a VCDIFF `delta` against `source`, returning the original target.
-    fn decode(&self, source: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
-        Self::xd3_decode(source, delta)
+    /// Decode a VCDIFF patch against `source`, returning the original target.
+    fn decode(&self, source: &[u8], patch: &FilePatch) -> Result<Vec<u8>> {
+        Xdelta3Algorithm::new().decode_raw(source, &patch.bytes)
+    }
+
+    fn algorithm_code(&self) -> Option<AlgorithmCode> {
+        Some(AlgorithmCode::Xdelta3)
     }
 
     fn algorithm_id(&self) -> &'static str {
@@ -143,6 +167,15 @@ mod tests {
         Xdelta3Encoder::new()
     }
 
+    fn snap<'a>(bytes: &'a [u8]) -> FileSnapshot<'a> {
+        FileSnapshot {
+            bytes,
+            path: "",
+            size: bytes.len() as u64,
+            header: &bytes[..bytes.len().min(16)],
+        }
+    }
+
     // 1. Basic round-trip on small text content.
     #[test]
     fn encode_decode_roundtrip_small() {
@@ -150,8 +183,8 @@ mod tests {
         let source = b"hello world, this is the base file content";
         let target = b"hello rust!, this is the new file content!!";
 
-        let delta = enc.encode(source, target).unwrap();
-        let recovered = enc.decode(source, &delta).unwrap();
+        let patch = enc.encode(&snap(source), &snap(target)).unwrap();
+        let recovered = enc.decode(source, &patch).unwrap();
 
         assert_eq!(recovered, target);
     }
@@ -161,77 +194,74 @@ mod tests {
     fn encode_decode_roundtrip_large() {
         let enc = encoder();
 
-        // Build a pseudo-binary source: repeating pattern.
         let source: Vec<u8> = (0u8..=255).cycle().take(512 * 1024).collect();
-        // Target: same pattern but with every 1000th byte flipped.
         let mut target = source.clone();
         for i in (0..target.len()).step_by(1000) {
             target[i] ^= 0xFF;
         }
 
-        let delta = enc.encode(&source, &target).unwrap();
-        let recovered = enc.decode(&source, &delta).unwrap();
+        let patch = enc.encode(&snap(&source), &snap(&target)).unwrap();
+        let recovered = enc.decode(&source, &patch).unwrap();
 
         assert_eq!(recovered, target);
     }
 
-    // 3. Delta for similar content is smaller than the target itself.
+    // 3. Patch for similar content is smaller than the target itself.
     #[test]
-    fn delta_for_similar_content_is_compact() {
+    fn patch_for_similar_content_is_compact() {
         let enc = encoder();
         let source: Vec<u8> = (0u8..=255).cycle().take(64 * 1024).collect();
         let mut target = source.clone();
-        // Change 16 bytes in the middle.
         target[32768..32784].fill(0xAB);
 
-        let delta = enc.encode(&source, &target).unwrap();
+        let patch = enc.encode(&snap(&source), &snap(&target)).unwrap();
 
-        // Delta must be much smaller than copying the whole target.
         assert!(
-            delta.len() < target.len() / 4,
-            "expected compact delta but got {} bytes (target {} bytes)",
-            delta.len(),
+            patch.bytes.len() < target.len() / 4,
+            "expected compact patch but got {} bytes (target {} bytes)",
+            patch.bytes.len(),
             target.len()
         );
     }
 
-    // 4. Encoding with empty source produces a valid (full-copy) delta.
+    // 4. Encoding with empty source produces a valid (full-copy) patch.
     #[test]
     fn encode_empty_source_roundtrip() {
         let enc = encoder();
         let source: &[u8] = b"";
         let target = b"brand new file, no base";
 
-        let delta = enc.encode(source, target).unwrap();
-        let recovered = enc.decode(source, &delta).unwrap();
+        let patch = enc.encode(&snap(source), &snap(target)).unwrap();
+        let recovered = enc.decode(source, &patch).unwrap();
 
         assert_eq!(recovered, target);
     }
 
-    // 5. Encoding identical source and target produces a valid (tiny) delta.
+    // 5. Encoding identical source and target produces a valid (tiny) patch.
     #[test]
     fn encode_identical_content_roundtrip() {
         let enc = encoder();
         let content = b"identical content in both source and target";
 
-        let delta = enc.encode(content, content).unwrap();
-        let recovered = enc.decode(content, &delta).unwrap();
+        let patch = enc.encode(&snap(content), &snap(content)).unwrap();
+        let recovered = enc.decode(content, &patch).unwrap();
 
         assert_eq!(recovered.as_slice(), content);
     }
 
-    // 6. Corrupted delta bytes must return an error, not panic.
+    // 6. Corrupted patch bytes must return an error, not panic.
     #[test]
-    fn decode_corrupted_delta_returns_error() {
+    fn decode_corrupted_patch_returns_error() {
         let enc = encoder();
         let source = b"some base file content";
-        let garbage_delta = b"this is not a valid vcdiff stream at all!!!!!";
+        let garbage_bytes = b"this is not a valid vcdiff stream at all!!!!!";
+        let garbage_patch = FilePatch::new(garbage_bytes.to_vec(), AlgorithmCode::Xdelta3);
 
-        let result = enc.decode(source, garbage_delta);
+        let result = enc.decode(source, &garbage_patch);
 
         assert!(
             result.is_err(),
-            "expected error for corrupted delta but got Ok"
+            "expected error for corrupted patch but got Ok"
         );
     }
 
@@ -239,5 +269,22 @@ mod tests {
     #[test]
     fn algorithm_id_is_xdelta3() {
         assert_eq!(encoder().algorithm_id(), "xdelta3");
+    }
+
+    // 8. algorithm_code returns Xdelta3.
+    #[test]
+    fn algorithm_code_is_xdelta3() {
+        assert_eq!(encoder().algorithm_code(), Some(AlgorithmCode::Xdelta3));
+    }
+
+    // 9. FilePatch carries correct code.
+    #[test]
+    fn encode_result_carries_xdelta3_code() {
+        let enc = encoder();
+        let patch = enc
+            .encode(&snap(b"old"), &snap(b"new content here"))
+            .unwrap();
+        assert_eq!(patch.code, AlgorithmCode::Xdelta3);
+        assert_eq!(patch.algorithm_id, None);
     }
 }

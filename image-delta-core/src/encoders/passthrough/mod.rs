@@ -1,21 +1,47 @@
-use crate::{DeltaEncoder, Result};
+use crate::encoder::PatchAlgorithm;
+use crate::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder, Result};
+
+// ── PassthroughAlgorithm ──────────────────────────────────────────────────────
+
+/// Raw passthrough algorithm: returns `target` bytes verbatim.
+///
+/// Zero-size type — instantiation is free.
+pub(crate) struct PassthroughAlgorithm;
+
+impl PassthroughAlgorithm {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+impl PatchAlgorithm for PassthroughAlgorithm {
+    fn encode_raw(&self, _source: &[u8], target: &[u8]) -> Result<Vec<u8>> {
+        Ok(target.to_vec())
+    }
+
+    fn decode_raw(&self, _source: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
+        Ok(patch.to_vec())
+    }
+}
+
+// ── PassthroughEncoder ────────────────────────────────────────────────────────
 
 /// A no-op encoder that stores the target file verbatim.
 ///
 /// Used in two situations:
 ///
-/// 1. **Already-compressed files** (gzip, zstd, PNG, …): delta-encoding these
+/// 1. **Already-compressed files** (gzip, zstd, PNG, …): patch-encoding these
 ///    typically produces output larger than the original, so we skip it.
 ///    Configured via [`MagicRule`] or [`GlobRule`] in the routing table.
 ///
-/// 2. **Delta worse than original**: after encoding, if
-///    `delta.len() >= target.len() * threshold` the compressor discards the
-///    delta and falls back to `PassthroughEncoder`.
+/// 2. **Patch worse than original**: after encoding, if
+///    `patch.len() >= target.len() * threshold` the compressor discards the
+///    patch and falls back to `PassthroughEncoder`.
 ///
 /// # Protocol
 ///
-/// - `encode(source, target)` → returns `target` unchanged (ignores `source`).
-/// - `decode(source, delta)` → returns `delta` unchanged (ignores `source`).
+/// - `encode(req)` → returns `req.target` unchanged.
+/// - `decode(source, patch)` → returns `patch` unchanged.
 /// - `algorithm_id()` → `"passthrough"`.
 ///
 /// [`MagicRule`]: crate::MagicRule
@@ -24,16 +50,18 @@ use crate::{DeltaEncoder, Result};
 /// # Examples
 ///
 /// ```
-/// use image_delta_core::{DeltaEncoder, PassthroughEncoder};
+/// use image_delta_core::{FileSnapshot, PatchEncoder, PassthroughEncoder};
 ///
 /// let enc = PassthroughEncoder::new();
 /// let src = b"old content";
 /// let tgt = b"new content";
+/// let base = FileSnapshot { bytes: src, path: "", size: src.len() as u64, header: &[] };
+/// let target = FileSnapshot { bytes: tgt, path: "", size: tgt.len() as u64, header: &[] };
 ///
-/// let delta = enc.encode(src, tgt).unwrap();
-/// assert_eq!(&delta, tgt);
+/// let patch = enc.encode(&base, &target).unwrap();
+/// assert_eq!(&patch.bytes, tgt);
 ///
-/// let restored = enc.decode(src, &delta).unwrap();
+/// let restored = enc.decode(src, &patch).unwrap();
 /// assert_eq!(&restored, tgt);
 /// ```
 pub struct PassthroughEncoder;
@@ -50,13 +78,18 @@ impl Default for PassthroughEncoder {
     }
 }
 
-impl DeltaEncoder for PassthroughEncoder {
-    fn encode(&self, _source: &[u8], target: &[u8]) -> Result<Vec<u8>> {
-        Ok(target.to_vec())
+impl PatchEncoder for PassthroughEncoder {
+    fn encode(&self, base: &FileSnapshot<'_>, target: &FileSnapshot<'_>) -> Result<FilePatch> {
+        let bytes = PassthroughAlgorithm::new().encode_raw(base.bytes, target.bytes)?;
+        Ok(FilePatch::new(bytes, AlgorithmCode::Passthrough))
     }
 
-    fn decode(&self, _source: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
-        Ok(delta.to_vec())
+    fn decode(&self, source: &[u8], patch: &FilePatch) -> Result<Vec<u8>> {
+        PassthroughAlgorithm::new().decode_raw(source, &patch.bytes)
+    }
+
+    fn algorithm_code(&self) -> Option<AlgorithmCode> {
+        Some(AlgorithmCode::Passthrough)
     }
 
     fn algorithm_id(&self) -> &'static str {

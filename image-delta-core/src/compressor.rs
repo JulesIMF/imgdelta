@@ -9,8 +9,9 @@ use walkdir::WalkDir;
 
 use crate::manifest::{BlobRef, Entry, EntryType, Manifest, ManifestHeader, Metadata, PatchRef};
 use crate::path_match::{find_best_matches, PathMatchConfig};
+use crate::routing::RouterEncoder;
 use crate::storage::ImageMeta;
-use crate::{DeltaEncoder, Result, Storage};
+use crate::{FileSnapshot, PatchEncoder, Result, Storage};
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
@@ -104,23 +105,23 @@ pub trait Compressor: Send + Sync {
 
 /// Production [`Compressor`] implementation.
 ///
-/// Owns a [`Storage`] backend and a [`DeltaEncoder`].  The encoder may be a
-/// [`RouterEncoder`] for per-file encoder selection.
-///
-/// [`RouterEncoder`]: crate::RouterEncoder
+/// Owns a [`Storage`] backend and a [`RouterEncoder`] for per-file encoder
+/// selection.  For single-encoder use, construct with [`DefaultCompressor::with_encoder`].
 pub struct DefaultCompressor {
     storage: Arc<dyn Storage>,
-    encoder: Arc<dyn DeltaEncoder>,
+    router: Arc<RouterEncoder>,
 }
 
 impl DefaultCompressor {
-    /// Create a new `DefaultCompressor` backed by the given storage and encoder.
-    ///
-    /// Pass a [`RouterEncoder`] as `encoder` to enable per-file algorithm selection.
-    ///
-    /// [`RouterEncoder`]: crate::RouterEncoder
-    pub fn new(storage: Arc<dyn Storage>, encoder: Arc<dyn DeltaEncoder>) -> Self {
-        Self { storage, encoder }
+    /// Create a new `DefaultCompressor` backed by the given storage and router.
+    pub fn new(storage: Arc<dyn Storage>, router: Arc<RouterEncoder>) -> Self {
+        Self { storage, router }
+    }
+
+    /// Convenience constructor for the common case of a single encoder without
+    /// per-file routing rules.
+    pub fn with_encoder(storage: Arc<dyn Storage>, encoder: Arc<dyn PatchEncoder>) -> Self {
+        Self::new(storage, Arc::new(RouterEncoder::new(vec![], encoder)))
     }
 }
 
@@ -528,13 +529,6 @@ impl Compressor for DefaultCompressor {
                     stats.total_files += 1;
                 }
                 (None, Some(patch_ref)) => {
-                    if patch_ref.algorithm != self.encoder.algorithm_id() {
-                        return Err(crate::Error::Other(format!(
-                            "unsupported patch algorithm '{}' (encoder is '{}')",
-                            patch_ref.algorithm,
-                            self.encoder.algorithm_id()
-                        )));
-                    }
                     let patch_bytes =
                         patches_map.get(&patch_ref.archive_entry).ok_or_else(|| {
                             crate::Error::Manifest(format!(
@@ -550,7 +544,12 @@ impl Compressor for DefaultCompressor {
                         )));
                     }
                     let source_bytes = std::fs::read(&out_path)?;
-                    let result = self.encoder.decode(&source_bytes, patch_bytes)?;
+                    let file_patch = crate::FilePatch {
+                        bytes: patch_bytes.clone(),
+                        code: patch_ref.algorithm_code,
+                        algorithm_id: patch_ref.algorithm_id.clone(),
+                    };
+                    let result = self.router.decode(&source_bytes, &file_patch)?;
                     stats.total_bytes += result.len() as u64;
                     std::fs::write(&out_path, &result)?;
                     stats.total_files += 1;
@@ -558,13 +557,6 @@ impl Compressor for DefaultCompressor {
                 }
                 (Some(blob_ref), Some(patch_ref)) => {
                     // BlobPatch: download blob, apply patch on top
-                    if patch_ref.algorithm != self.encoder.algorithm_id() {
-                        return Err(crate::Error::Other(format!(
-                            "unsupported patch algorithm '{}' (encoder is '{}')",
-                            patch_ref.algorithm,
-                            self.encoder.algorithm_id()
-                        )));
-                    }
                     let blob_bytes = self.storage.download_blob(blob_ref.blob_id)?;
                     let patch_bytes =
                         patches_map.get(&patch_ref.archive_entry).ok_or_else(|| {
@@ -580,7 +572,12 @@ impl Compressor for DefaultCompressor {
                             entry.path, patch_ref.sha256, actual_sha
                         )));
                     }
-                    let result = self.encoder.decode(&blob_bytes, patch_bytes)?;
+                    let file_patch = crate::FilePatch {
+                        bytes: patch_bytes.clone(),
+                        code: patch_ref.algorithm_code,
+                        algorithm_id: patch_ref.algorithm_id.clone(),
+                    };
+                    let result = self.router.decode(&blob_bytes, &file_patch)?;
                     create_parent_dirs(&out_path)?;
                     std::fs::write(&out_path, &result)?;
                     stats.total_bytes += result.len() as u64;
@@ -770,12 +767,25 @@ impl DefaultCompressor {
             });
         }
 
-        // Rename + content change → delta.
-        let delta = self.encoder.encode(&source_bytes, &target_bytes)?;
+        // Rename + content change → file patch.
+        let header = &target_bytes[..target_bytes.len().min(16)];
+        let base_snap = FileSnapshot {
+            path: source_path,
+            size: source_bytes.len() as u64,
+            header: &source_bytes[..source_bytes.len().min(16)],
+            bytes: &source_bytes,
+        };
+        let target_snap = FileSnapshot {
+            path: target_path,
+            size: target_bytes.len() as u64,
+            header,
+            bytes: &target_bytes,
+        };
+        let file_patch = self.router.encode(&base_snap, &target_snap)?;
         let archive_entry = format!("{}.patch", uuid::Uuid::new_v4());
-        let sha = sha256_hex(&delta);
-        stats.total_stored_bytes += delta.len() as u64;
-        patches.push((archive_entry.clone(), delta));
+        let sha = sha256_hex(&file_patch.bytes);
+        stats.total_stored_bytes += file_patch.bytes.len() as u64;
+        patches.push((archive_entry.clone(), file_patch.bytes));
         stats.files_patched += 1;
         Ok(Entry {
             path: source_path.to_string(),
@@ -785,7 +795,8 @@ impl DefaultCompressor {
             patch: Some(PatchRef {
                 archive_entry,
                 sha256: sha,
-                algorithm: self.encoder.algorithm_id().to_string(),
+                algorithm_code: file_patch.code,
+                algorithm_id: file_patch.algorithm_id,
             }),
             metadata: Some(Metadata {
                 new_path: Some(target_path.to_string()),
@@ -835,14 +846,28 @@ impl DefaultCompressor {
         let size = target_bytes.len() as u64;
         stats.total_source_bytes += size;
 
-        let delta = self.encoder.encode(&source_bytes, &target_bytes)?;
-        let use_delta = (delta.len() as f64) < (target_bytes.len() as f64) * passthrough_threshold;
+        let header = &target_bytes[..target_bytes.len().min(16)];
+        let base_snap = FileSnapshot {
+            path,
+            size: source_bytes.len() as u64,
+            header: &source_bytes[..source_bytes.len().min(16)],
+            bytes: &source_bytes,
+        };
+        let target_snap = FileSnapshot {
+            path,
+            size,
+            header,
+            bytes: &target_bytes,
+        };
+        let file_patch = self.router.encode(&base_snap, &target_snap)?;
+        let use_patch =
+            (file_patch.bytes.len() as f64) < (target_bytes.len() as f64) * passthrough_threshold;
 
-        if use_delta {
+        if use_patch {
             let archive_entry = format!("{}.patch", uuid::Uuid::new_v4());
-            let sha = sha256_hex(&delta);
-            stats.total_stored_bytes += delta.len() as u64;
-            patches.push((archive_entry.clone(), delta));
+            let sha = sha256_hex(&file_patch.bytes);
+            stats.total_stored_bytes += file_patch.bytes.len() as u64;
+            patches.push((archive_entry.clone(), file_patch.bytes));
             stats.files_patched += 1;
             Ok(Entry {
                 path: path.to_string(),
@@ -852,7 +877,8 @@ impl DefaultCompressor {
                 patch: Some(PatchRef {
                     archive_entry,
                     sha256: sha,
-                    algorithm: self.encoder.algorithm_id().to_string(),
+                    algorithm_code: file_patch.code,
+                    algorithm_id: file_patch.algorithm_id,
                 }),
                 metadata: None,
                 hardlink_target: None,

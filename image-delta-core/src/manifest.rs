@@ -3,11 +3,13 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::AlgorithmCode;
+
 /// Manifest format version stored in every [`ManifestHeader`].
 ///
 /// Increment this constant on every breaking schema change so that older
 /// decompressors can refuse to process manifests they don't understand.
-pub const MANIFEST_VERSION: u32 = 1;
+pub const MANIFEST_VERSION: u32 = 2;
 
 /// Returns `true` if `b` is `false` — used as `skip_serializing_if` predicate
 /// for boolean fields that should be omitted when their value is the zero/default.
@@ -102,10 +104,18 @@ pub struct PatchRef {
     pub archive_entry: String,
     /// Lowercase hex SHA-256 of the patch bytes — verified after extraction.
     pub sha256: String,
-    /// Algorithm identifier matching [`DeltaEncoder::algorithm_id`].
+    /// Compact one-byte algorithm code — primary decoder lookup key.
     ///
-    /// [`DeltaEncoder::algorithm_id`]: crate::DeltaEncoder::algorithm_id
-    pub algorithm: String,
+    /// When `algorithm_code == AlgorithmCode::Extended`, the string
+    /// `algorithm_id` field identifies the algorithm instead.
+    pub algorithm_code: AlgorithmCode,
+    /// Human-readable algorithm identifier.
+    ///
+    /// `None` for all built-in algorithms (those with a known
+    /// [`AlgorithmCode`]).  `Some` only when
+    /// `algorithm_code == AlgorithmCode::Extended`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub algorithm_id: Option<String>,
 }
 
 /// Reference to a verbatim (non-delta) blob stored in the blob store.
@@ -183,7 +193,8 @@ mod tests {
         PatchRef {
             archive_entry: name.into(),
             sha256: "ab".repeat(32),
-            algorithm: "xdelta3".into(),
+            algorithm_code: AlgorithmCode::Xdelta3,
+            algorithm_id: None,
         }
     }
 
@@ -300,7 +311,8 @@ mod tests {
 
         let patch = recovered.patch.unwrap();
         assert_eq!(patch.archive_entry, "usr_lib_firmware.bin.vcdiff");
-        assert_eq!(patch.algorithm, "xdelta3");
+        assert_eq!(patch.algorithm_code, AlgorithmCode::Xdelta3);
+        assert_eq!(patch.algorithm_id, None);
         assert_eq!(patch.sha256, "ab".repeat(32));
     }
 
@@ -407,7 +419,8 @@ mod tests {
             e.patch = Some(PatchRef {
                 archive_entry: format!("usr_lib_libbaz{i}.vcdiff"),
                 sha256: format!("{:064x}", i),
-                algorithm: "xdelta3".into(),
+                algorithm_code: crate::AlgorithmCode::Xdelta3,
+                algorithm_id: None,
             });
             entries.push(e);
         }

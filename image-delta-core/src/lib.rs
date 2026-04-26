@@ -9,8 +9,7 @@
 //! ## Architecture
 //!
 //! ```text
-//! ImageFormat::mount()  →  diff_dirs()  →  path_match()  →  RouterEncoder::select()
-//!                                                         →  DeltaEncoder::encode()
+//! Image::mount()  →  diff_dirs()  →  path_match()  →  RouterEncoder::encode(EncodeRequest)
 //!                                                         →  Storage::upload_blob()
 //! ```
 //!
@@ -20,12 +19,13 @@
 
 mod error;
 
+pub mod algorithm;
 pub mod compressor;
 pub mod encoder;
 pub mod encoders;
-pub mod format;
 pub mod formats;
 pub mod fs_diff;
+pub mod image;
 pub mod manifest;
 pub mod path_match;
 pub mod routing;
@@ -37,16 +37,17 @@ pub(crate) mod scheduler;
 
 pub use error::{Error, Result};
 
+pub use algorithm::{AlgorithmCode, FilePatch, FileSnapshot};
 pub use compressor::{
     CompressOptions, CompressionStats, Compressor, DecompressOptions, DecompressionStats,
     DefaultCompressor,
 };
-pub use encoder::DeltaEncoder;
+pub use encoder::PatchEncoder;
 pub use encoders::{PassthroughEncoder, TextDiffEncoder, Xdelta3Encoder};
-pub use format::{ImageFormat, MountHandle, SimpleMountHandle};
-pub use formats::DirectoryFormat;
+pub use formats::DirectoryImage;
 #[cfg(feature = "qcow2")]
-pub use formats::Qcow2Format;
+pub use formats::Qcow2Image;
+pub use image::{Image, MountHandle, SimpleMountHandle};
 pub use manifest::{
     BlobRef, Entry, EntryType, Manifest, ManifestHeader, Metadata, PatchRef, MANIFEST_VERSION,
 };
