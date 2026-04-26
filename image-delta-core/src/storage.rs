@@ -1,14 +1,20 @@
 use uuid::Uuid;
 
 /// A blob candidate returned by storage when searching for a suitable delta base.
+///
+/// Returned by [`Storage::find_blob_candidates`] and consumed by the path-matcher
+/// to decide which base blob to use for a delta.
 #[derive(Debug, Clone)]
 pub struct BlobCandidate {
-    /// UUID assigned when the blob was uploaded.
-    pub blob_id: Uuid,
-    /// Path this blob originated from (for path-match scoring).
-    pub path: String,
-    /// Uncompressed byte size of this blob.
-    pub size: u64,
+    /// UUID assigned when the blob was uploaded; used to call
+    /// [`Storage::download_blob`].
+    pub uuid: Uuid,
+    /// SHA-256 hex digest of the blob bytes.  Used to verify integrity after
+    /// download.
+    pub sha256: String,
+    /// Relative path this blob was recorded under via
+    /// [`Storage::record_blob_origin`].  Used by the path-matcher for scoring.
+    pub original_path: String,
 }
 
 /// Lightweight metadata about an image known to storage.
@@ -43,13 +49,32 @@ pub enum ImageStatus {
 /// # Contract for implementors
 ///
 /// - All methods must be safe to call concurrently from multiple threads.
-/// - `upload_blob` must be idempotent: uploading the same bytes twice is fine.
+/// - `upload_blob` must be idempotent: uploading the same bytes twice (same SHA-256)
+///   must return the same UUID and not store a duplicate.
+///
+/// # Note
+///
+/// `save_stats` from the original design is intentionally omitted here to avoid a
+/// circular dependency with `compressor::CompressionStats`.  It will be added in
+/// Phase 5 via a separate `StoredStats` type.
 pub trait Storage: Send + Sync {
-    /// Upload raw bytes and return the assigned UUID.
-    fn upload_blob(&self, data: &[u8]) -> crate::Result<Uuid>;
+    // ── Blob CAS ─────────────────────────────────────────────────────────────
+
+    /// Check whether a blob with this SHA-256 digest already exists.
+    ///
+    /// Returns `Some(uuid)` if it exists, `None` otherwise.
+    fn blob_exists(&self, sha256: &str) -> crate::Result<Option<Uuid>>;
+
+    /// Upload raw bytes, keyed by their SHA-256 hex digest.
+    ///
+    /// Must be idempotent: if a blob with `sha256` already exists, returns the
+    /// existing UUID without re-uploading.
+    fn upload_blob(&self, sha256: &str, data: &[u8]) -> crate::Result<Uuid>;
 
     /// Download raw bytes for a known blob UUID.
     fn download_blob(&self, blob_id: Uuid) -> crate::Result<Vec<u8>>;
+
+    // ── Image data ────────────────────────────────────────────────────────────
 
     /// Upload a serialised manifest for `image_id`.
     fn upload_manifest(&self, image_id: &str, manifest_bytes: &[u8]) -> crate::Result<()>;
@@ -57,25 +82,46 @@ pub trait Storage: Send + Sync {
     /// Download the serialised manifest for `image_id`.
     fn download_manifest(&self, image_id: &str) -> crate::Result<Vec<u8>>;
 
-    /// Return blobs from `base_image_id` that are candidates for delta encoding
-    /// against files in the new image.
-    fn find_blob_candidates(&self, base_image_id: &str) -> crate::Result<Vec<BlobCandidate>>;
+    /// Upload the patches tar (or tar.gz) archive for `image_id`.
+    ///
+    /// `compressed` — `true` if the bytes are gzip-compressed (tar.gz).
+    fn upload_patches(&self, image_id: &str, data: &[u8], compressed: bool) -> crate::Result<()>;
+
+    /// Download the patches tar (or tar.gz) archive for `image_id`.
+    fn download_patches(&self, image_id: &str) -> crate::Result<Vec<u8>>;
+
+    // ── DB ────────────────────────────────────────────────────────────────────
 
     /// Persist metadata for a newly created or updated image.
-    fn save_image_meta(&self, meta: &ImageMeta) -> crate::Result<()>;
+    fn register_image(&self, meta: &ImageMeta) -> crate::Result<()>;
 
     /// Look up metadata for an image by ID, returning `None` if not found.
-    fn get_image_meta(&self, image_id: &str) -> crate::Result<Option<ImageMeta>>;
+    fn get_image(&self, image_id: &str) -> crate::Result<Option<ImageMeta>>;
 
     /// Update the lifecycle status of an image.
-    fn set_image_status(&self, image_id: &str, status: ImageStatus) -> crate::Result<()>;
+    fn update_status(&self, image_id: &str, status: ImageStatus) -> crate::Result<()>;
 
     /// Return metadata for all known images.
     fn list_images(&self) -> crate::Result<Vec<ImageMeta>>;
 
-    /// Upload the patches tar (or tar.gz) archive for `image_id`.
-    fn upload_patches(&self, image_id: &str, data: &[u8]) -> crate::Result<()>;
+    // ── BlobPatch ─────────────────────────────────────────────────────────────
 
-    /// Download the patches tar (or tar.gz) archive for `image_id`.
-    fn download_patches(&self, image_id: &str) -> crate::Result<Vec<u8>>;
+    /// Return blobs from `base_image_id` that are candidates for delta encoding
+    /// against files in the new image.
+    fn find_blob_candidates(&self, base_image_id: &str) -> crate::Result<Vec<BlobCandidate>>;
+
+    /// Record that `blob_uuid` originated from `file_path` in `image_id`.
+    ///
+    /// Called by [`DefaultCompressor`] after each `upload_blob` so that future
+    /// compress operations can use this blob as a delta base via
+    /// [`find_blob_candidates`].
+    ///
+    /// [`DefaultCompressor`]: crate::DefaultCompressor
+    /// [`find_blob_candidates`]: Storage::find_blob_candidates
+    fn record_blob_origin(
+        &self,
+        blob_uuid: Uuid,
+        image_id: &str,
+        file_path: &str,
+    ) -> crate::Result<()>;
 }

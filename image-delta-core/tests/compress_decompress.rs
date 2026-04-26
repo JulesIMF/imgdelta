@@ -11,7 +11,7 @@ use tempfile::tempdir;
 
 fn save_root_meta(storage: &dyn Storage, image_id: &str) {
     storage
-        .save_image_meta(&ImageMeta {
+        .register_image(&ImageMeta {
             image_id: image_id.to_string(),
             base_image_id: None,
             format: "directory".into(),

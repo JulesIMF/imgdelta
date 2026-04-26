@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 fn save_root_meta(storage: &dyn Storage, image_id: &str) {
     storage
-        .save_image_meta(&ImageMeta {
+        .register_image(&ImageMeta {
             image_id: image_id.to_string(),
             base_image_id: None,
             format: "directory".into(),
@@ -131,7 +131,12 @@ fn test_blob_patch_fallback_to_blob() {
     // Pre-seed storage with a blob that has a different path to ensure
     // find_blob_candidates doesn't accidentally match.
     let (storage, compressor) = make_compressor();
-    let unrelated_blob_id: Uuid = storage.upload_blob(b"unrelated blob").unwrap();
+    let unrelated_data = b"unrelated blob";
+    let unrelated_sha = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(unrelated_data))
+    };
+    let unrelated_blob_id: Uuid = storage.upload_blob(&unrelated_sha, unrelated_data).unwrap();
     storage.register_blob_origin("img-base", unrelated_blob_id, "something/unrelated.txt");
     save_root_meta(&*storage, "img-base");
 

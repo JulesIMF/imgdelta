@@ -411,7 +411,8 @@ impl Compressor for DefaultCompressor {
 
         // ── 5. Build + upload patches tar ────────────────────────────────────
         let tar_bytes = build_patches_tar(&patches)?;
-        self.storage.upload_patches(&options.image_id, &tar_bytes)?;
+        self.storage
+            .upload_patches(&options.image_id, &tar_bytes, false)?;
 
         // ── 6. Build + upload manifest ───────────────────────────────────────
         let now = SystemTime::now()
@@ -435,7 +436,7 @@ impl Compressor for DefaultCompressor {
             .upload_manifest(&options.image_id, &manifest_bytes)?;
 
         // ── 7. Save image meta ────────────────────────────────────────────────
-        self.storage.save_image_meta(&ImageMeta {
+        self.storage.register_image(&ImageMeta {
             image_id: options.image_id.clone(),
             base_image_id: options.base_image_id.clone(),
             format: "directory".into(),
@@ -462,7 +463,7 @@ impl Compressor for DefaultCompressor {
 
         // ── 2. Chain detection ────────────────────────────────────────────────
         if let Some(base_id) = &manifest.header.base_image_id {
-            if let Some(base_meta) = self.storage.get_image_meta(base_id)? {
+            if let Some(base_meta) = self.storage.get_image(base_id)? {
                 if base_meta.base_image_id.is_some() {
                     return Err(crate::Error::Other(
                         "chained decompression is not supported: \
@@ -699,7 +700,8 @@ impl DefaultCompressor {
         // Regular file → upload as blob.
         let bytes = std::fs::read(target_file)?;
         let size = bytes.len() as u64;
-        let blob_id = self.storage.upload_blob(&bytes)?;
+        let sha = sha256_hex(&bytes);
+        let blob_id = self.storage.upload_blob(&sha, &bytes)?;
         stats.files_added += 1;
         stats.total_source_bytes += size;
         stats.total_stored_bytes += size;
@@ -857,7 +859,8 @@ impl DefaultCompressor {
                 removed: false,
             })
         } else {
-            let blob_id = self.storage.upload_blob(&target_bytes)?;
+            let sha = sha256_hex(&target_bytes);
+            let blob_id = self.storage.upload_blob(&sha, &target_bytes)?;
             stats.total_stored_bytes += size;
             stats.files_added += 1;
             Ok(Entry {

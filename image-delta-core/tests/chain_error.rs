@@ -6,7 +6,7 @@ use tempfile::tempdir;
 
 fn save_meta_with_base(storage: &dyn Storage, image_id: &str, base_image_id: Option<&str>) {
     storage
-        .save_image_meta(&ImageMeta {
+        .register_image(&ImageMeta {
             image_id: image_id.to_string(),
             base_image_id: base_image_id.map(|s| s.to_string()),
             format: "directory".into(),
