@@ -32,6 +32,19 @@ pub trait ImageFormat: Send + Sync {
     ///
     /// Returns [`crate::Error::Format`] if mounting fails.
     fn mount(&self, path: &Path) -> crate::Result<Box<dyn MountHandle>>;
+
+    /// Pack the filesystem tree rooted at `source_dir` into a container file
+    /// (or directory) at `output_path`.
+    ///
+    /// For [`DirectoryFormat`] this is a recursive copy.  For container formats
+    /// like qcow2 this would create the image file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Format`] if packing fails.
+    ///
+    /// [`DirectoryFormat`]: crate::DirectoryFormat
+    fn pack(&self, source_dir: &Path, output_path: &Path) -> crate::Result<()>;
 }
 
 /// Simple [`MountHandle`] that just wraps a [`PathBuf`].  Used by

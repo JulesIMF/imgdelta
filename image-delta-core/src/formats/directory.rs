@@ -1,5 +1,6 @@
 use crate::{format::SimpleMountHandle, ImageFormat, MountHandle, Result};
 use std::path::Path;
+use walkdir::WalkDir;
 
 /// [`ImageFormat`] implementation for a plain directory.
 ///
@@ -27,5 +28,32 @@ impl ImageFormat for DirectoryFormat {
 
     fn mount(&self, path: &Path) -> Result<Box<dyn MountHandle>> {
         Ok(Box::new(SimpleMountHandle::new(path.to_path_buf())))
+    }
+
+    fn pack(&self, source_dir: &Path, output_path: &Path) -> Result<()> {
+        if output_path.exists() {
+            std::fs::remove_dir_all(output_path)
+                .map_err(|e| crate::Error::Format(e.to_string()))?;
+        }
+        std::fs::create_dir_all(output_path).map_err(|e| crate::Error::Format(e.to_string()))?;
+        for entry in WalkDir::new(source_dir).min_depth(1) {
+            let entry = entry.map_err(|e| crate::Error::Format(e.to_string()))?;
+            let rel = entry
+                .path()
+                .strip_prefix(source_dir)
+                .map_err(|e| crate::Error::Format(e.to_string()))?;
+            let dest = output_path.join(rel);
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(&dest).map_err(|e| crate::Error::Format(e.to_string()))?;
+            } else {
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| crate::Error::Format(e.to_string()))?;
+                }
+                std::fs::copy(entry.path(), &dest)
+                    .map_err(|e| crate::Error::Format(e.to_string()))?;
+            }
+        }
+        Ok(())
     }
 }
