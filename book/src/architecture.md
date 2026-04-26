@@ -40,9 +40,10 @@ own `Storage` implementation.
 ```
 image-delta-core/src/
 ├── lib.rs              pub use; crate-level doc
-├── encoder.rs          trait DeltaEncoder { encode, decode, algorithm_id }
+├── algorithm.rs        AlgorithmCode (u8 enum) + FilePatch
+├── encoder.rs          trait PatchEncoder { encode→FilePatch, decode, algorithm_code, algorithm_id }
 ├── storage.rs          trait Storage (upload/download blobs, patches, manifests)
-├── format.rs           trait ImageFormat + MountHandle
+├── image.rs           trait Image + MountHandle
 ├── compressor.rs       trait Compressor + struct DefaultCompressor
 ├── routing.rs          RouterEncoder, GlobRule, ElfRule, SizeRule, MagicRule
 ├── manifest.rs         Manifest, Entry, BlobRef, PatchRef, Metadata (MessagePack)
@@ -53,8 +54,8 @@ image-delta-core/src/
 │   ├── passthrough/    PassthroughEncoder — stores file verbatim
 │   └── text_diff/      TextDiffEncoder — Myers line diff (pure Rust)
 ├── formats/
-│   ├── directory.rs    DirectoryFormat — mount = return the dir as-is
-│   └── qcow2.rs        Qcow2Format — qemu-nbd + mount (feature = "qcow2")
+│   ├── directory.rs    DirectoryImage — mount = return the dir as-is
+│   └── qcow2.rs        Qcow2Image — qemu-nbd + mount (feature = "qcow2")
 ├── fs_diff/            diff_dirs() → DiffResult, TreeStats
 └── path_match/         find_best_matches() — bijective rename detection
 ```
@@ -72,11 +73,13 @@ image-delta-core/src/
 3. **`RouterEncoder::select(file_info)`** — evaluates `[[routing]]` rules in
    order. First rule whose predicate matches wins. Fallback = `default_encoder`.
 
-4. **`DeltaEncoder::encode(src, target)`** — produces a binary delta.
-   If `delta.len() >= source.len() * passthrough_threshold`, the delta is
-   discarded and the file is stored verbatim (`PassthroughEncoder`).
+4. **`PatchEncoder::encode(src, target) → FilePatch`** — produces a file-level
+   binary patch. `FilePatch` bundles the patch bytes with an `AlgorithmCode`
+   so `RouterEncoder` can record the correct decoder in `PatchRef` without
+   a second call. If `patch.len() >= source.len() * passthrough_threshold`,
+   the patch is discarded and the file is stored verbatim (`PassthroughEncoder`).
 
-5. **`Storage::upload_blob(data)`** — stores bytes by content UUID in S3.
+5. **`Storage::upload_blob(sha256, data)`** — stores bytes by content UUID.
    `Storage::upload_manifest(image_id, bytes)` stores the MessagePack manifest.
 
 ## Data flow — decompression
@@ -91,23 +94,38 @@ image-delta-core/src/
    - `Hardlink` → `fs::hard_link(target, output_path)`
 4. Apply all metadata (mode, uid, gid, mtime) after content phase.
 
+## Terminology
+
+| Term      | Level | Meaning                                                                      |
+| --------- | ----- | ---------------------------------------------------------------------------- |
+| **delta** | image | Full filesystem diff produced by `DefaultCompressor` (compress → decompress) |
+| **patch** | file  | Per-file binary diff produced by `PatchEncoder::encode`                      |
+
 ## Manifest format
 
 Manifests are serialised with **MessagePack** (`rmp-serde`, `to_vec_named`).
 Each manifest consists of a `ManifestHeader` followed by a `Vec<Entry>`.
+Version is currently `2`.
 
 ```rust
 struct ManifestHeader {
-    version:            u32,      // MANIFEST_VERSION = 1
+    version:            u32,      // MANIFEST_VERSION = 2
     image_id:           String,
     base_image_id:      Option<String>,
-    algorithm_id:       String,   // e.g. "xdelta3"
+    format:             String,   // e.g. "directory"
     patches_compressed: bool,
+}
+
+struct PatchRef {
+    archive_entry:  String,          // member filename in patches.tar
+    sha256:         String,          // hex SHA-256 of patch bytes
+    algorithm_code: AlgorithmCode,   // u8: 0x00=passthrough, 0x01=xdelta3, 0x02=text-diff, 0xFF=extended
+    algorithm_id:   Option<String>,  // set only when algorithm_code == Extended
 }
 
 struct Entry {
     path:            String,
-    entry_type:      EntryType,   // Added | Removed | Changed | MetadataOnly | Hardlink
+    entry_type:      EntryType,   // File | Directory | Symlink | Hardlink | Other
     blob:            Option<BlobRef>,
     patch:           Option<PatchRef>,
     metadata:        Option<Metadata>,

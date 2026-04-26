@@ -9,7 +9,7 @@ configurable file-type routing.
 
 > **Phase 4 complete.** Compress/decompress pipeline implemented and covered
 > by 85 L1 unit + integration tests. Phase 5 (real S3/PostgreSQL storage,
-> Qcow2Format, parallel scheduler) is next.
+> Qcow2Image, parallel scheduler) is next.
 
 ## How it works
 
