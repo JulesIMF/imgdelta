@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use uuid::Uuid;
 
 use image_delta_core::storage::{BlobCandidate, ImageMeta, ImageStatus};
@@ -51,12 +52,13 @@ impl FakeStorage {
     }
 }
 
+#[async_trait]
 impl Storage for FakeStorage {
-    fn blob_exists(&self, sha256: &str) -> Result<Option<Uuid>> {
+    async fn blob_exists(&self, sha256: &str) -> Result<Option<Uuid>> {
         Ok(self.inner.lock().unwrap().sha256_index.get(sha256).copied())
     }
 
-    fn upload_blob(&self, sha256: &str, data: &[u8]) -> Result<Uuid> {
+    async fn upload_blob(&self, sha256: &str, data: &[u8]) -> Result<Uuid> {
         let mut inner = self.inner.lock().unwrap();
         if let Some(&existing) = inner.sha256_index.get(sha256) {
             return Ok(existing);
@@ -67,7 +69,7 @@ impl Storage for FakeStorage {
         Ok(id)
     }
 
-    fn download_blob(&self, blob_id: Uuid) -> Result<Vec<u8>> {
+    async fn download_blob(&self, blob_id: Uuid) -> Result<Vec<u8>> {
         self.inner
             .lock()
             .unwrap()
@@ -77,7 +79,7 @@ impl Storage for FakeStorage {
             .ok_or_else(|| image_delta_core::Error::Storage(format!("blob not found: {blob_id}")))
     }
 
-    fn upload_manifest(&self, image_id: &str, manifest_bytes: &[u8]) -> Result<()> {
+    async fn upload_manifest(&self, image_id: &str, manifest_bytes: &[u8]) -> Result<()> {
         self.inner
             .lock()
             .unwrap()
@@ -86,7 +88,7 @@ impl Storage for FakeStorage {
         Ok(())
     }
 
-    fn download_manifest(&self, image_id: &str) -> Result<Vec<u8>> {
+    async fn download_manifest(&self, image_id: &str) -> Result<Vec<u8>> {
         self.inner
             .lock()
             .unwrap()
@@ -98,7 +100,7 @@ impl Storage for FakeStorage {
             })
     }
 
-    fn upload_patches(&self, image_id: &str, data: &[u8], _compressed: bool) -> Result<()> {
+    async fn upload_patches(&self, image_id: &str, data: &[u8], _compressed: bool) -> Result<()> {
         self.inner
             .lock()
             .unwrap()
@@ -107,7 +109,7 @@ impl Storage for FakeStorage {
         Ok(())
     }
 
-    fn download_patches(&self, image_id: &str) -> Result<Vec<u8>> {
+    async fn download_patches(&self, image_id: &str) -> Result<Vec<u8>> {
         self.inner
             .lock()
             .unwrap()
@@ -119,7 +121,7 @@ impl Storage for FakeStorage {
             })
     }
 
-    fn register_image(&self, meta: &ImageMeta) -> Result<()> {
+    async fn register_image(&self, meta: &ImageMeta) -> Result<()> {
         self.inner
             .lock()
             .unwrap()
@@ -128,15 +130,15 @@ impl Storage for FakeStorage {
         Ok(())
     }
 
-    fn get_image(&self, image_id: &str) -> Result<Option<ImageMeta>> {
+    async fn get_image(&self, image_id: &str) -> Result<Option<ImageMeta>> {
         Ok(self.inner.lock().unwrap().images.get(image_id).cloned())
     }
 
-    fn update_status(&self, _image_id: &str, _status: ImageStatus) -> Result<()> {
+    async fn update_status(&self, _image_id: &str, _status: ImageStatus) -> Result<()> {
         Ok(())
     }
 
-    fn list_images(&self) -> Result<Vec<ImageMeta>> {
+    async fn list_images(&self) -> Result<Vec<ImageMeta>> {
         Ok(self
             .inner
             .lock()
@@ -147,7 +149,7 @@ impl Storage for FakeStorage {
             .collect())
     }
 
-    fn find_blob_candidates(&self, base_image_id: &str) -> Result<Vec<BlobCandidate>> {
+    async fn find_blob_candidates(&self, base_image_id: &str) -> Result<Vec<BlobCandidate>> {
         let inner = self.inner.lock().unwrap();
         let origins = match inner.blob_origins.get(base_image_id) {
             Some(o) => o,
@@ -172,7 +174,12 @@ impl Storage for FakeStorage {
         Ok(candidates)
     }
 
-    fn record_blob_origin(&self, blob_uuid: Uuid, image_id: &str, file_path: &str) -> Result<()> {
+    async fn record_blob_origin(
+        &self,
+        blob_uuid: Uuid,
+        image_id: &str,
+        file_path: &str,
+    ) -> Result<()> {
         self.inner
             .lock()
             .unwrap()

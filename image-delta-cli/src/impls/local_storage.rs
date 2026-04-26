@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use async_trait::async_trait;
 use image_delta_core::storage::{BlobCandidate, ImageMeta, ImageStatus, Storage};
 use image_delta_core::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -174,12 +175,13 @@ impl LocalStorage {
     }
 }
 
+#[async_trait]
 impl Storage for LocalStorage {
-    fn blob_exists(&self, sha256: &str) -> Result<Option<Uuid>> {
+    async fn blob_exists(&self, sha256: &str) -> Result<Option<Uuid>> {
         Ok(self.inner.lock().unwrap().sha256_index.get(sha256).copied())
     }
 
-    fn upload_blob(&self, sha256: &str, data: &[u8]) -> Result<Uuid> {
+    async fn upload_blob(&self, sha256: &str, data: &[u8]) -> Result<Uuid> {
         let mut inner = self.inner.lock().unwrap();
 
         // Idempotent: if already uploaded, return existing UUID.
@@ -197,32 +199,32 @@ impl Storage for LocalStorage {
         Ok(uuid)
     }
 
-    fn download_blob(&self, blob_id: Uuid) -> Result<Vec<u8>> {
+    async fn download_blob(&self, blob_id: Uuid) -> Result<Vec<u8>> {
         std::fs::read(self.blob_path(blob_id))
             .map_err(|e| Error::Storage(format!("blob {blob_id} not found: {e}")))
     }
 
-    fn upload_manifest(&self, image_id: &str, manifest_bytes: &[u8]) -> Result<()> {
+    async fn upload_manifest(&self, image_id: &str, manifest_bytes: &[u8]) -> Result<()> {
         std::fs::create_dir_all(self.image_dir(image_id)).map_err(Self::io_err)?;
         std::fs::write(self.manifest_path(image_id), manifest_bytes).map_err(Self::io_err)
     }
 
-    fn download_manifest(&self, image_id: &str) -> Result<Vec<u8>> {
+    async fn download_manifest(&self, image_id: &str) -> Result<Vec<u8>> {
         std::fs::read(self.manifest_path(image_id))
             .map_err(|e| Error::Storage(format!("manifest for {image_id} not found: {e}")))
     }
 
-    fn upload_patches(&self, image_id: &str, data: &[u8], _compressed: bool) -> Result<()> {
+    async fn upload_patches(&self, image_id: &str, data: &[u8], _compressed: bool) -> Result<()> {
         std::fs::create_dir_all(self.image_dir(image_id)).map_err(Self::io_err)?;
         std::fs::write(self.patches_path(image_id), data).map_err(Self::io_err)
     }
 
-    fn download_patches(&self, image_id: &str) -> Result<Vec<u8>> {
+    async fn download_patches(&self, image_id: &str) -> Result<Vec<u8>> {
         std::fs::read(self.patches_path(image_id))
             .map_err(|e| Error::Storage(format!("patches for {image_id} not found: {e}")))
     }
 
-    fn register_image(&self, meta: &ImageMeta) -> Result<()> {
+    async fn register_image(&self, meta: &ImageMeta) -> Result<()> {
         let dir = self.image_dir(&meta.image_id);
         std::fs::create_dir_all(&dir).map_err(Self::io_err)?;
         let stored = StoredImageMeta::from(meta);
@@ -231,7 +233,7 @@ impl Storage for LocalStorage {
         std::fs::write(self.meta_path(&meta.image_id), bytes).map_err(Self::io_err)
     }
 
-    fn get_image(&self, image_id: &str) -> Result<Option<ImageMeta>> {
+    async fn get_image(&self, image_id: &str) -> Result<Option<ImageMeta>> {
         let path = self.meta_path(image_id);
         if !path.exists() {
             return Ok(None);
@@ -242,7 +244,7 @@ impl Storage for LocalStorage {
         Ok(Some(ImageMeta::from(stored)))
     }
 
-    fn update_status(&self, image_id: &str, status: ImageStatus) -> Result<()> {
+    async fn update_status(&self, image_id: &str, status: ImageStatus) -> Result<()> {
         let path = self.meta_path(image_id);
         let bytes = std::fs::read(&path)
             .map_err(|e| Error::Storage(format!("image {image_id} not found: {e}")))?;
@@ -254,7 +256,7 @@ impl Storage for LocalStorage {
         std::fs::write(&path, updated).map_err(Self::io_err)
     }
 
-    fn list_images(&self) -> Result<Vec<ImageMeta>> {
+    async fn list_images(&self) -> Result<Vec<ImageMeta>> {
         let images_dir = self.base_dir.join("images");
         if !images_dir.exists() {
             return Ok(Vec::new());
@@ -274,7 +276,7 @@ impl Storage for LocalStorage {
         Ok(result)
     }
 
-    fn find_blob_candidates(&self, base_image_id: &str) -> Result<Vec<BlobCandidate>> {
+    async fn find_blob_candidates(&self, base_image_id: &str) -> Result<Vec<BlobCandidate>> {
         let inner = self.inner.lock().unwrap();
         let candidates = inner
             .blob_origins
@@ -299,7 +301,12 @@ impl Storage for LocalStorage {
         Ok(candidates)
     }
 
-    fn record_blob_origin(&self, blob_uuid: Uuid, image_id: &str, file_path: &str) -> Result<()> {
+    async fn record_blob_origin(
+        &self,
+        blob_uuid: Uuid,
+        image_id: &str,
+        file_path: &str,
+    ) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
         inner.blob_origins.push(BlobOriginRecord {
             blob_uuid: blob_uuid.to_string(),

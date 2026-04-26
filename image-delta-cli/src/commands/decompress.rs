@@ -25,7 +25,7 @@ pub struct DecompressArgs {
     pub workers: Option<usize>,
 }
 
-pub fn run(args: DecompressArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+pub async fn run(args: DecompressArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
     let config = load_config(config_path)?;
 
     let storage = config.storage.build()?;
@@ -38,7 +38,7 @@ pub fn run(args: DecompressArgs, config_path: Option<&Path>) -> anyhow::Result<(
         workers: args.workers.unwrap_or(config.compressor.workers),
     };
 
-    let stats = compressor.decompress(&args.output, opts)?;
+    let stats = compressor.decompress(&args.output, opts).await?;
 
     eprintln!(
         "Decompressed {} → {}\n  files={}, bytes={}, elapsed={:.2}s",

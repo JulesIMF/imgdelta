@@ -33,7 +33,7 @@ pub struct CompressArgs {
     pub workers: Option<usize>,
 }
 
-pub fn run(args: CompressArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+pub async fn run(args: CompressArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
     let config = load_config(config_path)?;
 
     let storage = config.storage.build()?;
@@ -47,7 +47,9 @@ pub fn run(args: CompressArgs, config_path: Option<&Path>) -> anyhow::Result<()>
         passthrough_threshold: config.compressor.passthrough_threshold,
     };
 
-    let stats = compressor.compress(&args.base_image, &args.image, opts)?;
+    let stats = compressor
+        .compress(&args.base_image, &args.image, opts)
+        .await?;
 
     eprintln!(
         "Compressed {} → {}\n  added={}, patched={}, removed={}, elapsed={:.2}s",

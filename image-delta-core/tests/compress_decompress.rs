@@ -9,13 +9,14 @@ use tempfile::tempdir;
 
 // ── Helper: save root image meta so chain-check passes ────────────────────────
 
-fn save_root_meta(storage: &dyn Storage, image_id: &str) {
+async fn save_root_meta(storage: &dyn Storage, image_id: &str) {
     storage
         .register_image(&ImageMeta {
             image_id: image_id.to_string(),
             base_image_id: None,
             format: "directory".into(),
         })
+        .await
         .unwrap();
 }
 
@@ -23,8 +24,8 @@ fn save_root_meta(storage: &dyn Storage, image_id: &str) {
 
 /// base = {file_a, file_b, file_c}; target = {file_a changed, file_c unchanged,
 /// file_d new, file_b removed}.  After compress + decompress, output == target.
-#[test]
-fn test_roundtrip_simple() {
+#[tokio::test]
+async fn test_roundtrip_simple() {
     let base = tempdir().unwrap();
     let target = tempdir().unwrap();
     let output = tempdir().unwrap();
@@ -43,7 +44,7 @@ fn test_roundtrip_simple() {
     write_file(target.path(), "file_d.txt", b"brand new file");
 
     let (storage, compressor) = make_compressor();
-    save_root_meta(&*storage, "img-base");
+    save_root_meta(&*storage, "img-base").await;
 
     let stats = compressor
         .compress(
@@ -51,10 +52,12 @@ fn test_roundtrip_simple() {
             target.path(),
             compress_opts("img-1", Some("img-base")),
         )
+        .await
         .unwrap();
 
     let decomp = compressor
         .decompress(output.path(), decompress_opts("img-1", base.path()))
+        .await
         .unwrap();
 
     let diffs = compare_dirs(target.path(), output.path());
@@ -71,8 +74,8 @@ fn test_roundtrip_simple() {
 // ── 2. test_roundtrip_rename ──────────────────────────────────────────────────
 
 /// A file is renamed with identical content — path_match detects the rename.
-#[test]
-fn test_roundtrip_rename() {
+#[tokio::test]
+async fn test_roundtrip_rename() {
     let base = tempdir().unwrap();
     let target = tempdir().unwrap();
     let output = tempdir().unwrap();
@@ -90,7 +93,7 @@ fn test_roundtrip_rename() {
     );
 
     let (storage, compressor) = make_compressor();
-    save_root_meta(&*storage, "img-base");
+    save_root_meta(&*storage, "img-base").await;
 
     compressor
         .compress(
@@ -98,10 +101,12 @@ fn test_roundtrip_rename() {
             target.path(),
             compress_opts("img-rename", Some("img-base")),
         )
+        .await
         .unwrap();
 
     compressor
         .decompress(output.path(), decompress_opts("img-rename", base.path()))
+        .await
         .unwrap();
 
     let diffs = compare_dirs(target.path(), output.path());
@@ -111,8 +116,8 @@ fn test_roundtrip_rename() {
 // ── 3. test_roundtrip_metadata_only ──────────────────────────────────────────
 
 /// Only the mode changes — no content diff.
-#[test]
-fn test_roundtrip_metadata_only() {
+#[tokio::test]
+async fn test_roundtrip_metadata_only() {
     let base = tempdir().unwrap();
     let target = tempdir().unwrap();
     let output = tempdir().unwrap();
@@ -124,7 +129,7 @@ fn test_roundtrip_metadata_only() {
     set_mode(target.path(), "script.sh", 0o755);
 
     let (storage, compressor) = make_compressor();
-    save_root_meta(&*storage, "img-base");
+    save_root_meta(&*storage, "img-base").await;
 
     compressor
         .compress(
@@ -132,10 +137,12 @@ fn test_roundtrip_metadata_only() {
             target.path(),
             compress_opts("img-meta", Some("img-base")),
         )
+        .await
         .unwrap();
 
     compressor
         .decompress(output.path(), decompress_opts("img-meta", base.path()))
+        .await
         .unwrap();
 
     let diffs = compare_dirs(target.path(), output.path());
@@ -148,8 +155,8 @@ fn test_roundtrip_metadata_only() {
 // ── 4. test_roundtrip_symlink ─────────────────────────────────────────────────
 
 /// Symlink target changes — the new target must be recorded and restored.
-#[test]
-fn test_roundtrip_symlink() {
+#[tokio::test]
+async fn test_roundtrip_symlink() {
     let base = tempdir().unwrap();
     let target = tempdir().unwrap();
     let output = tempdir().unwrap();
@@ -161,7 +168,7 @@ fn test_roundtrip_symlink() {
     write_symlink(target.path(), "link", "new_target");
 
     let (storage, compressor) = make_compressor();
-    save_root_meta(&*storage, "img-base");
+    save_root_meta(&*storage, "img-base").await;
 
     compressor
         .compress(
@@ -169,10 +176,12 @@ fn test_roundtrip_symlink() {
             target.path(),
             compress_opts("img-sym", Some("img-base")),
         )
+        .await
         .unwrap();
 
     compressor
         .decompress(output.path(), decompress_opts("img-sym", base.path()))
+        .await
         .unwrap();
 
     let diffs = compare_dirs(target.path(), output.path());
@@ -182,8 +191,8 @@ fn test_roundtrip_symlink() {
 // ── 5. test_roundtrip_hardlink ────────────────────────────────────────────────
 
 /// A new hardlink is added in the target — the output must share the same inode.
-#[test]
-fn test_roundtrip_hardlink() {
+#[tokio::test]
+async fn test_roundtrip_hardlink() {
     let base = tempdir().unwrap();
     let target = tempdir().unwrap();
     let output = tempdir().unwrap();
@@ -199,7 +208,7 @@ fn test_roundtrip_hardlink() {
     .unwrap();
 
     let (storage, compressor) = make_compressor();
-    save_root_meta(&*storage, "img-base");
+    save_root_meta(&*storage, "img-base").await;
 
     compressor
         .compress(
@@ -207,10 +216,12 @@ fn test_roundtrip_hardlink() {
             target.path(),
             compress_opts("img-hl", Some("img-base")),
         )
+        .await
         .unwrap();
 
     compressor
         .decompress(output.path(), decompress_opts("img-hl", base.path()))
+        .await
         .unwrap();
 
     // Both files must exist in output.
@@ -231,8 +242,8 @@ fn test_roundtrip_hardlink() {
 // ── 6. test_roundtrip_many_files ──────────────────────────────────────────────
 
 /// 100 files of mixed types — stress test; no panic, output correct.
-#[test]
-fn test_roundtrip_many_files() {
+#[tokio::test]
+async fn test_roundtrip_many_files() {
     let base = tempdir().unwrap();
     let target = tempdir().unwrap();
     let output = tempdir().unwrap();
@@ -271,7 +282,7 @@ fn test_roundtrip_many_files() {
     }
 
     let (storage, compressor) = make_compressor();
-    save_root_meta(&*storage, "img-base");
+    save_root_meta(&*storage, "img-base").await;
 
     compressor
         .compress(
@@ -279,10 +290,12 @@ fn test_roundtrip_many_files() {
             target.path(),
             compress_opts("img-many", Some("img-base")),
         )
+        .await
         .unwrap();
 
     compressor
         .decompress(output.path(), decompress_opts("img-many", base.path()))
+        .await
         .unwrap();
 
     let diffs = compare_dirs(target.path(), output.path());
@@ -295,8 +308,8 @@ fn test_roundtrip_many_files() {
 // ── 7. test_compression_stats ─────────────────────────────────────────────────
 
 /// compress() returns non-zero stats for a mixed workload.
-#[test]
-fn test_compression_stats() {
+#[tokio::test]
+async fn test_compression_stats() {
     let base = tempdir().unwrap();
     let target = tempdir().unwrap();
 
@@ -312,7 +325,7 @@ fn test_compression_stats() {
     write_file(target.path(), "c.txt", b"new file c");
 
     let (storage, compressor) = make_compressor();
-    save_root_meta(&*storage, "img-base");
+    save_root_meta(&*storage, "img-base").await;
 
     let stats = compressor
         .compress(
@@ -320,6 +333,7 @@ fn test_compression_stats() {
             target.path(),
             compress_opts("img-stats", Some("img-base")),
         )
+        .await
         .unwrap();
 
     assert!(
@@ -331,8 +345,8 @@ fn test_compression_stats() {
 // ── 8. test_decompression_stats ───────────────────────────────────────────────
 
 /// patches_verified equals the number of patch entries in the manifest.
-#[test]
-fn test_decompression_stats() {
+#[tokio::test]
+async fn test_decompression_stats() {
     let base = tempdir().unwrap();
     let target = tempdir().unwrap();
     let output = tempdir().unwrap();
@@ -357,7 +371,7 @@ fn test_decompression_stats() {
     write_file(target.path(), "beta.txt", &beta_target);
 
     let (storage, compressor) = make_compressor();
-    save_root_meta(&*storage, "img-base");
+    save_root_meta(&*storage, "img-base").await;
 
     compressor
         .compress(
@@ -365,6 +379,7 @@ fn test_decompression_stats() {
             target.path(),
             compress_opts("img-decomp-stats", Some("img-base")),
         )
+        .await
         .unwrap();
 
     let decomp_stats = compressor
@@ -372,11 +387,83 @@ fn test_decompression_stats() {
             output.path(),
             decompress_opts("img-decomp-stats", base.path()),
         )
+        .await
         .unwrap();
 
     // Both files were patched → patches_verified should be 2.
     assert_eq!(
         decomp_stats.patches_verified, 2,
         "expected 2 patches_verified, got {decomp_stats:?}"
+    );
+}
+
+// ── 9. test_parallel_same_result_as_sequential ────────────────────────────────
+
+/// Compressing with workers=4 must produce the same decompressed output as workers=1.
+/// This verifies rayon parallelism is correct and deterministic for content.
+#[tokio::test]
+async fn test_parallel_same_result_as_sequential() {
+    use common::compress_opts_workers;
+
+    let base = tempdir().unwrap();
+    let target = tempdir().unwrap();
+    let out_seq = tempdir().unwrap();
+    let out_par = tempdir().unwrap();
+
+    // 8 changed files so rayon has something to parallelize
+    for i in 0..8 {
+        let name = format!("file_{i:02}.dat");
+        let old: Vec<u8> = format!("old content for file {i} --- padding")
+            .bytes()
+            .cycle()
+            .take(256)
+            .collect();
+        let mut new = old.clone();
+        new[i * 10] ^= 0xAB;
+        write_file(base.path(), &name, &old);
+        set_mtime_old(base.path(), &name);
+        write_file(target.path(), &name, &new);
+    }
+
+    // Sequential (workers=1)
+    {
+        let (storage, compressor) = make_compressor();
+        save_root_meta(&*storage, "img-base-seq").await;
+        compressor
+            .compress(
+                base.path(),
+                target.path(),
+                compress_opts_workers("img-seq", Some("img-base-seq"), 1),
+            )
+            .await
+            .unwrap();
+        compressor
+            .decompress(out_seq.path(), decompress_opts("img-seq", base.path()))
+            .await
+            .unwrap();
+    }
+
+    // Parallel (workers=4)
+    {
+        let (storage, compressor) = make_compressor();
+        save_root_meta(&*storage, "img-base-par").await;
+        compressor
+            .compress(
+                base.path(),
+                target.path(),
+                compress_opts_workers("img-par", Some("img-base-par"), 4),
+            )
+            .await
+            .unwrap();
+        compressor
+            .decompress(out_par.path(), decompress_opts("img-par", base.path()))
+            .await
+            .unwrap();
+    }
+
+    let diffs = compare_dirs(out_seq.path(), out_par.path());
+    assert!(
+        diffs.is_empty(),
+        "parallel output differs from sequential:\n{diffs:#?}"
     );
 }

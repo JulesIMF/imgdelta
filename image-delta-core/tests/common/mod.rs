@@ -343,10 +343,19 @@ pub fn compress_opts(
     image_id: &str,
     base_image_id: Option<&str>,
 ) -> image_delta_core::CompressOptions {
+    compress_opts_workers(image_id, base_image_id, 1)
+}
+
+/// Like [`compress_opts`] but with a configurable worker count.
+pub fn compress_opts_workers(
+    image_id: &str,
+    base_image_id: Option<&str>,
+    workers: usize,
+) -> image_delta_core::CompressOptions {
     image_delta_core::CompressOptions {
         image_id: image_id.to_string(),
         base_image_id: base_image_id.map(|s| s.to_string()),
-        workers: 1,
+        workers,
         passthrough_threshold: 1.0,
     }
 }

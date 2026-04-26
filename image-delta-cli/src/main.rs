@@ -48,14 +48,15 @@ enum Commands {
     Debug(commands::DebugCommands),
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // TODO Phase 6: initialise tracing + indicatif based on cli.log_level and config
 
     match cli.command {
-        Commands::Compress(args) => commands::compress::run(args, cli.config.as_deref()),
-        Commands::Decompress(args) => commands::decompress::run(args, cli.config.as_deref()),
+        Commands::Compress(args) => commands::compress::run(args, cli.config.as_deref()).await,
+        Commands::Decompress(args) => commands::decompress::run(args, cli.config.as_deref()).await,
         Commands::Image(cmd) => commands::image::run(cmd),
         Commands::Manifest(cmd) => commands::manifest::run(cmd),
         #[cfg(debug_assertions)]

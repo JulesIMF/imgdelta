@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use uuid::Uuid;
 
 /// A blob candidate returned by storage when searching for a suitable delta base.
@@ -57,58 +58,64 @@ pub enum ImageStatus {
 /// `save_stats` from the original design is intentionally omitted here to avoid a
 /// circular dependency with `compressor::CompressionStats`.  It will be added in
 /// Phase 5 via a separate `StoredStats` type.
+#[async_trait]
 pub trait Storage: Send + Sync {
     // ── Blob CAS ─────────────────────────────────────────────────────────────
 
     /// Check whether a blob with this SHA-256 digest already exists.
     ///
     /// Returns `Some(uuid)` if it exists, `None` otherwise.
-    fn blob_exists(&self, sha256: &str) -> crate::Result<Option<Uuid>>;
+    async fn blob_exists(&self, sha256: &str) -> crate::Result<Option<Uuid>>;
 
     /// Upload raw bytes, keyed by their SHA-256 hex digest.
     ///
     /// Must be idempotent: if a blob with `sha256` already exists, returns the
     /// existing UUID without re-uploading.
-    fn upload_blob(&self, sha256: &str, data: &[u8]) -> crate::Result<Uuid>;
+    async fn upload_blob(&self, sha256: &str, data: &[u8]) -> crate::Result<Uuid>;
 
     /// Download raw bytes for a known blob UUID.
-    fn download_blob(&self, blob_id: Uuid) -> crate::Result<Vec<u8>>;
+    async fn download_blob(&self, blob_id: Uuid) -> crate::Result<Vec<u8>>;
 
     // ── Image data ────────────────────────────────────────────────────────────
 
     /// Upload a serialised manifest for `image_id`.
-    fn upload_manifest(&self, image_id: &str, manifest_bytes: &[u8]) -> crate::Result<()>;
+    async fn upload_manifest(&self, image_id: &str, manifest_bytes: &[u8]) -> crate::Result<()>;
 
     /// Download the serialised manifest for `image_id`.
-    fn download_manifest(&self, image_id: &str) -> crate::Result<Vec<u8>>;
+    async fn download_manifest(&self, image_id: &str) -> crate::Result<Vec<u8>>;
 
     /// Upload the patches tar (or tar.gz) archive for `image_id`.
     ///
     /// `compressed` — `true` if the bytes are gzip-compressed (tar.gz).
-    fn upload_patches(&self, image_id: &str, data: &[u8], compressed: bool) -> crate::Result<()>;
+    async fn upload_patches(
+        &self,
+        image_id: &str,
+        data: &[u8],
+        compressed: bool,
+    ) -> crate::Result<()>;
 
     /// Download the patches tar (or tar.gz) archive for `image_id`.
-    fn download_patches(&self, image_id: &str) -> crate::Result<Vec<u8>>;
+    async fn download_patches(&self, image_id: &str) -> crate::Result<Vec<u8>>;
 
     // ── DB ────────────────────────────────────────────────────────────────────
 
     /// Persist metadata for a newly created or updated image.
-    fn register_image(&self, meta: &ImageMeta) -> crate::Result<()>;
+    async fn register_image(&self, meta: &ImageMeta) -> crate::Result<()>;
 
     /// Look up metadata for an image by ID, returning `None` if not found.
-    fn get_image(&self, image_id: &str) -> crate::Result<Option<ImageMeta>>;
+    async fn get_image(&self, image_id: &str) -> crate::Result<Option<ImageMeta>>;
 
     /// Update the lifecycle status of an image.
-    fn update_status(&self, image_id: &str, status: ImageStatus) -> crate::Result<()>;
+    async fn update_status(&self, image_id: &str, status: ImageStatus) -> crate::Result<()>;
 
     /// Return metadata for all known images.
-    fn list_images(&self) -> crate::Result<Vec<ImageMeta>>;
+    async fn list_images(&self) -> crate::Result<Vec<ImageMeta>>;
 
     // ── BlobPatch ─────────────────────────────────────────────────────────────
 
     /// Return blobs from `base_image_id` that are candidates for delta encoding
     /// against files in the new image.
-    fn find_blob_candidates(&self, base_image_id: &str) -> crate::Result<Vec<BlobCandidate>>;
+    async fn find_blob_candidates(&self, base_image_id: &str) -> crate::Result<Vec<BlobCandidate>>;
 
     /// Record that `blob_uuid` originated from `file_path` in `image_id`.
     ///
@@ -118,7 +125,7 @@ pub trait Storage: Send + Sync {
     ///
     /// [`DefaultCompressor`]: crate::DefaultCompressor
     /// [`find_blob_candidates`]: Storage::find_blob_candidates
-    fn record_blob_origin(
+    async fn record_blob_origin(
         &self,
         blob_uuid: Uuid,
         image_id: &str,
