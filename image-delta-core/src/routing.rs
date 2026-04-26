@@ -90,6 +90,11 @@ pub struct GlobRule {
 }
 
 impl GlobRule {
+    /// Create a new `GlobRule` that routes files matching `pattern` to `encoder`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Format`] if `pattern` is not a valid glob.
     pub fn new(pattern: &str, encoder: Arc<dyn DeltaEncoder>) -> Result<Self> {
         let pattern =
             glob::Pattern::new(pattern).map_err(|e| crate::Error::Format(e.to_string()))?;
@@ -113,6 +118,7 @@ pub struct ElfRule {
 }
 
 impl ElfRule {
+    /// Create a new `ElfRule` that routes ELF binaries to `encoder`.
     pub fn new(encoder: Arc<dyn DeltaEncoder>) -> Self {
         Self { encoder }
     }
@@ -135,6 +141,7 @@ pub struct SizeRule {
 }
 
 impl SizeRule {
+    /// Create a new `SizeRule` that routes files up to `max_bytes` in size to `encoder`.
     pub fn new(max_bytes: u64, encoder: Arc<dyn DeltaEncoder>) -> Self {
         Self { max_bytes, encoder }
     }
@@ -159,6 +166,7 @@ pub struct MagicRule {
 }
 
 impl MagicRule {
+    /// Create a new `MagicRule` that routes files starting with `magic` bytes to `encoder`.
     pub fn new(magic: impl Into<Vec<u8>>, encoder: Arc<dyn DeltaEncoder>) -> Self {
         Self {
             magic: magic.into(),

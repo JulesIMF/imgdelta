@@ -61,3 +61,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `imgdelta debug walkdir OLD NEW` — debug-only subcommand (`#[cfg(debug_assertions)]`)
 - `print_tree_stats()` with `fmt_bytes()` (B / KiB / MiB / GiB formatting)
 - Total test count: **85 tests** (all passing, zero external deps)
+
+### Fixed
+
+- `vendor/xdelta3.h`: added explicit `#include <assert.h>` — Ubuntu 24.04 / GCC 13 no
+  longer pulls it transitively through `<stdlib.h>`, causing `static_assert` to be
+  undefined at file scope and breaking the CI build
+- `image-delta-core/tests/fs_diff_integration.rs`: replaced 5× `&vec![…]` with slice
+  literals `&[…]` to satisfy `clippy::useless_vec` (`-D warnings` in CI)
+- `lefthook.yml`: added `clippy` command to `pre-commit` hook so lint errors are caught
+  locally before reaching CI

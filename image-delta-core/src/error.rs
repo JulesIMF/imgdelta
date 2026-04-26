@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+/// All errors that can be returned by `image-delta-core`.
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("I/O error: {0}")]
@@ -25,3 +26,5 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+// Error variants are self-documenting via their `thiserror` messages.

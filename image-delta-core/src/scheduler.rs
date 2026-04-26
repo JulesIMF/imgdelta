@@ -13,6 +13,9 @@ pub enum WorkItem<T> {
 }
 
 /// Thread-safe FIFO queue shared between the dispatcher and worker threads.
+///
+/// Work items are added by the dispatcher and consumed by N worker threads.
+/// Shutdown is signalled by pushing one [`WorkItem::Done`] sentinel per worker.
 pub struct WorkQueue<T> {
     inner: Arc<Mutex<VecDeque<WorkItem<T>>>>,
 }

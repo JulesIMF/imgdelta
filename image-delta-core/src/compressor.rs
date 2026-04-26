@@ -23,8 +23,11 @@ pub struct CompressionStats {
     pub files_added: usize,
     /// Files marked as removed in the manifest.
     pub files_removed: usize,
+    /// Total uncompressed size of source files that were patched or added.
     pub total_source_bytes: u64,
+    /// Total bytes uploaded to storage (patches + verbatim blobs).
     pub total_stored_bytes: u64,
+    /// Wall-clock time taken by the compress operation, in seconds.
     pub elapsed_secs: f64,
 }
 
@@ -41,10 +44,13 @@ impl CompressionStats {
 /// Statistics produced by a decompress operation.
 #[derive(Debug, Clone, Default)]
 pub struct DecompressionStats {
+    /// Total number of entries reconstructed (added + patched + metadata-only).
     pub total_files: usize,
     /// Number of patch archive entries whose SHA-256 was verified successfully.
     pub patches_verified: usize,
+    /// Total bytes written to the output directory.
     pub total_bytes: u64,
+    /// Wall-clock time taken by the decompress operation, in seconds.
     pub elapsed_secs: f64,
 }
 
@@ -65,6 +71,7 @@ pub struct CompressOptions {
 
 /// Options for a decompress operation.
 pub struct DecompressOptions {
+    /// Provider-assigned identifier of the image to reconstruct.
     pub image_id: String,
     /// Path to the base image filesystem root used during compression.
     pub base_root: PathBuf,
@@ -107,6 +114,11 @@ pub struct DefaultCompressor {
 }
 
 impl DefaultCompressor {
+    /// Create a new `DefaultCompressor` backed by the given storage and encoder.
+    ///
+    /// Pass a [`RouterEncoder`] as `encoder` to enable per-file algorithm selection.
+    ///
+    /// [`RouterEncoder`]: crate::RouterEncoder
     pub fn new(storage: Arc<dyn Storage>, encoder: Arc<dyn DeltaEncoder>) -> Self {
         Self { storage, encoder }
     }
