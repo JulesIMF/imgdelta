@@ -45,7 +45,7 @@ pub use compressor::{
 pub use encoder::PatchEncoder;
 pub use encoders::{PassthroughEncoder, TextDiffEncoder, Xdelta3Encoder};
 pub use formats::DirectoryImage;
-#[cfg(feature = "qcow2")]
+#[cfg(all(target_os = "linux", feature = "qcow2"))]
 pub use formats::Qcow2Image;
 pub use image::{Image, MountHandle, SimpleMountHandle};
 pub use manifest::{
