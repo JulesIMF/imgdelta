@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use nix::mount::{umount2, MntFlags};
 use tempfile::TempDir;
+use walkdir::WalkDir;
 
 use crate::{Image, MountHandle, Result};
 
@@ -236,6 +237,259 @@ fn mount_block_device(candidates: &[String], mount_point: &Path) -> Result<()> {
     )))
 }
 
+// ── pack helpers ──────────────────────────────────────────────────────────────
+
+/// Sum the byte sizes of all regular files under `dir`.
+fn dir_total_size(dir: &Path) -> Result<u64> {
+    let mut total = 0u64;
+    for entry in WalkDir::new(dir) {
+        let entry = entry.map_err(|e| crate::Error::Format(e.to_string()))?;
+        if entry.file_type().is_file() {
+            total += entry
+                .metadata()
+                .map_err(|e| crate::Error::Format(e.to_string()))?
+                .len();
+        }
+    }
+    Ok(total)
+}
+
+/// Calculate a qcow2/ext4 image size that comfortably fits `data_bytes` of
+/// content.  Adds 50% overhead for ext4 metadata and journal, with a minimum
+/// of 64 MiB (the smallest ext4 image `mkfs.ext4` accepts without `-F`).
+fn ext4_image_size(data_bytes: u64) -> u64 {
+    const MIN: u64 = 64 * 1024 * 1024; // 64 MiB
+    let padded = (data_bytes * 3 / 2).max(MIN);
+    // Round up to next 1 MiB boundary.
+    (padded + (1024 * 1024 - 1)) & !(1024 * 1024 - 1)
+}
+
+/// Use `blkid` to find the first partition on `nbd_device` that contains a
+/// recognised filesystem (ext4 / xfs / btrfs / vfat).
+///
+/// Falls back to the `QCOW2_PARTITION` env var when set.  Returns the full
+/// device path (e.g. `/dev/nbd2p2`) or an error if nothing is found.
+fn find_main_partition(nbd_device: &str) -> Result<String> {
+    // Env-var override: QCOW2_PARTITION=N
+    if let Some(n) = std::env::var("QCOW2_PARTITION")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+    {
+        return Ok(format!("{nbd_device}p{n}"));
+    }
+
+    // Auto-detect via blkid: pick the first partition with a real FS.
+    for n in 1u32..=8 {
+        let part = format!("{nbd_device}p{n}");
+        if !Path::new(&part).exists() {
+            continue;
+        }
+        if let Ok(out) = Command::new("blkid").arg(&part).output() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if s.contains("ext4") || s.contains("xfs") || s.contains("btrfs") || s.contains("vfat")
+            {
+                return Ok(part);
+            }
+        }
+    }
+
+    Err(crate::Error::Format(format!(
+        "find_main_partition: no recognisable FS found on any partition of {nbd_device}"
+    )))
+}
+
+/// Connect `qcow2_path` to `nbd_device` for writing (no `--read-only`).
+///
+/// **Must be called while holding [`NBD_ALLOC`].**
+fn nbd_connect_rw(nbd_device: &str, qcow2_path: &Path) -> Result<()> {
+    let path_str = qcow2_path
+        .to_str()
+        .ok_or_else(|| crate::Error::Format("non-UTF-8 qcow2 path".into()))?;
+    run_command(
+        Command::new("qemu-nbd").args([&format!("--connect={nbd_device}"), path_str]),
+        "qemu-nbd --connect (rw)",
+    )
+}
+
+/// Mount `block_device` read-write at `mount_point` trying ext4.
+fn mount_rw(block_device: &str, mount_point: &Path) -> Result<()> {
+    use nix::mount::{mount, MsFlags};
+    mount(
+        Some(block_device),
+        mount_point,
+        Some("ext4"),
+        MsFlags::empty(),
+        None::<&str>,
+    )
+    .map_err(|e| crate::Error::Format(format!("mount_rw({block_device}): {e}")))
+}
+
+/// Run a `Command`, returning an error if the process fails.
+fn run_command(cmd: &mut Command, label: &str) -> Result<()> {
+    let out = cmd
+        .output()
+        .map_err(|e| crate::Error::Format(format!("failed to spawn {label}: {e}")))?;
+    if !out.status.success() {
+        return Err(crate::Error::Format(format!(
+            "{label} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Core of `pack()` when no base image is provided.
+///
+/// Creates a fresh qcow2 with a single raw ext4 partition (no partition table).
+/// Suitable for tests.
+fn pack_fresh(source_dir: &Path, output_path: &Path) -> Result<()> {
+    let data_bytes = dir_total_size(source_dir)?;
+    let image_size_str = format!("{}", ext4_image_size(data_bytes));
+
+    run_command(
+        Command::new("qemu-img").args([
+            "create",
+            "-f",
+            "qcow2",
+            output_path
+                .to_str()
+                .ok_or_else(|| crate::Error::Format("non-UTF-8 output path".into()))?,
+            &image_size_str,
+        ]),
+        "qemu-img create",
+    )?;
+
+    let start_index: u32 = std::env::var("QCOW2_DEVICE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let nbd_device = {
+        let _guard = NBD_ALLOC
+            .lock()
+            .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
+        let dev = find_free_nbd(start_index)?;
+        nbd_connect_rw(&dev, output_path)?;
+        dev
+    };
+
+    let disconnect = || {
+        let _ = Command::new("qemu-nbd")
+            .args(["--disconnect", &nbd_device])
+            .output();
+    };
+
+    if let Err(e) = run_command(
+        Command::new("mkfs.ext4").args(["-F", &nbd_device]),
+        "mkfs.ext4",
+    ) {
+        disconnect();
+        return Err(e);
+    }
+
+    // Use the shared copy helper.
+    let result = copy_into_nbd(source_dir, &nbd_device, mount_rw);
+    disconnect();
+    result
+}
+
+/// Core of `pack()` when a base image is provided.
+///
+/// 1. Clone the base qcow2 (sparse copy, preserves partition table + all partitions)
+/// 2. Connect the clone via qemu-nbd (writable)
+/// 3. Auto-detect the main FS partition via `blkid`
+/// 4. `mkfs.ext4 -F <partition>` — wipe and reformat only that partition
+/// 5. Mount read-write, copy tree, unmount
+/// 6. Disconnect
+fn pack_with_base(base: &Path, source_dir: &Path, output_path: &Path) -> Result<()> {
+    // 1. Sparse-copy the base image.
+    run_command(
+        Command::new("cp").args([
+            "--sparse=always",
+            base.to_str()
+                .ok_or_else(|| crate::Error::Format("non-UTF-8 base path".into()))?,
+            output_path
+                .to_str()
+                .ok_or_else(|| crate::Error::Format("non-UTF-8 output path".into()))?,
+        ]),
+        "cp --sparse=always (clone base)",
+    )?;
+
+    // 2. Connect the clone via NBD (writable).
+    let start_index: u32 = std::env::var("QCOW2_DEVICE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let nbd_device = {
+        let _guard = NBD_ALLOC
+            .lock()
+            .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
+        let dev = find_free_nbd(start_index)?;
+        nbd_connect_rw(&dev, output_path)?;
+        dev
+    };
+
+    let disconnect = || {
+        let _ = Command::new("qemu-nbd")
+            .args(["--disconnect", &nbd_device])
+            .output();
+    };
+
+    // Wait for partition nodes to appear.
+    let _ = wait_for_block_device(&nbd_device);
+
+    // 3. Find the main filesystem partition.
+    let main_part = match find_main_partition(&nbd_device) {
+        Ok(p) => p,
+        Err(e) => {
+            disconnect();
+            return Err(e);
+        }
+    };
+
+    // 4. Wipe and reformat just that partition.
+    if let Err(e) = run_command(
+        Command::new("mkfs.ext4").args(["-F", &main_part]),
+        "mkfs.ext4 (main partition)",
+    ) {
+        disconnect();
+        return Err(e);
+    }
+
+    // 5. Mount read-write and copy tree.
+    let result = copy_into_nbd(source_dir, &main_part, mount_rw);
+
+    // 6. Disconnect.
+    disconnect();
+    result
+}
+
+/// Mount `nbd_device_or_partition` read-write, copy `source_dir` into it, then unmount.
+fn copy_into_nbd<F>(source_dir: &Path, device: &str, mount_fn: F) -> Result<()>
+where
+    F: FnOnce(&str, &Path) -> Result<()>,
+{
+    let mount_dir = TempDir::new()
+        .map_err(|e| crate::Error::Format(format!("failed to create temp dir: {e}")))?;
+    let mount_root = mount_dir.path();
+
+    mount_fn(device, mount_root)?;
+
+    let src_str = source_dir
+        .to_str()
+        .ok_or_else(|| crate::Error::Format("non-UTF-8 source path".into()))?;
+    let dst_str = mount_root
+        .to_str()
+        .ok_or_else(|| crate::Error::Format("non-UTF-8 mount root path".into()))?;
+
+    let cp_src = format!("{src_str}/.");
+    let result = run_command(Command::new("cp").args(["-a", &cp_src, dst_str]), "cp -a");
+
+    let _ = umount2(mount_root, MntFlags::MNT_DETACH);
+    result
+}
+
 // ── Qcow2Image ────────────────────────────────────────────────────────────────
 
 /// [`Image`] implementation for qcow2 VM disk images.
@@ -247,21 +501,31 @@ fn mount_block_device(candidates: &[String], mount_point: &Path) -> Result<()> {
 ///
 /// Feature-gated behind `feature = "qcow2"`.
 ///
-/// # Example (L2 test, requires root/capabilities)
+/// # Pack behaviour
 ///
-/// ```ignore
-/// use image_delta_core::{Image, Qcow2Image};
-/// let img = Qcow2Image::new();
-/// let handle = img.mount(Path::new("base.qcow2")).unwrap();
-/// // handle.root() is a Path to the mounted filesystem
-/// // dropping `handle` unmounts and disconnects automatically
-/// ```
-pub struct Qcow2Image;
+/// - **No base image** (`Qcow2Image::new()`): creates a fresh qcow2 with a
+///   single raw ext4 partition from `source_dir`.  Use for testing.
+/// - **With base image** (`Qcow2Image::with_base(base_path)`): copies the
+///   base qcow2, identifies the main mountable partition via `blkid`, wipes
+///   and reformats just that partition, then copies `source_dir` into it.
+///   All other partitions (e.g. BIOS boot, EFI) remain intact.
+pub struct Qcow2Image {
+    /// When set, `pack()` clones this image and replaces its main partition.
+    base_image: Option<PathBuf>,
+}
 
 impl Qcow2Image {
-    /// Create a new `Qcow2Image` handler.
+    /// Create a `Qcow2Image` that builds images from scratch (no base).
     pub fn new() -> Self {
-        Self
+        Self { base_image: None }
+    }
+
+    /// Create a `Qcow2Image` that clones `base` and replaces its main
+    /// filesystem partition during `pack()`.
+    pub fn with_base(base: PathBuf) -> Self {
+        Self {
+            base_image: Some(base),
+        }
     }
 }
 
@@ -328,8 +592,25 @@ impl Image for Qcow2Image {
         }))
     }
 
-    /// Pack is implemented in Phase 5.3.
-    fn pack(&self, _source_dir: &Path, _output_path: &Path) -> Result<()> {
-        todo!("Phase 5.3: create qcow2 image from source_dir via qemu-img convert")
+    /// Pack the filesystem tree at `source_dir` into a qcow2 image at `output_path`.
+    ///
+    /// **No-base mode** (`Qcow2Image::new()`):
+    /// Creates a fresh single-partition ext4 qcow2.  Suitable for tests.
+    ///
+    /// **Base-image mode** (`Qcow2Image::with_base(base)`):
+    /// 1. `cp --sparse=always base output` — clone the full qcow2 including all partitions
+    /// 2. `qemu-nbd --connect` (writable) on the clone
+    /// 3. `find_main_partition` — `blkid` or `QCOW2_PARTITION` to locate the FS partition
+    /// 4. `mkfs.ext4 -F <partition>` — wipe and reformat just the main partition
+    /// 5. `mount(2)` read-write + `cp -a source_dir/. mountpoint/`
+    /// 6. `umount(2)` + `qemu-nbd --disconnect`
+    ///
+    /// All other partitions (e.g. p1 BIOS boot) remain identical to the base.
+    fn pack(&self, source_dir: &Path, output_path: &Path) -> Result<()> {
+        if let Some(base) = &self.base_image {
+            pack_with_base(base, source_dir, output_path)
+        } else {
+            pack_fresh(source_dir, output_path)
+        }
     }
 }
