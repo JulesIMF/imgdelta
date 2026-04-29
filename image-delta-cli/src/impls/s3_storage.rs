@@ -235,17 +235,19 @@ impl Storage for S3Storage {
     }
 
     async fn get_image(&self, image_id: &str) -> Result<Option<ImageMeta>> {
-        let row =
-            sqlx::query("SELECT image_id, base_image_id, format FROM images WHERE image_id = $1")
-                .bind(image_id)
-                .fetch_optional(&self.pg)
-                .await
-                .map_err(|e| Error::Storage(format!("get_image: {e}")))?;
+        let row = sqlx::query(
+            "SELECT image_id, base_image_id, format, status FROM images WHERE image_id = $1",
+        )
+        .bind(image_id)
+        .fetch_optional(&self.pg)
+        .await
+        .map_err(|e| Error::Storage(format!("get_image: {e}")))?;
 
         Ok(row.map(|r| ImageMeta {
             image_id: r.get("image_id"),
             base_image_id: r.get("base_image_id"),
             format: r.get("format"),
+            status: r.get("status"),
         }))
     }
 
@@ -269,11 +271,12 @@ impl Storage for S3Storage {
     }
 
     async fn list_images(&self) -> Result<Vec<ImageMeta>> {
-        let rows =
-            sqlx::query("SELECT image_id, base_image_id, format FROM images ORDER BY created_at")
-                .fetch_all(&self.pg)
-                .await
-                .map_err(|e| Error::Storage(format!("list_images: {e}")))?;
+        let rows = sqlx::query(
+            "SELECT image_id, base_image_id, format, status FROM images ORDER BY created_at",
+        )
+        .fetch_all(&self.pg)
+        .await
+        .map_err(|e| Error::Storage(format!("list_images: {e}")))?;
 
         Ok(rows
             .into_iter()
@@ -281,6 +284,7 @@ impl Storage for S3Storage {
                 image_id: r.get("image_id"),
                 base_image_id: r.get("base_image_id"),
                 format: r.get("format"),
+                status: r.get("status"),
             })
             .collect())
     }
@@ -453,6 +457,7 @@ mod tests {
             image_id: image_id.clone(),
             base_image_id: None,
             format: "directory".into(),
+            status: "pending".into(),
         };
         storage.register_image(&meta).await.unwrap();
 
@@ -480,6 +485,7 @@ mod tests {
                 image_id: image_id.clone(),
                 base_image_id: None,
                 format: "qcow2".into(),
+                status: "pending".into(),
             })
             .await
             .unwrap();
@@ -507,6 +513,7 @@ mod tests {
                 image_id: image_id.clone(),
                 base_image_id: None,
                 format: "directory".into(),
+                status: "pending".into(),
             })
             .await
             .unwrap();

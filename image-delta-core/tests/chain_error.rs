@@ -10,6 +10,7 @@ async fn save_meta_with_base(storage: &dyn Storage, image_id: &str, base_image_i
             image_id: image_id.to_string(),
             base_image_id: base_image_id.map(|s| s.to_string()),
             format: "directory".into(),
+            status: "active".into(),
         })
         .await
         .unwrap();

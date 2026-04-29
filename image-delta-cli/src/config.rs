@@ -1,5 +1,4 @@
-// Config structs are used in Phase 5/6 when CLI commands are wired up.
-#![allow(dead_code)]
+// Config structs are wired in Phase 5/6 CLI commands.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,6 +12,7 @@ use image_delta_core::{
 };
 
 use crate::impls::local_storage::LocalStorage;
+use crate::impls::s3_storage::S3Storage;
 
 /// Which delta encoder to use (fixed set — no runtime string lookup).
 #[derive(Debug, Clone, Deserialize)]
@@ -68,6 +68,7 @@ pub enum RoutingRuleConfig {
 /// [logging.targets]
 /// "image_delta_core::fs_diff" = "debug"
 /// ```
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
@@ -129,14 +130,15 @@ pub enum StorageConfig {
 
 impl StorageConfig {
     /// Build the appropriate [`Storage`] implementation.
-    pub fn build(&self) -> anyhow::Result<Arc<dyn Storage>> {
+    pub async fn build(&self) -> anyhow::Result<Arc<dyn Storage>> {
         match self {
             StorageConfig::Local { local_dir } => {
                 let s = LocalStorage::new(local_dir.clone())?;
                 Ok(Arc::new(s))
             }
             StorageConfig::S3 { .. } => {
-                anyhow::bail!("S3 storage is not yet implemented (Phase 5)")
+                let s = S3Storage::new(self).await?;
+                Ok(Arc::new(s))
             }
         }
     }
@@ -230,6 +232,7 @@ fn default_passthrough_threshold() -> f64 {
 pub struct Config {
     pub storage: StorageConfig,
     pub compressor: CompressorConfig,
+    #[allow(dead_code)]
     #[serde(default)]
     pub logging: LoggingConfig,
 }

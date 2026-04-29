@@ -25,6 +25,14 @@ pub struct Manifest {
     pub entries: Vec<Entry>,
 }
 
+impl Manifest {
+    /// Deserialize a manifest from the MessagePack bytes returned by
+    /// [`Storage::download_manifest`].
+    pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
+        rmp_serde::from_slice(bytes).map_err(|e| crate::Error::Manifest(e.to_string()))
+    }
+}
+
 /// Immutable metadata written once at compression time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManifestHeader {

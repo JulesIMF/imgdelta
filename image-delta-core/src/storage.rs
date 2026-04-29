@@ -27,6 +27,9 @@ pub struct ImageMeta {
     pub base_image_id: Option<String>,
     /// Image container format (`"directory"`, `"qcow2"`, …).
     pub format: String,
+    /// Current lifecycle status string, e.g. `"pending"`, `"compressing"`,
+    /// `"compressed"`, `"failed"`.
+    pub status: String,
 }
 
 /// Lifecycle state of an image in storage.

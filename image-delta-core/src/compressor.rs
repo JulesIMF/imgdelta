@@ -795,6 +795,7 @@ impl Compressor for DefaultCompressor {
                 image_id: options.image_id.clone(),
                 base_image_id: options.base_image_id.clone(),
                 format: "directory".into(),
+                status: "pending".into(),
             })
             .await?;
 

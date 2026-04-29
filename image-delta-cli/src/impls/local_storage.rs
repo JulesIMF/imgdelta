@@ -41,7 +41,7 @@ impl From<&ImageMeta> for StoredImageMeta {
             image_id: m.image_id.clone(),
             base_image_id: m.base_image_id.clone(),
             format: m.format.clone(),
-            status: "active".to_string(),
+            status: m.status.clone(),
         }
     }
 }
@@ -52,6 +52,7 @@ impl From<StoredImageMeta> for ImageMeta {
             image_id: s.image_id,
             base_image_id: s.base_image_id,
             format: s.format,
+            status: s.status,
         }
     }
 }

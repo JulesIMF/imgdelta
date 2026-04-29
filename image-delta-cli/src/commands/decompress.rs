@@ -28,7 +28,7 @@ pub struct DecompressArgs {
 pub async fn run(args: DecompressArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
     let config = load_config(config_path)?;
 
-    let storage = config.storage.build()?;
+    let storage = config.storage.build().await?;
     let router = config.compressor.build_router()?;
     let compressor = DefaultCompressor::new(Arc::clone(&storage), router);
 

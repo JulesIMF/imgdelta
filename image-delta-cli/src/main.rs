@@ -57,8 +57,8 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Compress(args) => commands::compress::run(args, cli.config.as_deref()).await,
         Commands::Decompress(args) => commands::decompress::run(args, cli.config.as_deref()).await,
-        Commands::Image(cmd) => commands::image::run(cmd),
-        Commands::Manifest(cmd) => commands::manifest::run(cmd),
+        Commands::Image(cmd) => commands::image::run(cmd, cli.config.as_deref()).await,
+        Commands::Manifest(cmd) => commands::manifest::run(cmd, cli.config.as_deref()).await,
         #[cfg(debug_assertions)]
         Commands::Debug(cmd) => commands::debug::run(cmd),
     }

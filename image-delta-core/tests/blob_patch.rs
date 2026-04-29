@@ -11,6 +11,7 @@ async fn save_root_meta(storage: &dyn Storage, image_id: &str) {
             image_id: image_id.to_string(),
             base_image_id: None,
             format: "directory".into(),
+            status: "active".into(),
         })
         .await
         .unwrap();
@@ -358,6 +359,7 @@ async fn test_cross_image_blobpatch_roundtrip() {
             image_id: "img-v1".to_string(),
             base_image_id: None,
             format: "directory".into(),
+            status: "active".into(),
         })
         .await
         .unwrap();
