@@ -26,9 +26,15 @@ tracing-indicatif = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 async-trait = "0.1"
 
-# Storage dependencies added in Phase 5:
-# aws-sdk-s3 = "1"
-# aws-config = "1"
-# sqlx = { version = "0.7", features = ["postgres", "runtime-tokio", "tls-native-tls"] }
-# tar = "0.4"
-# flate2 = "1"
+# Storage: S3 + PostgreSQL
+aws-sdk-s3 = "1"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+sqlx = { version = "0.8", features = [
+  "postgres",
+  "runtime-tokio-rustls",
+  "migrate",
+  "uuid",
+] }
+sha2 = "0.10"
+
+[dev-dependencies]

@@ -1,0 +1,80 @@
+# imgdelta example configuration
+# Copy to imgdelta.toml and fill in your values.
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+
+[logging]
+level = "info"
+# file = "/var/log/imgdelta/compress.log"   # optional: structured JSON log file
+
+# Per-module overrides (tracing target syntax):
+# [logging.targets]
+# "image_delta_core::fs_diff" = "debug"
+# "image_delta_core::compressor" = "debug"
+
+# ── Storage (choose one backend) ─────────────────────────────────────────────
+
+# --- Option A: local filesystem (development / testing) ---
+[storage]
+type = "local"
+local_dir = "/tmp/imgdelta-storage"
+
+# --- Option B: S3 + PostgreSQL (production / Yandex Cloud) ---
+# [storage]
+# type = "s3"
+# s3_bucket = "julesimf-imgdelta-storage"
+# s3_region = "ru-central1"
+# s3_endpoint = "https://storage.yandexcloud.net"
+# database_url = "postgres://imgdelta:SECRET@10.128.0.5/imgdelta"
+#
+# Credentials are loaded from environment variables (or ~/.aws/credentials):
+#   AWS_ACCESS_KEY_ID     = <YC service account key ID>
+#   AWS_SECRET_ACCESS_KEY = <YC service account secret key>
+
+# ── Compressor ───────────────────────────────────────────────────────────────
+
+[compressor]
+workers = 4 # parallel encoding threads (rayon)
+
+# Routing rules — first match wins.
+# Encode pipeline decides which delta algorithm to use for each file.
+
+[[compressor.routing]]
+type = "glob"
+pattern = "**/*.gz"
+encoder = "passthrough" # already compressed — don't diff
+
+[[compressor.routing]]
+type = "glob"
+pattern = "**/*.zst"
+encoder = "passthrough"
+
+[[compressor.routing]]
+type = "glob"
+pattern = "**/*.xz"
+encoder = "passthrough"
+
+[[compressor.routing]]
+type = "glob"
+pattern = "**/*.{png,jpg,jpeg,gif,webp,mp4,mkv,avi}"
+encoder = "passthrough"
+
+[[compressor.routing]]
+type = "elf"
+encoder = "xdelta3" # ELF binaries benefit most from binary diff
+
+[[compressor.routing]]
+type = "size"
+max_bytes = 4096
+encoder = "passthrough" # tiny files — delta overhead not worth it
+
+[[compressor.routing]]
+type = "magic"
+hex = "89504e47"        # PNG magic
+encoder = "passthrough"
+
+# Fallback: xdelta3 for everything else
+[[compressor.routing]]
+type = "glob"
+pattern = "**/*"
+encoder = "xdelta3"
