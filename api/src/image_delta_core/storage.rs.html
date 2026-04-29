@@ -27,109 +27,112 @@
 <a href=#27 id=27 data-nosnippet>27</a>    </span><span class="kw">pub </span>base_image_id: <span class="prelude-ty">Option</span>&lt;String&gt;,
 <a href=#28 id=28 data-nosnippet>28</a>    <span class="doccomment">/// Image container format (`"directory"`, `"qcow2"`, …).
 <a href=#29 id=29 data-nosnippet>29</a>    </span><span class="kw">pub </span>format: String,
-<a href=#30 id=30 data-nosnippet>30</a>}
-<a href=#31 id=31 data-nosnippet>31</a>
-<a href=#32 id=32 data-nosnippet>32</a><span class="doccomment">/// Lifecycle state of an image in storage.
-<a href=#33 id=33 data-nosnippet>33</a></span><span class="attr">#[derive(Debug, Clone)]
-<a href=#34 id=34 data-nosnippet>34</a></span><span class="kw">pub enum </span>ImageStatus {
-<a href=#35 id=35 data-nosnippet>35</a>    <span class="doccomment">/// Compression job created but not yet started.
-<a href=#36 id=36 data-nosnippet>36</a>    </span>Pending,
-<a href=#37 id=37 data-nosnippet>37</a>    <span class="doccomment">/// Compression is currently in progress.
-<a href=#38 id=38 data-nosnippet>38</a>    </span>Compressing,
-<a href=#39 id=39 data-nosnippet>39</a>    <span class="doccomment">/// Compression finished successfully; patches are available.
-<a href=#40 id=40 data-nosnippet>40</a>    </span>Compressed,
-<a href=#41 id=41 data-nosnippet>41</a>    <span class="doccomment">/// Compression failed; the inner string contains a human-readable reason.
-<a href=#42 id=42 data-nosnippet>42</a>    </span>Failed(String),
-<a href=#43 id=43 data-nosnippet>43</a>}
-<a href=#44 id=44 data-nosnippet>44</a>
-<a href=#45 id=45 data-nosnippet>45</a><span class="doccomment">/// Persistent storage backend abstraction.
-<a href=#46 id=46 data-nosnippet>46</a>///
-<a href=#47 id=47 data-nosnippet>47</a>/// S3 + PostgreSQL is the production implementation (in `image-delta-cli`).
-<a href=#48 id=48 data-nosnippet>48</a>/// [`FakeStorage`] (in-memory) is used for L1 unit/integration tests.
+<a href=#30 id=30 data-nosnippet>30</a>    <span class="doccomment">/// Current lifecycle status string, e.g. `"pending"`, `"compressing"`,
+<a href=#31 id=31 data-nosnippet>31</a>    /// `"compressed"`, `"failed"`.
+<a href=#32 id=32 data-nosnippet>32</a>    </span><span class="kw">pub </span>status: String,
+<a href=#33 id=33 data-nosnippet>33</a>}
+<a href=#34 id=34 data-nosnippet>34</a>
+<a href=#35 id=35 data-nosnippet>35</a><span class="doccomment">/// Lifecycle state of an image in storage.
+<a href=#36 id=36 data-nosnippet>36</a></span><span class="attr">#[derive(Debug, Clone)]
+<a href=#37 id=37 data-nosnippet>37</a></span><span class="kw">pub enum </span>ImageStatus {
+<a href=#38 id=38 data-nosnippet>38</a>    <span class="doccomment">/// Compression job created but not yet started.
+<a href=#39 id=39 data-nosnippet>39</a>    </span>Pending,
+<a href=#40 id=40 data-nosnippet>40</a>    <span class="doccomment">/// Compression is currently in progress.
+<a href=#41 id=41 data-nosnippet>41</a>    </span>Compressing,
+<a href=#42 id=42 data-nosnippet>42</a>    <span class="doccomment">/// Compression finished successfully; patches are available.
+<a href=#43 id=43 data-nosnippet>43</a>    </span>Compressed,
+<a href=#44 id=44 data-nosnippet>44</a>    <span class="doccomment">/// Compression failed; the inner string contains a human-readable reason.
+<a href=#45 id=45 data-nosnippet>45</a>    </span>Failed(String),
+<a href=#46 id=46 data-nosnippet>46</a>}
+<a href=#47 id=47 data-nosnippet>47</a>
+<a href=#48 id=48 data-nosnippet>48</a><span class="doccomment">/// Persistent storage backend abstraction.
 <a href=#49 id=49 data-nosnippet>49</a>///
-<a href=#50 id=50 data-nosnippet>50</a>/// # Contract for implementors
-<a href=#51 id=51 data-nosnippet>51</a>///
-<a href=#52 id=52 data-nosnippet>52</a>/// - All methods must be safe to call concurrently from multiple threads.
-<a href=#53 id=53 data-nosnippet>53</a>/// - `upload_blob` must be idempotent: uploading the same bytes twice (same SHA-256)
-<a href=#54 id=54 data-nosnippet>54</a>///   must return the same UUID and not store a duplicate.
-<a href=#55 id=55 data-nosnippet>55</a>///
-<a href=#56 id=56 data-nosnippet>56</a>/// # Note
-<a href=#57 id=57 data-nosnippet>57</a>///
-<a href=#58 id=58 data-nosnippet>58</a>/// `save_stats` from the original design is intentionally omitted here to avoid a
-<a href=#59 id=59 data-nosnippet>59</a>/// circular dependency with `compressor::CompressionStats`.  It will be added in
-<a href=#60 id=60 data-nosnippet>60</a>/// Phase 5 via a separate `StoredStats` type.
-<a href=#61 id=61 data-nosnippet>61</a></span><span class="attr">#[async_trait]
-<a href=#62 id=62 data-nosnippet>62</a></span><span class="kw">pub trait </span>Storage: Send + Sync {
-<a href=#63 id=63 data-nosnippet>63</a>    <span class="comment">// ── Blob CAS ─────────────────────────────────────────────────────────────
-<a href=#64 id=64 data-nosnippet>64</a>
-<a href=#65 id=65 data-nosnippet>65</a>    </span><span class="doccomment">/// Check whether a blob with this SHA-256 digest already exists.
-<a href=#66 id=66 data-nosnippet>66</a>    ///
-<a href=#67 id=67 data-nosnippet>67</a>    /// Returns `Some(uuid)` if it exists, `None` otherwise.
-<a href=#68 id=68 data-nosnippet>68</a>    </span><span class="kw">async fn </span>blob_exists(<span class="kw-2">&amp;</span><span class="self">self</span>, sha256: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;<span class="prelude-ty">Option</span>&lt;Uuid&gt;&gt;;
-<a href=#69 id=69 data-nosnippet>69</a>
-<a href=#70 id=70 data-nosnippet>70</a>    <span class="doccomment">/// Upload raw bytes, keyed by their SHA-256 hex digest.
-<a href=#71 id=71 data-nosnippet>71</a>    ///
-<a href=#72 id=72 data-nosnippet>72</a>    /// Must be idempotent: if a blob with `sha256` already exists, returns the
-<a href=#73 id=73 data-nosnippet>73</a>    /// existing UUID without re-uploading.
-<a href=#74 id=74 data-nosnippet>74</a>    </span><span class="kw">async fn </span>upload_blob(<span class="kw-2">&amp;</span><span class="self">self</span>, sha256: <span class="kw-2">&amp;</span>str, data: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="kw">crate</span>::Result&lt;Uuid&gt;;
-<a href=#75 id=75 data-nosnippet>75</a>
-<a href=#76 id=76 data-nosnippet>76</a>    <span class="doccomment">/// Download raw bytes for a known blob UUID.
-<a href=#77 id=77 data-nosnippet>77</a>    </span><span class="kw">async fn </span>download_blob(<span class="kw-2">&amp;</span><span class="self">self</span>, blob_id: Uuid) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;u8&gt;&gt;;
+<a href=#50 id=50 data-nosnippet>50</a>/// S3 + PostgreSQL is the production implementation (in `image-delta-cli`).
+<a href=#51 id=51 data-nosnippet>51</a>/// [`FakeStorage`] (in-memory) is used for L1 unit/integration tests.
+<a href=#52 id=52 data-nosnippet>52</a>///
+<a href=#53 id=53 data-nosnippet>53</a>/// # Contract for implementors
+<a href=#54 id=54 data-nosnippet>54</a>///
+<a href=#55 id=55 data-nosnippet>55</a>/// - All methods must be safe to call concurrently from multiple threads.
+<a href=#56 id=56 data-nosnippet>56</a>/// - `upload_blob` must be idempotent: uploading the same bytes twice (same SHA-256)
+<a href=#57 id=57 data-nosnippet>57</a>///   must return the same UUID and not store a duplicate.
+<a href=#58 id=58 data-nosnippet>58</a>///
+<a href=#59 id=59 data-nosnippet>59</a>/// # Note
+<a href=#60 id=60 data-nosnippet>60</a>///
+<a href=#61 id=61 data-nosnippet>61</a>/// `save_stats` from the original design is intentionally omitted here to avoid a
+<a href=#62 id=62 data-nosnippet>62</a>/// circular dependency with `compressor::CompressionStats`.  It will be added in
+<a href=#63 id=63 data-nosnippet>63</a>/// Phase 5 via a separate `StoredStats` type.
+<a href=#64 id=64 data-nosnippet>64</a></span><span class="attr">#[async_trait]
+<a href=#65 id=65 data-nosnippet>65</a></span><span class="kw">pub trait </span>Storage: Send + Sync {
+<a href=#66 id=66 data-nosnippet>66</a>    <span class="comment">// ── Blob CAS ─────────────────────────────────────────────────────────────
+<a href=#67 id=67 data-nosnippet>67</a>
+<a href=#68 id=68 data-nosnippet>68</a>    </span><span class="doccomment">/// Check whether a blob with this SHA-256 digest already exists.
+<a href=#69 id=69 data-nosnippet>69</a>    ///
+<a href=#70 id=70 data-nosnippet>70</a>    /// Returns `Some(uuid)` if it exists, `None` otherwise.
+<a href=#71 id=71 data-nosnippet>71</a>    </span><span class="kw">async fn </span>blob_exists(<span class="kw-2">&amp;</span><span class="self">self</span>, sha256: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;<span class="prelude-ty">Option</span>&lt;Uuid&gt;&gt;;
+<a href=#72 id=72 data-nosnippet>72</a>
+<a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// Upload raw bytes, keyed by their SHA-256 hex digest.
+<a href=#74 id=74 data-nosnippet>74</a>    ///
+<a href=#75 id=75 data-nosnippet>75</a>    /// Must be idempotent: if a blob with `sha256` already exists, returns the
+<a href=#76 id=76 data-nosnippet>76</a>    /// existing UUID without re-uploading.
+<a href=#77 id=77 data-nosnippet>77</a>    </span><span class="kw">async fn </span>upload_blob(<span class="kw-2">&amp;</span><span class="self">self</span>, sha256: <span class="kw-2">&amp;</span>str, data: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="kw">crate</span>::Result&lt;Uuid&gt;;
 <a href=#78 id=78 data-nosnippet>78</a>
-<a href=#79 id=79 data-nosnippet>79</a>    <span class="comment">// ── Image data ────────────────────────────────────────────────────────────
-<a href=#80 id=80 data-nosnippet>80</a>
-<a href=#81 id=81 data-nosnippet>81</a>    </span><span class="doccomment">/// Upload a serialised manifest for `image_id`.
-<a href=#82 id=82 data-nosnippet>82</a>    </span><span class="kw">async fn </span>upload_manifest(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str, manifest_bytes: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#79 id=79 data-nosnippet>79</a>    <span class="doccomment">/// Download raw bytes for a known blob UUID.
+<a href=#80 id=80 data-nosnippet>80</a>    </span><span class="kw">async fn </span>download_blob(<span class="kw-2">&amp;</span><span class="self">self</span>, blob_id: Uuid) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;u8&gt;&gt;;
+<a href=#81 id=81 data-nosnippet>81</a>
+<a href=#82 id=82 data-nosnippet>82</a>    <span class="comment">// ── Image data ────────────────────────────────────────────────────────────
 <a href=#83 id=83 data-nosnippet>83</a>
-<a href=#84 id=84 data-nosnippet>84</a>    <span class="doccomment">/// Download the serialised manifest for `image_id`.
-<a href=#85 id=85 data-nosnippet>85</a>    </span><span class="kw">async fn </span>download_manifest(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;u8&gt;&gt;;
+<a href=#84 id=84 data-nosnippet>84</a>    </span><span class="doccomment">/// Upload a serialised manifest for `image_id`.
+<a href=#85 id=85 data-nosnippet>85</a>    </span><span class="kw">async fn </span>upload_manifest(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str, manifest_bytes: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
 <a href=#86 id=86 data-nosnippet>86</a>
-<a href=#87 id=87 data-nosnippet>87</a>    <span class="doccomment">/// Upload the patches tar (or tar.gz) archive for `image_id`.
-<a href=#88 id=88 data-nosnippet>88</a>    ///
-<a href=#89 id=89 data-nosnippet>89</a>    /// `compressed` — `true` if the bytes are gzip-compressed (tar.gz).
-<a href=#90 id=90 data-nosnippet>90</a>    </span><span class="kw">async fn </span>upload_patches(
-<a href=#91 id=91 data-nosnippet>91</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#92 id=92 data-nosnippet>92</a>        image_id: <span class="kw-2">&amp;</span>str,
-<a href=#93 id=93 data-nosnippet>93</a>        data: <span class="kw-2">&amp;</span>[u8],
-<a href=#94 id=94 data-nosnippet>94</a>        compressed: bool,
-<a href=#95 id=95 data-nosnippet>95</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
-<a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a>    <span class="doccomment">/// Download the patches tar (or tar.gz) archive for `image_id`.
-<a href=#98 id=98 data-nosnippet>98</a>    </span><span class="kw">async fn </span>download_patches(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;u8&gt;&gt;;
+<a href=#87 id=87 data-nosnippet>87</a>    <span class="doccomment">/// Download the serialised manifest for `image_id`.
+<a href=#88 id=88 data-nosnippet>88</a>    </span><span class="kw">async fn </span>download_manifest(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;u8&gt;&gt;;
+<a href=#89 id=89 data-nosnippet>89</a>
+<a href=#90 id=90 data-nosnippet>90</a>    <span class="doccomment">/// Upload the patches tar (or tar.gz) archive for `image_id`.
+<a href=#91 id=91 data-nosnippet>91</a>    ///
+<a href=#92 id=92 data-nosnippet>92</a>    /// `compressed` — `true` if the bytes are gzip-compressed (tar.gz).
+<a href=#93 id=93 data-nosnippet>93</a>    </span><span class="kw">async fn </span>upload_patches(
+<a href=#94 id=94 data-nosnippet>94</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#95 id=95 data-nosnippet>95</a>        image_id: <span class="kw-2">&amp;</span>str,
+<a href=#96 id=96 data-nosnippet>96</a>        data: <span class="kw-2">&amp;</span>[u8],
+<a href=#97 id=97 data-nosnippet>97</a>        compressed: bool,
+<a href=#98 id=98 data-nosnippet>98</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
 <a href=#99 id=99 data-nosnippet>99</a>
-<a href=#100 id=100 data-nosnippet>100</a>    <span class="comment">// ── DB ────────────────────────────────────────────────────────────────────
-<a href=#101 id=101 data-nosnippet>101</a>
-<a href=#102 id=102 data-nosnippet>102</a>    </span><span class="doccomment">/// Persist metadata for a newly created or updated image.
-<a href=#103 id=103 data-nosnippet>103</a>    </span><span class="kw">async fn </span>register_image(<span class="kw-2">&amp;</span><span class="self">self</span>, meta: <span class="kw-2">&amp;</span>ImageMeta) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#100 id=100 data-nosnippet>100</a>    <span class="doccomment">/// Download the patches tar (or tar.gz) archive for `image_id`.
+<a href=#101 id=101 data-nosnippet>101</a>    </span><span class="kw">async fn </span>download_patches(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;u8&gt;&gt;;
+<a href=#102 id=102 data-nosnippet>102</a>
+<a href=#103 id=103 data-nosnippet>103</a>    <span class="comment">// ── DB ────────────────────────────────────────────────────────────────────
 <a href=#104 id=104 data-nosnippet>104</a>
-<a href=#105 id=105 data-nosnippet>105</a>    <span class="doccomment">/// Look up metadata for an image by ID, returning `None` if not found.
-<a href=#106 id=106 data-nosnippet>106</a>    </span><span class="kw">async fn </span>get_image(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;<span class="prelude-ty">Option</span>&lt;ImageMeta&gt;&gt;;
+<a href=#105 id=105 data-nosnippet>105</a>    </span><span class="doccomment">/// Persist metadata for a newly created or updated image.
+<a href=#106 id=106 data-nosnippet>106</a>    </span><span class="kw">async fn </span>register_image(<span class="kw-2">&amp;</span><span class="self">self</span>, meta: <span class="kw-2">&amp;</span>ImageMeta) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
 <a href=#107 id=107 data-nosnippet>107</a>
-<a href=#108 id=108 data-nosnippet>108</a>    <span class="doccomment">/// Update the lifecycle status of an image.
-<a href=#109 id=109 data-nosnippet>109</a>    </span><span class="kw">async fn </span>update_status(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str, status: ImageStatus) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#108 id=108 data-nosnippet>108</a>    <span class="doccomment">/// Look up metadata for an image by ID, returning `None` if not found.
+<a href=#109 id=109 data-nosnippet>109</a>    </span><span class="kw">async fn </span>get_image(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;<span class="prelude-ty">Option</span>&lt;ImageMeta&gt;&gt;;
 <a href=#110 id=110 data-nosnippet>110</a>
-<a href=#111 id=111 data-nosnippet>111</a>    <span class="doccomment">/// Return metadata for all known images.
-<a href=#112 id=112 data-nosnippet>112</a>    </span><span class="kw">async fn </span>list_images(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;ImageMeta&gt;&gt;;
+<a href=#111 id=111 data-nosnippet>111</a>    <span class="doccomment">/// Update the lifecycle status of an image.
+<a href=#112 id=112 data-nosnippet>112</a>    </span><span class="kw">async fn </span>update_status(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str, status: ImageStatus) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
 <a href=#113 id=113 data-nosnippet>113</a>
-<a href=#114 id=114 data-nosnippet>114</a>    <span class="comment">// ── BlobPatch ─────────────────────────────────────────────────────────────
-<a href=#115 id=115 data-nosnippet>115</a>
-<a href=#116 id=116 data-nosnippet>116</a>    </span><span class="doccomment">/// Return blobs from `base_image_id` that are candidates for delta encoding
-<a href=#117 id=117 data-nosnippet>117</a>    /// against files in the new image.
-<a href=#118 id=118 data-nosnippet>118</a>    </span><span class="kw">async fn </span>find_blob_candidates(<span class="kw-2">&amp;</span><span class="self">self</span>, base_image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;BlobCandidate&gt;&gt;;
-<a href=#119 id=119 data-nosnippet>119</a>
-<a href=#120 id=120 data-nosnippet>120</a>    <span class="doccomment">/// Record that `blob_uuid` originated from `file_path` in `image_id`.
-<a href=#121 id=121 data-nosnippet>121</a>    ///
-<a href=#122 id=122 data-nosnippet>122</a>    /// Called by [`DefaultCompressor`] after each `upload_blob` so that future
-<a href=#123 id=123 data-nosnippet>123</a>    /// compress operations can use this blob as a delta base via
-<a href=#124 id=124 data-nosnippet>124</a>    /// [`find_blob_candidates`].
-<a href=#125 id=125 data-nosnippet>125</a>    ///
-<a href=#126 id=126 data-nosnippet>126</a>    /// [`DefaultCompressor`]: crate::DefaultCompressor
-<a href=#127 id=127 data-nosnippet>127</a>    /// [`find_blob_candidates`]: Storage::find_blob_candidates
-<a href=#128 id=128 data-nosnippet>128</a>    </span><span class="kw">async fn </span>record_blob_origin(
-<a href=#129 id=129 data-nosnippet>129</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#130 id=130 data-nosnippet>130</a>        blob_uuid: Uuid,
-<a href=#131 id=131 data-nosnippet>131</a>        image_id: <span class="kw-2">&amp;</span>str,
-<a href=#132 id=132 data-nosnippet>132</a>        file_path: <span class="kw-2">&amp;</span>str,
-<a href=#133 id=133 data-nosnippet>133</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
-<a href=#134 id=134 data-nosnippet>134</a>}
+<a href=#114 id=114 data-nosnippet>114</a>    <span class="doccomment">/// Return metadata for all known images.
+<a href=#115 id=115 data-nosnippet>115</a>    </span><span class="kw">async fn </span>list_images(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;ImageMeta&gt;&gt;;
+<a href=#116 id=116 data-nosnippet>116</a>
+<a href=#117 id=117 data-nosnippet>117</a>    <span class="comment">// ── BlobPatch ─────────────────────────────────────────────────────────────
+<a href=#118 id=118 data-nosnippet>118</a>
+<a href=#119 id=119 data-nosnippet>119</a>    </span><span class="doccomment">/// Return blobs from `base_image_id` that are candidates for delta encoding
+<a href=#120 id=120 data-nosnippet>120</a>    /// against files in the new image.
+<a href=#121 id=121 data-nosnippet>121</a>    </span><span class="kw">async fn </span>find_blob_candidates(<span class="kw-2">&amp;</span><span class="self">self</span>, base_image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;BlobCandidate&gt;&gt;;
+<a href=#122 id=122 data-nosnippet>122</a>
+<a href=#123 id=123 data-nosnippet>123</a>    <span class="doccomment">/// Record that `blob_uuid` originated from `file_path` in `image_id`.
+<a href=#124 id=124 data-nosnippet>124</a>    ///
+<a href=#125 id=125 data-nosnippet>125</a>    /// Called by [`DefaultCompressor`] after each `upload_blob` so that future
+<a href=#126 id=126 data-nosnippet>126</a>    /// compress operations can use this blob as a delta base via
+<a href=#127 id=127 data-nosnippet>127</a>    /// [`find_blob_candidates`].
+<a href=#128 id=128 data-nosnippet>128</a>    ///
+<a href=#129 id=129 data-nosnippet>129</a>    /// [`DefaultCompressor`]: crate::DefaultCompressor
+<a href=#130 id=130 data-nosnippet>130</a>    /// [`find_blob_candidates`]: Storage::find_blob_candidates
+<a href=#131 id=131 data-nosnippet>131</a>    </span><span class="kw">async fn </span>record_blob_origin(
+<a href=#132 id=132 data-nosnippet>132</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#133 id=133 data-nosnippet>133</a>        blob_uuid: Uuid,
+<a href=#134 id=134 data-nosnippet>134</a>        image_id: <span class="kw-2">&amp;</span>str,
+<a href=#135 id=135 data-nosnippet>135</a>        file_path: <span class="kw-2">&amp;</span>str,
+<a href=#136 id=136 data-nosnippet>136</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#137 id=137 data-nosnippet>137</a>}
 </code></pre></div></section></main></body></html>
