@@ -25,6 +25,15 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: License headers
+        run: |
+          find . -type f \( -name "*.rs" -o -name "*.toml" -o -name "*.sh" \
+               -o -name "*.sql" -o -name ".env*" \) \
+               ! -path "./target/*" \
+               ! -path "./.git/*" \
+               -print0 \
+          | xargs -0 bash scripts/check-license-header.sh
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
