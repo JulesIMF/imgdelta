@@ -21,6 +21,9 @@ pub enum Error {
     #[error("manifest error: {0}")]
     Manifest(String),
 
+    #[error("archive error: {0}")]
+    Archive(String),
+
     #[error("{0}")]
     Other(String),
 }

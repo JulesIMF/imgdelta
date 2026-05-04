@@ -854,7 +854,7 @@ fn read_entry_bytes(data: &DataRef, entry_type: &EntryType) -> Result<Vec<u8>> {
                 Ok(std::fs::read(path)?)
             }
         }
-        DataRef::BlobRef(_) => Err(crate::Error::Other(
+        DataRef::BlobRef(_) => Err(crate::Error::Encode(
             "BlobRef in compute_patches: call download_blobs_for_patches first".into(),
         )),
     }
@@ -889,11 +889,11 @@ pub async fn pack_and_upload_archive(
             header.set_cksum();
             builder
                 .append_data(&mut header, &name, bytes.as_slice())
-                .map_err(|e| crate::Error::Other(format!("tar append: {e}")))?;
+                .map_err(|e| crate::Error::Archive(format!("tar append: {e}")))?;
         }
         builder
             .into_inner()
-            .map_err(|e| crate::Error::Other(format!("tar finish: {e}")))?
+            .map_err(|e| crate::Error::Archive(format!("tar finish: {e}")))?
     };
 
     // Try gzip: use compressed version only if it is actually smaller.
@@ -928,10 +928,10 @@ fn try_gzip(bytes: Vec<u8>) -> Result<(Vec<u8>, bool)> {
 
     let mut enc = GzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(&bytes)
-        .map_err(|e| crate::Error::Other(format!("gzip write: {e}")))?;
+        .map_err(|e| crate::Error::Archive(format!("gzip write: {e}")))?;
     let compressed = enc
         .finish()
-        .map_err(|e| crate::Error::Other(format!("gzip finish: {e}")))?;
+        .map_err(|e| crate::Error::Archive(format!("gzip finish: {e}")))?;
 
     if compressed.len() < bytes.len() {
         Ok((compressed, true))
@@ -963,8 +963,7 @@ pub async fn compress_fs_partition(
     router: &RouterEncoder,
     fs_type: &str,
 ) -> Result<PartitionManifest> {
-    let tmp_dir =
-        tempfile::TempDir::new().map_err(|e| crate::Error::Other(format!("tmp dir: {e}")))?;
+    let tmp_dir = tempfile::TempDir::new()?;
 
     // Stage 1.
     let mut draft = walkdir(base_root, target_root)?;
