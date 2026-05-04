@@ -578,3 +578,35 @@ async fn test_compress_empty_target_all_deletions() {
         "manifest must contain exactly 2 deletion records"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Error handling
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// If `compress()` fails (e.g. target directory does not exist), the image
+/// status must be set to `"failed: <reason>"` rather than left at "compressing".
+#[tokio::test]
+async fn test_compress_error_sets_failed_status() {
+    let storage = FakeStorage::new();
+    let base_dir = TempDir::new().unwrap();
+
+    let nonexistent = base_dir.path().join("does_not_exist");
+
+    let compressor = make_compressor(&storage);
+    let err = compressor
+        .compress(
+            base_dir.path(),
+            &nonexistent,
+            base_options("img-fail", None),
+        )
+        .await;
+
+    assert!(err.is_err(), "compress() must fail for a missing target");
+
+    let status = storage.image_status("img-fail").unwrap_or_default();
+    assert!(
+        status.starts_with("failed:"),
+        "status must start with 'failed:' but was {:?}",
+        status
+    );
+}
