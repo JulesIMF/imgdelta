@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Integration tests for QCOW2 image mounting via qemu-nbd (requires root)
+
 /// L2 integration tests for [`Qcow2Image::mount`].
 ///
 /// These tests require:

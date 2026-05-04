@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// AlgorithmCode enum and codec identifiers used across the pipeline
+
 use num_enum::TryFromPrimitive;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 

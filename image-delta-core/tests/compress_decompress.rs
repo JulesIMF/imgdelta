@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Round-trip integration tests: compress then decompress and compare trees
+
 // Phase 6.D/6.E: compress/decompress not yet implemented.
 // This file is excluded from compilation until the phase is complete.
 #![cfg(never)]

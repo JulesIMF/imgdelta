@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// DiskLayout, PartitionDescriptor, and PartitionKind definitions
+
 //! Disk layout types for multi-partition image support.
 //!
 //! Describes the partition table and per-partition metadata of a disk image.

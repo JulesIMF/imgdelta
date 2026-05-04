@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// decompress subcommand: reconstruct a target image from a delta
+
 use clap::Args;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// manifest subcommand: inspect and dump image manifests
+
 use clap::{Args, Subcommand};
 use std::path::Path;
 

@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// LocalStorage: filesystem-backed Storage implementation for local testing
+
 /// File-based [`Storage`] implementation for local testing and single-machine use.
 ///
 /// No S3 or PostgreSQL required.  All data lives under a single `base_dir`:

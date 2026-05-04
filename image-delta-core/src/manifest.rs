@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Manifest / PartitionManifest / PartitionContent serialization types (MessagePack v2)
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 

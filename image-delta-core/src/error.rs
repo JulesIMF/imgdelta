@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Unified Error / Result types for the image-delta-core crate
+
 use thiserror::Error;
 
 /// All errors that can be returned by `image-delta-core`.

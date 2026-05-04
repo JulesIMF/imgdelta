@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// DirectoryImage: treats a plain directory tree as an image with one FS partition
+
 use crate::{
     image::{OpenDirectory, OpenImage, SimpleMountHandle},
     Image, MountHandle, Result,

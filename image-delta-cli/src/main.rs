@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// CLI entry point: parse global flags, dispatch to subcommands
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 

@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 JulesIMF
+#
+# image-delta — incremental disk-image compression toolkit
+# mdBook configuration for the project documentation book
+
 [book]
 title = "imgdelta"
 description = "Delta compression tool for cloud OS images"

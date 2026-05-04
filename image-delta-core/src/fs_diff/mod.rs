@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Filesystem differ: compares two directory trees and emits change records
+
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;

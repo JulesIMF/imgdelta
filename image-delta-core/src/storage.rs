@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Storage trait: async blob CAS, manifest upload/download, image registry
+
 use async_trait::async_trait;
 use uuid::Uuid;
 

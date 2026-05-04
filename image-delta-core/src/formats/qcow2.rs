@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Qcow2Image: opens QCOW2 disk images via NBD / qemu-nbd (Phase 6.F)
+
 #![cfg(all(target_os = "linux", feature = "qcow2"))]
 
 use std::fs;

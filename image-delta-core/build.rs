@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Build script: links libxdelta3 and sets up FFI compile flags
+
 fn main() {
     // Detect pointer size and unsigned-long-long size for xdelta3 configure checks.
     // xdelta3.h contains static_assert(SIZEOF_SIZE_T == sizeof(size_t)) etc.

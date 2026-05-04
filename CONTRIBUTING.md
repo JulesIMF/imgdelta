@@ -17,6 +17,60 @@ lefthook install
 The pre-commit hook will auto-format staged `*.rs`, `*.toml`, `*.yaml/yml`
 and `*.md` files before every commit.
 
+## License header
+
+Every source file we own must carry a 5-line SPDX license header.
+The header format differs by file type:
+
+**Rust (`.rs`)**
+
+```rust
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 <Author>
+//
+// image-delta — incremental disk-image compression toolkit
+// <One-line description of this file's purpose>
+```
+
+**TOML / Shell / Env (`.toml`, `.sh`, `.env`, `.env.*`)**
+
+```toml
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 <Author>
+#
+# image-delta — incremental disk-image compression toolkit
+# <One-line description of this file's purpose>
+```
+
+For `.sh` files the header must come **after** the shebang line.
+
+**SQL (`.sql`)**
+
+```sql
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Copyright (c) 2026 <Author>
+--
+-- image-delta — incremental disk-image compression toolkit
+-- <One-line description of this file's purpose>
+```
+
+**Guidelines**
+
+- `<Author>` — your name, nickname, or organisation (e.g. `JulesIMF`).
+  Contributors retain copyright over their own contributions.
+- `<year>` — the year the file was **created**; do not update it on every edit.
+- `<description>` — a brief, imperative-style summary of the file's role, not a
+  repetition of its name (e.g. `Eight-stage FS-partition compression pipeline`).
+- The pre-commit hook (`scripts/check-license-header.sh`) will reject staged
+  files that are missing the `SPDX-License-Identifier` line.
+- To add headers to all files at once, run:
+
+  ```sh
+  python3 scripts/add-license-headers.py
+  ```
+
+  then review and adjust the auto-generated description lines.
+
 ## Building
 
 ```sh

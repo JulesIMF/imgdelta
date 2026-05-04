@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// PassthroughEncoder: stores files verbatim when delta would be larger
+
 use crate::encoder::PatchAlgorithm;
 use crate::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder, Result};
 

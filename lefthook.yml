@@ -28,3 +28,7 @@ pre-commit:
     clippy:
       glob: "*.rs"
       run: cargo clippy --all-targets -- -D warnings
+
+    license-header:
+      glob: "*.{rs,toml,sh,sql,env}"
+      run: bash scripts/check-license-header.sh {staged_files}

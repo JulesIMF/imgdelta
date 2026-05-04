@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Eight-stage FS-partition compression pipeline (walkdir → patch → archive)
+
 //! Eight-stage stateless compress pipeline for one `Fs` partition.
 //!
 //! Each stage is a standalone function that takes a [`FsDraft`] (plus optional

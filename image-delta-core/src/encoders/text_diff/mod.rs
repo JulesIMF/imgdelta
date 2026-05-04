@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// TextDiffEncoder: unified-diff based encoder for human-readable text files
+
 use crate::encoder::PatchAlgorithm;
 use crate::{AlgorithmCode, Error, FilePatch, FileSnapshot, PatchEncoder, Result};
 

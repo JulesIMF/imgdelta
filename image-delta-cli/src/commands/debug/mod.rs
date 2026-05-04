@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// debug subcommand group: low-level diagnostic tools
+
 pub mod walkdir_cmd;
 
 use clap::Subcommand;

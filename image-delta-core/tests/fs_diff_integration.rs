@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Integration tests for the filesystem differ (added/removed/changed/renamed)
+
 //! Integration tests for [`diff_dirs`].
 //!
 //! Each test uses a [`Scenario`] builder that creates a real `TempDir` with

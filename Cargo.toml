@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 JulesIMF
+#
+# image-delta — incremental disk-image compression toolkit
+# Workspace manifest: members, shared dependencies, patch directives
+
 [workspace]
 members = ["image-delta-core", "image-delta-cli"]
 resolver = "2"

@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Xdelta3Encoder: VCDIFF (RFC 3284) delta encoder backed by libxdelta3
+
 mod ffi;
 
 use crate::encoder::PatchAlgorithm;

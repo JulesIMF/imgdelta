@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 JulesIMF
+#
+# image-delta — incremental disk-image compression toolkit
+# Example imgdelta runtime configuration (storage + encoder settings)
+
 # imgdelta example configuration
 # Copy to imgdelta.toml and fill in your values.
 

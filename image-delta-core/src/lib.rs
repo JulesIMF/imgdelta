@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Crate root: public re-exports and feature flags
+
 //! # image-delta-core
 //!
 //! Core library for per-file delta compression of cloud OS images.

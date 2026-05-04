@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Rayon-based parallel task scheduler used in stage 7 (patch computation)
+
 // Scheduler is fully implemented in Phase 4. All items in this module
 // are intentionally unused in the current phase.
 #![allow(dead_code)]

@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// S3Storage: AWS S3 / compatible object-store backed Storage implementation
+
 // Phase 5: S3 + PostgreSQL implementation of the Storage trait.
 #![allow(dead_code)] // S3Storage is wired in Part E (CLI commands); used in integration tests now.
 //!

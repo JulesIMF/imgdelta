@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Unsafe FFI bindings to the libxdelta3 C library
+
 // All `unsafe` code in image-delta-core is confined to this file.
 // The safe wrapper in `mod.rs` is the only public interface to the outside.
 //

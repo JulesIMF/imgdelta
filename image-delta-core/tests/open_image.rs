@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Integration tests for Image::open() and PartitionHandle variants
+
 use image_delta_core::partition::{DiskScheme, PartitionDescriptor};
 /// Tests for [`OpenImage`] / [`PartitionHandle`] — Phase 6.C.
 ///

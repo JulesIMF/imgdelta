@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Integration tests for the DirectoryImage format packing logic
+
 /// Tests for [`Image::pack`] on [`DirectoryImage`].
 use image_delta_core::{DirectoryImage, Image};
 use std::fs;

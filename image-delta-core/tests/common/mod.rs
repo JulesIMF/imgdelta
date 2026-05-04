@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Shared test helpers: make_compressor, compress_opts, write, etc.
+
 #![allow(dead_code)]
 
 pub mod fake_storage;

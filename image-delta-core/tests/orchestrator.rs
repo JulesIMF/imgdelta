@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 JulesIMF
+//
+// image-delta — incremental disk-image compression toolkit
+// Integration tests for DefaultCompressor::compress() orchestrator (Phase 6.D)
+
 //! Integration tests for `DefaultCompressor::compress()` (Phase 6.D).
 //!
 //! Tests use `DirectoryImage` (no mounting needed) and `FakeStorage` (in-memory).
