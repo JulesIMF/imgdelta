@@ -327,16 +327,21 @@ pub fn set_mode(root: &Path, rel_path: &str, mode: u32) {
     std::fs::set_permissions(&full, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
-/// Build a [`FakeStorage`] + [`Xdelta3Encoder`] + [`DefaultCompressor`] triple.
+/// Build a [`FakeStorage`] + [`PassthroughEncoder`] + [`DefaultCompressor`] triple.
+///
+/// Uses `PassthroughEncoder` as the router fallback so that both regular files
+/// and symlink/hardlink patches (which always use `Passthrough`) can be decoded
+/// during decompress.  Tests that need a particular encoder can build their own
+/// compressor.
 pub fn make_compressor() -> (
     std::sync::Arc<FakeStorage>,
     std::sync::Arc<image_delta_core::DefaultCompressor>,
 ) {
-    use image_delta_core::{DefaultCompressor, Xdelta3Encoder};
+    use image_delta_core::{DefaultCompressor, PassthroughEncoder};
     use std::sync::Arc;
 
     let storage = Arc::new(FakeStorage::new());
-    let encoder = Arc::new(Xdelta3Encoder::new());
+    let encoder = Arc::new(PassthroughEncoder::new());
     let compressor = Arc::new(DefaultCompressor::with_encoder(
         Arc::new(image_delta_core::DirectoryImage::new()),
         Arc::clone(&storage) as _,

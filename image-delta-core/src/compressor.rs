@@ -319,10 +319,117 @@ impl Compressor for DefaultCompressor {
 
     async fn decompress(
         &self,
-        _output_root: &Path,
-        _options: DecompressOptions,
+        output_root: &Path,
+        options: DecompressOptions,
     ) -> Result<DecompressionStats> {
-        unimplemented!("decompress is being redesigned in Phase 6.E")
+        use crate::decompress_pipeline::decompress_fs_partition;
+        use crate::manifest::MANIFEST_VERSION;
+
+        let started_at = Instant::now();
+        let image_id = &options.image_id;
+
+        let result: Result<DecompressionStats> = async {
+            // ── 1. Download and parse manifest ────────────────────────────────
+            let manifest_bytes = self.storage.download_manifest(image_id).await?;
+            let manifest = crate::manifest::Manifest::from_bytes(&manifest_bytes)?;
+
+            if manifest.header.version != MANIFEST_VERSION {
+                return Err(crate::Error::Manifest(format!(
+                    "manifest version {} not supported (expected {MANIFEST_VERSION})",
+                    manifest.header.version
+                )));
+            }
+
+            // ── 2. Download patches archive (once for all Fs partitions) ──────
+            let archive_bytes = self.storage.download_patches(image_id).await?;
+            let patches_compressed = manifest.header.patches_compressed;
+
+            // ── 3. Process each partition ──────────────────────────────────────
+            let mut total_files: usize = 0;
+            let mut patches_verified: usize = 0;
+            let mut total_bytes: u64 = 0;
+
+            for pm in &manifest.partitions {
+                match &pm.content {
+                    PartitionContent::Fs {
+                        records,
+                        fs_type: _,
+                    } => {
+                        let part_stats = decompress_fs_partition(
+                            &options.base_root,
+                            output_root,
+                            records,
+                            &archive_bytes,
+                            patches_compressed,
+                            self.storage.as_ref(),
+                            &self.router,
+                        )
+                        .await?;
+                        total_files += part_stats.files_written;
+                        patches_verified += part_stats.patches_verified;
+                        total_bytes += part_stats.bytes_written;
+                    }
+
+                    PartitionContent::BiosBoot { blob_id, size, .. } => {
+                        let data = self.storage.download_blob(*blob_id).await?;
+                        let out_path =
+                            output_root.join(format!("biosboot_{}.bin", pm.descriptor.number));
+                        if let Some(p) = out_path.parent() {
+                            std::fs::create_dir_all(p).map_err(|e| {
+                                crate::Error::Other(format!("create_dir {}: {e}", p.display()))
+                            })?;
+                        }
+                        std::fs::write(&out_path, &data).map_err(|e| {
+                            crate::Error::Other(format!("write {}: {e}", out_path.display()))
+                        })?;
+                        total_files += 1;
+                        total_bytes += *size;
+                    }
+
+                    PartitionContent::Raw { blob, size, .. } => {
+                        if let Some(bref) = blob {
+                            let data = self.storage.download_blob(bref.blob_id).await?;
+                            let out_path = output_root
+                                .join(format!("raw_partition_{}.img", pm.descriptor.number));
+                            if let Some(p) = out_path.parent() {
+                                std::fs::create_dir_all(p).map_err(|e| {
+                                    crate::Error::Other(format!("create_dir {}: {e}", p.display()))
+                                })?;
+                            }
+                            std::fs::write(&out_path, &data).map_err(|e| {
+                                crate::Error::Other(format!("write {}: {e}", out_path.display()))
+                            })?;
+                            total_files += 1;
+                            total_bytes += *size;
+                        }
+                    }
+                }
+            }
+
+            // ── 4. Update status ───────────────────────────────────────────────
+            self.storage
+                .update_status(image_id, ImageStatus::Compressed)
+                .await?;
+
+            let elapsed = started_at.elapsed();
+            Ok(DecompressionStats {
+                total_files,
+                patches_verified,
+                total_bytes,
+                elapsed_secs: elapsed.as_secs_f64(),
+            })
+        }
+        .await;
+
+        // On any error — mark image as Failed
+        if let Err(ref e) = result {
+            let _ = self
+                .storage
+                .update_status(image_id, ImageStatus::Failed(e.to_string()))
+                .await;
+        }
+
+        result
     }
 }
 

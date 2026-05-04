@@ -28,6 +28,7 @@ mod error;
 pub mod algorithm;
 pub mod compress_pipeline;
 pub mod compressor;
+pub mod decompress_pipeline;
 pub mod encoder;
 pub mod encoders;
 pub mod formats;
