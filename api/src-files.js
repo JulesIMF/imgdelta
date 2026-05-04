@@ -1,2 +1,2 @@
-createSrcSidebar('[["image_delta_core",["",[["encoders",[["passthrough",[],["mod.rs"]],["text_diff",[],["mod.rs"]],["vcdiff",[],["ffi.rs","mod.rs"]]],["mod.rs"]],["formats",[],["directory.rs","mod.rs"]],["fs_diff",[],["mod.rs"]],["path_match",[],["mod.rs"]]],["algorithm.rs","compress_pipeline.rs","compressor.rs","encoder.rs","error.rs","image.rs","lib.rs","manifest.rs","partition.rs","routing.rs","storage.rs"]]]]');
-//{"start":19,"fragment_lengths":[396]}
+createSrcSidebar('[["image_delta_core",["",[["encoders",[["passthrough",[],["mod.rs"]],["text_diff",[],["mod.rs"]],["vcdiff",[],["ffi.rs","mod.rs"]]],["mod.rs"]],["formats",[],["directory.rs","mod.rs"]],["fs_diff",[],["mod.rs"]],["path_match",[],["mod.rs"]]],["algorithm.rs","compress_pipeline.rs","compressor.rs","decompress_pipeline.rs","encoder.rs","error.rs","image.rs","lib.rs","manifest.rs","partition.rs","routing.rs","storage.rs"]]]]');
+//{"start":19,"fragment_lengths":[421]}
