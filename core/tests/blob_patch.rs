@@ -4,15 +4,29 @@
 // image-delta — incremental disk-image compression toolkit
 // Integration tests for raw blob upload and patch retrieval via FakeStorage
 
-// Phase 6.D/6.E: compress/decompress not yet implemented.
-// This file is excluded from compilation until the phase is complete.
-#![cfg(never)]
 mod common;
 
 use common::{compress_opts, decompress_opts, make_compressor, set_mtime_old, write_file};
-use image_delta_core::{Compressor, ImageMeta, Storage};
+use image_delta_core::{
+    manifest::{Manifest, PartitionContent, Record},
+    Compressor, ImageMeta, Storage,
+};
 use tempfile::tempdir;
 use uuid::Uuid;
+
+/// Find the first manifest record whose `new_path` equals `path`.
+fn find_record_by_new_path<'a>(manifest: &'a Manifest, path: &str) -> Option<&'a Record> {
+    for pm in &manifest.partitions {
+        if let PartitionContent::Fs { records, .. } = &pm.content {
+            for record in records {
+                if record.new_path.as_deref() == Some(path) {
+                    return Some(record);
+                }
+            }
+        }
+    }
+    None
+}
 
 async fn save_root_meta(storage: &dyn Storage, image_id: &str) {
     storage
@@ -34,11 +48,8 @@ async fn save_root_meta(storage: &dyn Storage, image_id: &str) {
 /// We set up FakeStorage with a pre-existing blob and register it as an origin
 /// so that `find_blob_candidates` returns it.  Then we check that the manifest
 /// entry for the new file has both `blob` and `patch` set.
-#[ignore = "compress/decompress: Phase 6.D/6.E"]
 #[tokio::test]
 async fn test_blob_patch_detected() {
-    use image_delta_core::manifest::Manifest;
-
     let base = tempdir().unwrap();
     let target = tempdir().unwrap();
 
@@ -65,24 +76,20 @@ async fn test_blob_patch_detected() {
 
     // Inspect the manifest: the changed file should be stored as a patch.
     let manifest_bytes = storage.download_manifest("img-bp").await.unwrap();
-    let manifest: Manifest = rmp_serde::from_slice(&manifest_bytes).unwrap();
+    let manifest = Manifest::from_bytes(&manifest_bytes).unwrap();
 
-    let entry = manifest
-        .entries
-        .iter()
-        .find(|e| e.path == "lib/libfoo.so.1")
-        .expect("entry for libfoo.so.1 must be in manifest");
+    let record = find_record_by_new_path(&manifest, "lib/libfoo.so.1")
+        .expect("record for libfoo.so.1 must be in manifest");
 
     assert!(
-        entry.patch.is_some(),
-        "similar file should be stored as a patch, not a plain blob; entry: {entry:?}"
+        record.patch.is_some(),
+        "similar file should be stored as a patch, not a plain blob; record: {record:?}"
     );
 }
 
 // ── 2. test_blob_patch_result_correct ────────────────────────────────────────
 
 /// A file stored with a patch (Changed entry) round-trips to the correct content.
-#[ignore = "compress/decompress: Phase 6.D/6.E"]
 #[tokio::test]
 async fn test_blob_patch_result_correct() {
     let base = tempdir().unwrap();
@@ -127,11 +134,8 @@ async fn test_blob_patch_result_correct() {
 
 /// A completely new file (not similar to any base file) is stored as a plain blob,
 /// not as a BlobPatch.  The result after decompress must match the original.
-#[ignore = "compress/decompress: Phase 6.D/6.E"]
 #[tokio::test]
 async fn test_blob_patch_fallback_to_blob() {
-    use image_delta_core::manifest::Manifest;
-
     let base = tempdir().unwrap();
     let target = tempdir().unwrap();
     let output = tempdir().unwrap();
@@ -157,7 +161,15 @@ async fn test_blob_patch_fallback_to_blob() {
         .upload_blob(&unrelated_sha, unrelated_data)
         .await
         .unwrap();
-    storage.register_blob_origin("img-base", unrelated_blob_id, "something/unrelated.txt");
+    storage
+        .record_blob_origin(
+            unrelated_blob_id,
+            "img-base",
+            None,
+            "something/unrelated.txt",
+        )
+        .await
+        .unwrap();
     save_root_meta(&*storage, "img-base").await;
 
     compressor
@@ -171,17 +183,14 @@ async fn test_blob_patch_fallback_to_blob() {
 
     // Check the manifest: totally_new.txt should be a plain blob (no patch).
     let manifest_bytes = storage.download_manifest("img-fallback").await.unwrap();
-    let manifest: Manifest = rmp_serde::from_slice(&manifest_bytes).unwrap();
+    let manifest = Manifest::from_bytes(&manifest_bytes).unwrap();
 
-    let entry = manifest
-        .entries
-        .iter()
-        .find(|e| e.path == "totally_new.txt")
+    let record = find_record_by_new_path(&manifest, "totally_new.txt")
         .expect("totally_new.txt must be in manifest");
 
     assert!(
-        entry.blob.is_some() && entry.patch.is_none(),
-        "unrelated new file should be a plain blob; entry: {entry:?}"
+        record.data.is_some() && record.patch.is_none(),
+        "unrelated new file should be a plain blob; record: {record:?}"
     );
 
     // Decompress and verify content.
@@ -198,7 +207,6 @@ async fn test_blob_patch_fallback_to_blob() {
 
 /// Compressing an image must call `record_blob_origin` for each newly uploaded blob.
 /// After compression, `find_blob_candidates(image_id)` must return those blobs.
-#[ignore = "compress/decompress: Phase 6.D/6.E"]
 #[tokio::test]
 async fn test_record_blob_origin_stored() {
     let base = tempdir().unwrap();
@@ -254,11 +262,8 @@ async fn test_record_blob_origin_stored() {
 ///   Round 1: compress base → v1, adding `lib/libfoo.so.1` as a new blob (origin recorded).
 ///   Round 2: compress v1 → v2, adding `lib/libfoo.so.2` (similar to libfoo.so.1).
 ///   Expected: manifest entry for libfoo.so.2 has both `blob` (base) and `patch` (delta).
-#[ignore = "compress/decompress: Phase 6.D/6.E"]
 #[tokio::test]
 async fn test_cross_image_blobpatch_detected() {
-    use image_delta_core::manifest::Manifest;
-
     let root = tempdir().unwrap(); // empty "root" image
     let v1 = tempdir().unwrap();
     let v2 = tempdir().unwrap();
@@ -302,21 +307,18 @@ async fn test_cross_image_blobpatch_detected() {
 
     // Inspect the manifest for img-v2: libfoo.so.2 must be a BlobPatch.
     let manifest_bytes = storage.download_manifest("img-v2").await.unwrap();
-    let manifest: Manifest = rmp_serde::from_slice(&manifest_bytes).unwrap();
+    let manifest = Manifest::from_bytes(&manifest_bytes).unwrap();
 
-    let entry = manifest
-        .entries
-        .iter()
-        .find(|e| e.path == "lib/libfoo.so.2")
+    let record = find_record_by_new_path(&manifest, "lib/libfoo.so.2")
         .expect("lib/libfoo.so.2 must appear in the v2 manifest");
 
     assert!(
-        entry.blob.is_some(),
-        "BlobPatch entry must reference the base blob; entry: {entry:?}"
+        record.data.is_some(),
+        "BlobPatch entry must reference the base blob; record: {record:?}"
     );
     assert!(
-        entry.patch.is_some(),
-        "BlobPatch entry must have a patch; entry: {entry:?}"
+        record.patch.is_some(),
+        "BlobPatch entry must have a patch; record: {record:?}"
     );
 }
 
@@ -324,7 +326,6 @@ async fn test_cross_image_blobpatch_detected() {
 
 /// End-to-end round-trip for the cross-image BlobPatch path:
 /// compress two rounds then decompress and verify the output byte-for-byte.
-#[ignore = "compress/decompress: Phase 6.D/6.E"]
 #[tokio::test]
 async fn test_cross_image_blobpatch_roundtrip() {
     let root = tempdir().unwrap();

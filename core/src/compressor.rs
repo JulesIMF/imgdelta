@@ -340,11 +340,27 @@ impl Compressor for DefaultCompressor {
                 )));
             }
 
-            // ── 2. Download patches archive (once for all Fs partitions) ──────
+            // ── 2. Chain detection — refuse to decompress if the base is itself
+            //        a delta (chained decompression is not supported). ──────────
+            if let Some(ref base_id) = manifest.header.base_image_id {
+                if let Some(base_meta) = self.storage.get_image(base_id).await? {
+                    if base_meta.base_image_id.is_some() {
+                        return Err(crate::Error::Other(format!(
+                            "chained decompression is not supported: \
+                             '{image_id}' → '{base_id}' → '{}'. \
+                             Decompress '{base_id}' first to obtain a full image, \
+                             then decompress '{image_id}' against it.",
+                            base_meta.base_image_id.as_deref().unwrap_or("?")
+                        )));
+                    }
+                }
+            }
+
+            // ── 3. Download patches archive (once for all Fs partitions) ──────
             let archive_bytes = self.storage.download_patches(image_id).await?;
             let patches_compressed = manifest.header.patches_compressed;
 
-            // ── 3. Process each partition ──────────────────────────────────────
+            // ── 4. Process each partition ──────────────────────────────────────
             let mut total_files: usize = 0;
             let mut patches_verified: usize = 0;
             let mut total_bytes: u64 = 0;
@@ -406,7 +422,7 @@ impl Compressor for DefaultCompressor {
                 }
             }
 
-            // ── 4. Update status ───────────────────────────────────────────────
+            // ── 5. Update status ───────────────────────────────────────────────
             self.storage
                 .update_status(image_id, ImageStatus::Compressed)
                 .await?;
