@@ -592,3 +592,490 @@ async fn test_compress_manifest_serialisation_roundtrip() {
     assert_eq!(recovered.header.image_id, "img-rt");
     assert_eq!(recovered.partitions.len(), 1);
 }
+
+// ── Stage 5: upload_lazy_blobs — dedup avoids redundant upload ────────────────
+
+/// When two files have identical content, `blob_exists` must be called for both
+/// but `upload_blob` must be called only once (the second call is skipped via
+/// the SHA-256 dedup check in `upload_lazy_blobs`).
+#[tokio::test]
+async fn test_upload_lazy_blobs_dedup_skips_upload() {
+    let storage = FakeStorage::new();
+    let target_dir = TempDir::new().unwrap();
+
+    let content = b"identical content in both files";
+    write(target_dir.path(), "x/a.txt", content);
+    write(target_dir.path(), "x/b.txt", content);
+
+    let mut draft = FsDraft::default();
+    for rel in ["x/a.txt", "x/b.txt"] {
+        draft.records.push(Record {
+            old_path: None,
+            new_path: Some(rel.into()),
+            entry_type: EntryType::File,
+            size: content.len() as u64,
+            data: Some(Data::LazyBlob(target_dir.path().join(rel))),
+            patch: None,
+            metadata: None,
+        });
+    }
+
+    let _draft = upload_lazy_blobs(draft, &storage, "img-dedup", None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        storage.blob_exists_call_count(),
+        2,
+        "blob_exists must be called once per file"
+    );
+    assert_eq!(
+        storage.upload_call_count(),
+        1,
+        "upload_blob must be called only once for identical content"
+    );
+    assert_eq!(
+        storage.uploaded_blob_count(),
+        1,
+        "only one distinct blob must be stored"
+    );
+}
+
+// ── FakeStorage: concurrent upload safety ─────────────────────────────────────
+
+/// Spawn 30 tokio tasks that concurrently upload unique blobs to the same
+/// FakeStorage.  The Mutex must prevent any data races and all 30 blobs must
+/// be correctly stored without corruption.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_fake_storage_concurrent_uploads_no_corruption() {
+    let storage = FakeStorage::new();
+
+    let mut handles = Vec::new();
+    for i in 0..30u32 {
+        let s = storage.clone();
+        handles.push(tokio::spawn(async move {
+            // Each task has unique content so no dedup occurs.
+            let content: Vec<u8> = i.to_le_bytes().iter().chain(b"padding").copied().collect();
+            let sha256 = hex::encode(sha2::Sha256::digest(&content));
+            s.upload_blob(&sha256, &content).await.unwrap()
+        }));
+    }
+
+    let mut ids = Vec::new();
+    for h in handles {
+        ids.push(h.await.expect("task must not panic"));
+    }
+
+    assert_eq!(
+        storage.uploaded_blob_count(),
+        30,
+        "all 30 unique blobs must be stored"
+    );
+    // All returned UUIDs must be distinct (no silent collision).
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), 30, "every upload must return a distinct UUID");
+}
+
+/// Five concurrent `upload_lazy_blobs` calls (via `tokio::join!`) sharing the
+/// same FakeStorage must upload exactly 50 distinct blobs with no corruption.
+#[tokio::test]
+async fn test_upload_lazy_blobs_concurrent_batches() {
+    let storage = FakeStorage::new();
+    let target_dir = TempDir::new().unwrap();
+
+    // Create 50 files with unique content.
+    for i in 0u32..50 {
+        let content = format!("unique content for file number {i:03}");
+        write(
+            target_dir.path(),
+            &format!("f{i:03}.bin"),
+            content.as_bytes(),
+        );
+    }
+
+    let make_draft = |start: u32| {
+        let mut draft = FsDraft::default();
+        for i in start..start + 10 {
+            let rel = format!("f{i:03}.bin");
+            draft.records.push(Record {
+                old_path: None,
+                new_path: Some(rel.clone()),
+                entry_type: EntryType::File,
+                size: 0,
+                data: Some(Data::LazyBlob(target_dir.path().join(&rel))),
+                patch: None,
+                metadata: None,
+            });
+        }
+        draft
+    };
+
+    let (r0, r1, r2, r3, r4) = tokio::join!(
+        upload_lazy_blobs(make_draft(0), &storage, "img-conc", None),
+        upload_lazy_blobs(make_draft(10), &storage, "img-conc", None),
+        upload_lazy_blobs(make_draft(20), &storage, "img-conc", None),
+        upload_lazy_blobs(make_draft(30), &storage, "img-conc", None),
+        upload_lazy_blobs(make_draft(40), &storage, "img-conc", None),
+    );
+
+    for (batch_idx, draft) in [r0, r1, r2, r3, r4].into_iter().enumerate() {
+        let draft = draft.unwrap_or_else(|e| panic!("batch {batch_idx} failed: {e}"));
+        for r in &draft.records {
+            assert!(
+                matches!(r.data, Some(Data::BlobRef(_))),
+                "batch {batch_idx}: expected BlobRef, got {:?}",
+                r.data
+            );
+        }
+    }
+
+    assert_eq!(
+        storage.uploaded_blob_count(),
+        50,
+        "all 50 unique files must be stored as distinct blobs"
+    );
+}
+
+// ── Stage 1: walkdir — deep nesting ──────────────────────────────────────────
+
+/// A deeply nested path must appear verbatim (as a relative POSIX path) in the
+/// resulting record's `new_path`.
+#[test]
+fn test_walkdir_deep_nesting_path_preserved() {
+    let base_dir = TempDir::new().unwrap();
+    let target_dir = TempDir::new().unwrap();
+
+    let deep = "usr/lib/x86_64-linux-gnu/security/pam_unix.so";
+    write(target_dir.path(), deep, b"pam module binary content");
+
+    let draft = walkdir(base_dir.path(), target_dir.path()).unwrap();
+
+    let record = draft
+        .records
+        .iter()
+        .find(|r| r.new_path.as_deref() == Some(deep))
+        .expect("deeply nested file must appear in draft");
+
+    assert_eq!(record.new_path.as_deref(), Some(deep));
+    assert!(
+        matches!(record.entry_type, EntryType::File),
+        "must be a File record"
+    );
+    assert!(
+        matches!(record.data, Some(Data::LazyBlob(_))),
+        "must be LazyBlob for a new file"
+    );
+}
+
+// ── Stage 1: walkdir — 3-file hardlink group ─────────────────────────────────
+
+/// Three directory entries sharing the same inode must produce exactly one
+/// canonical `LazyBlob` record (alphabetically first path) and two
+/// `HardlinkTo` records pointing at the canonical.
+#[test]
+fn test_walkdir_three_hardlinks_canonical_alphabetically_first() {
+    let base_dir = TempDir::new().unwrap();
+    let target_dir = TempDir::new().unwrap();
+
+    // Create canonical file and two hardlinks.
+    let canonical = "a/first.txt";
+    write(target_dir.path(), canonical, b"hardlinked content");
+    std::fs::create_dir_all(target_dir.path().join("b")).unwrap();
+    std::fs::hard_link(
+        target_dir.path().join(canonical),
+        target_dir.path().join("b/second.txt"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(target_dir.path().join("c")).unwrap();
+    std::fs::hard_link(
+        target_dir.path().join(canonical),
+        target_dir.path().join("c/third.txt"),
+    )
+    .unwrap();
+
+    let draft = walkdir(base_dir.path(), target_dir.path()).unwrap();
+
+    // Find the canonical record.
+    let canon_record = draft
+        .records
+        .iter()
+        .find(|r| r.new_path.as_deref() == Some(canonical))
+        .expect("canonical path must appear in draft");
+    assert!(
+        matches!(canon_record.data, Some(Data::LazyBlob(_))),
+        "canonical must be LazyBlob, got {:?}",
+        canon_record.data
+    );
+
+    // Both non-canonical paths must be HardlinkTo the canonical.
+    for non_canon in ["b/second.txt", "c/third.txt"] {
+        let r = draft
+            .records
+            .iter()
+            .find(|r| r.new_path.as_deref() == Some(non_canon))
+            .unwrap_or_else(|| panic!("{non_canon} must appear in draft"));
+        assert!(
+            matches!(r.entry_type, EntryType::Hardlink),
+            "{non_canon} must be Hardlink, got {:?}",
+            r.entry_type
+        );
+        assert_eq!(
+            r.data,
+            Some(Data::HardlinkTo(canonical.to_string())),
+            "{non_canon} must link to canonical path"
+        );
+    }
+}
+
+// ── Stage 1: walkdir — empty directories ─────────────────────────────────────
+
+/// An empty directory added in target must produce a Directory record with
+/// `new_path` set and `data = None`.
+#[test]
+fn test_walkdir_empty_dir_added() {
+    let base_dir = TempDir::new().unwrap();
+    let target_dir = TempDir::new().unwrap();
+
+    std::fs::create_dir_all(target_dir.path().join("data/empty")).unwrap();
+
+    let draft = walkdir(base_dir.path(), target_dir.path()).unwrap();
+
+    let record = draft
+        .records
+        .iter()
+        .find(|r| r.new_path.as_deref() == Some("data/empty"))
+        .expect("added empty dir must appear in draft");
+
+    assert!(
+        matches!(record.entry_type, EntryType::Directory),
+        "must be Directory record"
+    );
+    assert!(record.old_path.is_none(), "added dir must have no old_path");
+    assert!(record.data.is_none(), "directory record must have no data");
+}
+
+/// An empty directory removed from base must produce a deletion record with
+/// `old_path` set and `new_path = None`.
+#[test]
+fn test_walkdir_empty_dir_removed() {
+    let base_dir = TempDir::new().unwrap();
+    let target_dir = TempDir::new().unwrap();
+
+    std::fs::create_dir_all(base_dir.path().join("data/old")).unwrap();
+
+    let draft = walkdir(base_dir.path(), target_dir.path()).unwrap();
+
+    let record = draft
+        .records
+        .iter()
+        .find(|r| r.old_path.as_deref() == Some("data/old"))
+        .expect("removed empty dir must appear in draft");
+
+    assert!(
+        matches!(record.entry_type, EntryType::Directory),
+        "must be Directory record"
+    );
+    assert!(
+        record.new_path.is_none(),
+        "removed dir must have no new_path"
+    );
+    assert!(
+        record.data.is_none(),
+        "directory deletion record must have no data"
+    );
+}
+
+// ── Stage 7: compute_patches — rayon stress with many files ──────────────────
+
+/// 30 changed files processed in parallel via rayon must each produce a
+/// correctly indexed `patch_bytes` entry with no missing or duplicate keys.
+#[test]
+fn test_compute_patches_rayon_stress_many_files() {
+    let n: usize = 30;
+    let base_dir = TempDir::new().unwrap();
+    let target_dir = TempDir::new().unwrap();
+
+    for i in 0..n {
+        let base_content =
+            format!("base version 1 content for file {i:03} padding padding padding");
+        let target_content =
+            format!("target version 2 content for file {i:03} padding padding padding");
+        let rel = format!("file_{i:03}.txt");
+        write(base_dir.path(), &rel, base_content.as_bytes());
+        write(target_dir.path(), &rel, target_content.as_bytes());
+    }
+
+    let draft = walkdir(base_dir.path(), target_dir.path()).unwrap();
+    assert_eq!(
+        draft.records.len(),
+        n,
+        "must have exactly {n} changed records"
+    );
+
+    let router = xdelta3_router();
+    let draft = compute_patches(draft, &router).unwrap();
+
+    assert_eq!(
+        draft.patch_bytes.len(),
+        n,
+        "must have one patch_bytes entry per changed file"
+    );
+
+    // Verify each record has a Real patch and no Lazy patches remain.
+    for (idx, record) in draft.records.iter().enumerate() {
+        assert!(
+            matches!(
+                record.patch,
+                Some(image_delta_core::manifest::Patch::Real(_))
+            ),
+            "record {idx} must have Patch::Real after compute_patches"
+        );
+        let expected_key = format!("{idx:06}.patch");
+        assert!(
+            draft.patch_bytes.contains_key(&expected_key),
+            "patch_bytes must contain key {expected_key:?}"
+        );
+    }
+
+    // No duplicate keys (HashMap can't have duplicates, but verify count matches).
+    assert_eq!(
+        draft.patch_bytes.len(),
+        n,
+        "patch_bytes must have exactly {n} distinct entries"
+    );
+}
+
+// ── Stage 8: pack_and_upload_archive — gzip compression flag ─────────────────
+
+/// Highly repetitive patch content compresses very well; the archive must be
+/// uploaded with `compressed = true`.  This exercises the `try_gzip` path in
+/// `pack_and_upload_archive` that chooses gzip when the compressed form is
+/// smaller than the original.
+#[tokio::test]
+async fn test_pack_upload_archive_compressible_data_uses_gzip() {
+    let storage = FakeStorage::new();
+
+    // 64 KiB of repetitive bytes — gzip compresses these to a tiny fraction.
+    let repetitive: Vec<u8> =
+        b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".repeat(1161); // ≈ 64 KiB
+
+    let sha256 = hex::encode(sha2::Sha256::digest(&repetitive));
+    let mut draft = FsDraft::default();
+    let pref = image_delta_core::manifest::PatchRef {
+        archive_entry: "000000.patch".to_string(),
+        sha256,
+        algorithm_code: image_delta_core::AlgorithmCode::Passthrough,
+        algorithm_id: None,
+    };
+    draft.records.push(Record {
+        old_path: None,
+        new_path: Some("data/blob".into()),
+        entry_type: EntryType::File,
+        size: repetitive.len() as u64,
+        data: None,
+        patch: Some(image_delta_core::manifest::Patch::Real(pref)),
+        metadata: None,
+    });
+    draft
+        .patch_bytes
+        .insert("000000.patch".to_string(), repetitive);
+
+    pack_and_upload_archive(draft, &storage, "img-comp", "ext4")
+        .await
+        .unwrap();
+
+    assert!(storage.has_patches("img-comp"), "patches must be uploaded");
+    assert_eq!(
+        storage.patches_were_compressed("img-comp"),
+        Some(true),
+        "highly compressible repetitive data must be gzip-compressed"
+    );
+}
+
+// ── Full pipeline: first compression (base = None, many new files) ────────────
+
+/// When there is no base image (`base_image_id = None`), all files in target
+/// must be uploaded as blobs (`Data::BlobRef`) with no `Patch::Lazy` remaining
+/// in the final manifest.
+#[tokio::test]
+async fn test_compress_fs_partition_first_compression_many_new_files() {
+    let storage = FakeStorage::new();
+
+    let base_dir = TempDir::new().unwrap(); // empty — no base files
+    let target_dir = TempDir::new().unwrap();
+
+    let file_count: u32 = 12;
+    for i in 0..file_count {
+        let content = format!("brand new file content number {i:04} added in this image");
+        write(
+            target_dir.path(),
+            &format!("usr/share/data/file_{i:04}.txt"),
+            content.as_bytes(),
+        );
+    }
+
+    let descriptor = simple_descriptor();
+    let router = xdelta3_router();
+
+    let partition_manifest = image_delta_core::compress_pipeline::compress_fs_partition(
+        base_dir.path(),
+        target_dir.path(),
+        &descriptor,
+        &storage,
+        "img-first",
+        None, // no base image — first compression
+        &router,
+        "ext4",
+    )
+    .await
+    .unwrap();
+
+    let image_delta_core::manifest::PartitionContent::Fs { records, .. } =
+        &partition_manifest.content
+    else {
+        panic!("expected PartitionContent::Fs");
+    };
+
+    // Every record for a regular file must have Data::BlobRef.
+    let file_records: Vec<_> = records
+        .iter()
+        .filter(|r| matches!(r.entry_type, EntryType::File))
+        .collect();
+    assert_eq!(
+        file_records.len(),
+        file_count as usize,
+        "all {file_count} new files must appear in manifest"
+    );
+    for r in &file_records {
+        assert!(
+            matches!(r.data, Some(Data::BlobRef(_))),
+            "new file must have Data::BlobRef after pipeline: {:?}",
+            r.data
+        );
+    }
+
+    // No Lazy patches must remain.
+    for r in records {
+        assert!(
+            !matches!(
+                r.patch,
+                Some(image_delta_core::manifest::Patch::Lazy { .. })
+            ),
+            "Lazy patch must not appear in finalised manifest: {r:?}"
+        );
+    }
+
+    // All distinct files must be uploaded as blobs (no base → no dedup possible).
+    assert_eq!(
+        storage.uploaded_blob_count(),
+        file_count as usize,
+        "each unique new file must produce one stored blob"
+    );
+
+    // Patches archive must be uploaded (even if it contains 0 patches,
+    // the tar is still created and uploaded by pack_and_upload_archive).
+    assert!(
+        storage.has_patches("img-first"),
+        "patches archive must be uploaded even for a first compression"
+    );
+}

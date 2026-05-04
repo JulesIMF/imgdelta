@@ -674,7 +674,12 @@ pub async fn upload_lazy_blobs(
         let bytes = std::fs::read(&lazy_path)?;
         let sha256_hex = hex_sha256_bytes(&bytes);
 
-        let blob_id = storage.upload_blob(&sha256_hex, &bytes).await?;
+        // Check before uploading to avoid a redundant network PUT for
+        // content that is already stored (SHA-256 dedup).
+        let blob_id = match storage.blob_exists(&sha256_hex).await? {
+            Some(id) => id,
+            None => storage.upload_blob(&sha256_hex, &bytes).await?,
+        };
         storage
             .record_blob_origin(
                 blob_id,

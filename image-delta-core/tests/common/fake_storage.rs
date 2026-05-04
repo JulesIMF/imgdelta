@@ -22,10 +22,15 @@ struct FakeStorageInner {
     /// sha256 hex → uuid (dedup index)
     sha256_index: HashMap<String, Uuid>,
     manifests: HashMap<String, Vec<u8>>,
-    patches: HashMap<String, Vec<u8>>,
+    /// image_id → (tar bytes, compressed flag)
+    patches: HashMap<String, (Vec<u8>, bool)>,
     images: HashMap<String, ImageMeta>,
     /// image_id → list of (blob_uuid, file_path) for BlobPatch lookup.
     blob_origins: HashMap<String, Vec<(Uuid, String)>>,
+    /// Total number of times `upload_blob` was called (including dedup hits).
+    upload_call_count: usize,
+    /// Total number of times `blob_exists` was called.
+    blob_exists_call_count: usize,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -60,16 +65,41 @@ impl FakeStorage {
     pub fn uploaded_blob_count(&self) -> usize {
         self.inner.lock().unwrap().blobs.len()
     }
+
+    /// Returns the total number of times `upload_blob` was called,
+    /// including calls for content that was already stored (dedup hits).
+    pub fn upload_call_count(&self) -> usize {
+        self.inner.lock().unwrap().upload_call_count
+    }
+
+    /// Returns the total number of times `blob_exists` was called.
+    pub fn blob_exists_call_count(&self) -> usize {
+        self.inner.lock().unwrap().blob_exists_call_count
+    }
+
+    /// Returns `Some(compressed)` for the most recent `upload_patches` call
+    /// for `image_id`, or `None` if no patches were uploaded for that id.
+    pub fn patches_were_compressed(&self, image_id: &str) -> Option<bool> {
+        self.inner
+            .lock()
+            .unwrap()
+            .patches
+            .get(image_id)
+            .map(|(_, c)| *c)
+    }
 }
 
 #[async_trait]
 impl Storage for FakeStorage {
     async fn blob_exists(&self, sha256: &str) -> Result<Option<Uuid>> {
-        Ok(self.inner.lock().unwrap().sha256_index.get(sha256).copied())
+        let mut inner = self.inner.lock().unwrap();
+        inner.blob_exists_call_count += 1;
+        Ok(inner.sha256_index.get(sha256).copied())
     }
 
     async fn upload_blob(&self, sha256: &str, data: &[u8]) -> Result<Uuid> {
         let mut inner = self.inner.lock().unwrap();
+        inner.upload_call_count += 1;
         if let Some(&existing) = inner.sha256_index.get(sha256) {
             return Ok(existing);
         }
@@ -110,12 +140,12 @@ impl Storage for FakeStorage {
             })
     }
 
-    async fn upload_patches(&self, image_id: &str, data: &[u8], _compressed: bool) -> Result<()> {
+    async fn upload_patches(&self, image_id: &str, data: &[u8], compressed: bool) -> Result<()> {
         self.inner
             .lock()
             .unwrap()
             .patches
-            .insert(image_id.to_string(), data.to_vec());
+            .insert(image_id.to_string(), (data.to_vec(), compressed));
         Ok(())
     }
 
@@ -125,7 +155,7 @@ impl Storage for FakeStorage {
             .unwrap()
             .patches
             .get(image_id)
-            .cloned()
+            .map(|(data, _)| data.clone())
             .ok_or_else(|| {
                 image_delta_core::Error::Storage(format!("patches not found: {image_id}"))
             })

@@ -27,7 +27,7 @@ rayon = "1"
 flate2 = "1"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 sha2 = "0.10"
 hex = "0.4"
 filetime = "0.2"
