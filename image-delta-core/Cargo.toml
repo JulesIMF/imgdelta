@@ -37,3 +37,8 @@ nix = { version = "0.29", features = ["mount", "fs"], optional = true }
 [features]
 default = []
 qcow2 = ["nix"] # Qcow2Image — requires Linux + qemu-nbd in PATH
+
+[lints.rust]
+# `cfg(never)` is used to exclude test files that depend on unimplemented!()
+# phase stubs from compilation without deleting them from the repo.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(never)'] }

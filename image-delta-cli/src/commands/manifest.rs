@@ -70,28 +70,12 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
     );
     println!("format:        {}", h.format);
     println!("version:       {}", h.version);
-    println!("entries:       {}", manifest.entries.len());
+    println!("partitions:    {}", manifest.partitions.len());
     println!();
-    println!("{:<6} {:<12} {:<10} PATH", "TYPE", "SIZE", "KIND");
-    println!("{}", "-".repeat(70));
-    for e in &manifest.entries {
-        let kind = if e.removed {
-            "removed"
-        } else if e.blob.is_some() && e.patch.is_some() {
-            "blobpatch"
-        } else if e.blob.is_some() {
-            "blob"
-        } else if e.patch.is_some() {
-            "patch"
-        } else {
-            "meta"
-        };
+    for pm in &manifest.partitions {
         println!(
-            "{:<6} {:<12} {:<10} {}",
-            format!("{:?}", e.entry_type),
-            e.size,
-            kind,
-            e.path
+            "  partition {} ({:?})",
+            pm.descriptor.number, pm.descriptor.kind
         );
     }
     Ok(())

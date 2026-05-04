@@ -27,11 +27,10 @@ pub mod formats;
 pub mod fs_diff;
 pub mod image;
 pub mod manifest;
+pub mod partition;
 pub mod path_match;
 pub mod routing;
 pub mod storage;
-
-pub(crate) mod scheduler;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
 
@@ -49,7 +48,9 @@ pub use formats::DirectoryImage;
 pub use formats::Qcow2Image;
 pub use image::{Image, MountHandle, SimpleMountHandle};
 pub use manifest::{
-    BlobRef, Entry, EntryType, Manifest, ManifestHeader, Metadata, PatchRef, MANIFEST_VERSION,
+    BlobRef, Data, DataRef, EntryType, Manifest, ManifestHeader, Metadata, PartitionContent,
+    PartitionManifest, Patch, PatchRef, Record, MANIFEST_VERSION,
 };
+pub use partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
 pub use routing::{ElfRule, FileInfo, GlobRule, MagicRule, RouterEncoder, RoutingRule, SizeRule};
 pub use storage::{BlobCandidate, ImageMeta, ImageStatus, Storage};
