@@ -5,5 +5,5 @@
 # Workspace manifest: members, shared dependencies, patch directives
 
 [workspace]
-members = ["image-delta-core", "image-delta-cli"]
+members = ["core", "cli"]
 resolver = "2"

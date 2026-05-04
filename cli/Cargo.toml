@@ -16,7 +16,7 @@ name = "imgdelta"
 path = "src/main.rs"
 
 [dependencies]
-image-delta-core = { path = "../image-delta-core" }
+image-delta-core = { path = "../core" }
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
