@@ -37,6 +37,10 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 sha2 = "0.10"
 hex = "0.4"
 filetime = "0.2"
+tempfile = "3"
+rand = "0.8"
+indicatif = "0.17"
+image-delta-synthetic-fs = { path = "../synthetic-fs" }
 
 [build-dependencies]
 cc = "1"

@@ -5,5 +5,5 @@
 # Workspace manifest: members, shared dependencies, patch directives
 
 [workspace]
-members = ["core", "cli"]
+members = ["core", "cli", "synthetic-fs"]
 resolver = "2"

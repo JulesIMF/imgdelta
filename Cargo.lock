@@ -1788,8 +1788,11 @@ dependencies = [
  "flate2",
  "glob",
  "hex",
+ "image-delta-synthetic-fs",
+ "indicatif 0.17.11",
  "nix",
  "num_enum",
+ "rand 0.8.6",
  "rayon",
  "rmp-serde",
  "serde",
@@ -1803,6 +1806,17 @@ dependencies = [
  "uuid",
  "walkdir",
  "xattr",
+]
+
+[[package]]
+name = "image-delta-synthetic-fs"
+version = "0.1.0"
+dependencies = [
+ "filetime",
+ "libc",
+ "rand 0.8.6",
+ "tempfile",
+ "walkdir",
 ]
 
 [[package]]

@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 JulesIMF
+#
+# image-delta — incremental disk-image compression toolkit
+# Crate manifest for image-delta-synthetic-fs (synthetic filesystem generator)
+
+[package]
+name = "image-delta-synthetic-fs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Synthetic filesystem image generator and mutator for testing delta-compression pipelines"
+
+[dependencies]
+rand = "0.8"
+walkdir = "2"
+filetime = "0.2"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
