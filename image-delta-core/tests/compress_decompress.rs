@@ -475,3 +475,440 @@ async fn test_parallel_same_result_as_sequential() {
         "parallel output differs from sequential:\n{diffs:#?}"
     );
 }
+
+// ── 10. test_roundtrip_first_image ────────────────────────────────────────────
+
+/// No base image — all files are new (blob additions, `old_path = None`).
+///
+/// Exercises the path where:
+/// - `copy_unchanged_from_base` walks an empty dir → produces nothing
+/// - Every record goes through `Data::BlobRef` download
+/// - The patches tar exists but has zero entries
+#[tokio::test]
+async fn test_roundtrip_first_image() {
+    let base = tempdir().unwrap(); // empty — first image has no base
+    let target = tempdir().unwrap();
+    let output = tempdir().unwrap();
+
+    write_file(target.path(), "etc/hosts", b"127.0.0.1 localhost\n");
+    write_file(target.path(), "etc/passwd", b"root:x:0:0::/root:/bin/sh\n");
+    write_file(
+        target.path(),
+        "usr/bin/ls",
+        b"\x7fELF placeholder binary\x00\x01\x02",
+    );
+    write_symlink(target.path(), "bin", "usr/bin");
+
+    let (_, compressor) = make_compressor();
+
+    compressor
+        .compress(
+            base.path(),
+            target.path(),
+            compress_opts("img-first", None), // no base
+        )
+        .await
+        .unwrap();
+
+    compressor
+        .decompress(output.path(), decompress_opts("img-first", base.path()))
+        .await
+        .unwrap();
+
+    let diffs = compare_dirs(target.path(), output.path());
+    assert!(
+        diffs.is_empty(),
+        "first-image round-trip failed:\n{diffs:#?}"
+    );
+}
+
+// ── 11. test_roundtrip_chain_v0_v1_v2 ────────────────────────────────────────
+
+/// Three-version chain: v0 (first image) → v1 (delta) → v2 (delta).
+///
+/// This is the most important end-to-end scenario for the whole system.
+///
+/// Key correctness invariant tested by phase D:
+///   **The output of decompressing v1 must faithfully serve as the base for
+///   decompressing v2.**
+///
+/// `set_mtime_old` strategy:
+/// - Called on v0 files that *change* in v1 **before** compress v0→v1 so the
+///   diff sees a mtime delta and records `metadata.mtime` in the manifest.
+/// - Called on v1 files that *change* in v2 **after** the phase-B assertion
+///   (so that assertion is unaffected) and **before** compress v1→v2.
+/// - Unchanged files are left with fresh mtimes so `copy_unchanged_from_base`
+///   preserves source mtime and both sides stay within the 1-second tolerance.
+#[tokio::test]
+async fn test_roundtrip_chain_v0_v1_v2() {
+    let v0 = tempdir().unwrap();
+    let v1 = tempdir().unwrap();
+    let v2 = tempdir().unwrap();
+
+    // v0: initial version
+    write_file(
+        v0.path(),
+        "kernel",
+        b"kernel v0 --- padding --- padding ---",
+    );
+    write_file(
+        v0.path(),
+        "libc.so",
+        b"common lib bytes unchanged across versions",
+    );
+    write_file(v0.path(), "etc/hosts", b"127.0.0.1 localhost v0");
+    write_file(v0.path(), "etc/os-release", b"VERSION=0");
+
+    // v1: kernel updated, etc/hosts updated, os-release removed, newcmd added
+    write_file(v1.path(), "kernel", b"kernel v1 updated --- padding ---");
+    write_file(
+        v1.path(),
+        "libc.so",
+        b"common lib bytes unchanged across versions",
+    );
+    write_file(v1.path(), "etc/hosts", b"127.0.0.1 localhost v1 updated");
+    write_file(v1.path(), "usr/bin/newcmd", b"brand new binary in v1");
+    // etc/os-release removed in v1
+
+    // v2: kernel and libc updated, etc/hosts unchanged (same as v1), tmp added
+    write_file(v2.path(), "kernel", b"kernel v2 latest --- padding ---");
+    write_file(v2.path(), "libc.so", b"libc updated to v2 with fixes");
+    write_file(v2.path(), "etc/hosts", b"127.0.0.1 localhost v1 updated"); // same as v1
+    write_file(v2.path(), "usr/bin/newcmd", b"brand new binary in v1"); // same as v1
+    write_file(v2.path(), "tmp/run.log", b"new log file in v2");
+
+    let empty_base = tempdir().unwrap();
+    let (storage, compressor) = make_compressor();
+
+    // ── Phase A: compress v0 (first image, no base) ───────────────────────────
+    // Mark v0 base files that will change in v1 as old so the v0→v1 diff
+    // detects a mtime change and records metadata.mtime in the manifest.
+    // libc.so is unchanged in v1 — no set_mtime_old needed.
+    set_mtime_old(v0.path(), "kernel");
+    set_mtime_old(v0.path(), "etc/hosts");
+
+    compressor
+        .compress(
+            empty_base.path(),
+            v0.path(),
+            compress_opts("chain-v0", None),
+        )
+        .await
+        .unwrap();
+
+    let reconstruct_v0 = tempdir().unwrap();
+    compressor
+        .decompress(
+            reconstruct_v0.path(),
+            decompress_opts("chain-v0", empty_base.path()),
+        )
+        .await
+        .unwrap();
+
+    let diffs = compare_dirs(v0.path(), reconstruct_v0.path());
+    assert!(diffs.is_empty(), "chain v0 round-trip failed:\n{diffs:#?}");
+
+    // ── Phase B: compress v0→v1, decompress v1 ────────────────────────────────
+    // v0/kernel is old, v1/kernel is fresh → diff records mtime change ✓
+    save_root_meta(&*storage, "chain-v0").await;
+    compressor
+        .compress(
+            v0.path(),
+            v1.path(),
+            compress_opts("chain-v1", Some("chain-v0")),
+        )
+        .await
+        .unwrap();
+
+    let reconstruct_v1 = tempdir().unwrap();
+    compressor
+        .decompress(
+            reconstruct_v1.path(),
+            decompress_opts("chain-v1", v0.path()),
+        )
+        .await
+        .unwrap();
+
+    let diffs = compare_dirs(v1.path(), reconstruct_v1.path());
+    assert!(diffs.is_empty(), "chain v1 round-trip failed:\n{diffs:#?}");
+
+    // ── Phase C: mark v1 files old (for v1→v2 diff) ──────────────────────────
+    // Done AFTER the phase-B assertion so compare_dirs(v1, reconstruct_v1) was
+    // not affected.  kernel and libc.so both change in v2.
+    set_mtime_old(v1.path(), "kernel");
+    set_mtime_old(v1.path(), "libc.so");
+
+    // ── Phase D: compress v1→v2, decompress v2 using RECONSTRUCTED v1 ─────────
+    // Key step: reconstruct_v1 (not original v1) is used as the decompress
+    // base, verifying that decompressed output faithfully serves as the next
+    // base in the chain.
+    save_root_meta(&*storage, "chain-v1").await;
+    compressor
+        .compress(
+            v1.path(),
+            v2.path(),
+            compress_opts("chain-v2", Some("chain-v1")),
+        )
+        .await
+        .unwrap();
+
+    let reconstruct_v2 = tempdir().unwrap();
+    compressor
+        .decompress(
+            reconstruct_v2.path(),
+            decompress_opts("chain-v2", reconstruct_v1.path()),
+        )
+        .await
+        .unwrap();
+
+    let diffs = compare_dirs(v2.path(), reconstruct_v2.path());
+    assert!(
+        diffs.is_empty(),
+        "chain v2 round-trip (using decompressed v1 as base) failed:\n{diffs:#?}"
+    );
+}
+
+// ── 12. test_roundtrip_all_deletions ─────────────────────────────────────────
+
+/// All base files are deleted in the target — the output must be empty.
+///
+/// Exercises:
+/// - `affected` set = all old_paths → `copy_unchanged_from_base` copies nothing
+/// - All records have `new_path = None` → `apply_record` is a no-op for each
+#[tokio::test]
+async fn test_roundtrip_all_deletions() {
+    let base = tempdir().unwrap();
+    let target = tempdir().unwrap(); // empty target = all base files deleted
+    let output = tempdir().unwrap();
+
+    write_file(base.path(), "file_a.txt", b"content a");
+    write_file(base.path(), "file_b.txt", b"content b");
+    write_file(base.path(), "subdir/file_c.txt", b"content c");
+
+    let (storage, compressor) = make_compressor();
+    save_root_meta(&*storage, "img-all-del-base").await;
+
+    compressor
+        .compress(
+            base.path(),
+            target.path(),
+            compress_opts("img-all-del", Some("img-all-del-base")),
+        )
+        .await
+        .unwrap();
+
+    compressor
+        .decompress(output.path(), decompress_opts("img-all-del", base.path()))
+        .await
+        .unwrap();
+
+    // Output must be empty (no files surviving from base or added in target)
+    let diffs = compare_dirs(target.path(), output.path());
+    assert!(
+        diffs.is_empty(),
+        "all-deletions round-trip failed:\n{diffs:#?}"
+    );
+}
+
+// ── 13. test_roundtrip_new_symlink ────────────────────────────────────────────
+
+/// A symlink is ADDED in the target (no corresponding symlink in base).
+///
+/// This exercises the `EntryType::Symlink` + `Data::SoftlinkTo` path in
+/// `apply_record`, which is distinct from the changed-symlink path
+/// (`Patch::Real`) exercised by `test_roundtrip_symlink`.
+#[tokio::test]
+async fn test_roundtrip_new_symlink() {
+    let base = tempdir().unwrap();
+    let target = tempdir().unwrap();
+    let output = tempdir().unwrap();
+
+    write_file(base.path(), "real_file.txt", b"content");
+    write_file(target.path(), "real_file.txt", b"content");
+    write_symlink(target.path(), "link_to_real", "real_file.txt");
+    write_symlink(target.path(), "deep/link", "../real_file.txt");
+
+    let (storage, compressor) = make_compressor();
+    save_root_meta(&*storage, "img-new-sym-base").await;
+
+    compressor
+        .compress(
+            base.path(),
+            target.path(),
+            compress_opts("img-new-sym", Some("img-new-sym-base")),
+        )
+        .await
+        .unwrap();
+
+    compressor
+        .decompress(output.path(), decompress_opts("img-new-sym", base.path()))
+        .await
+        .unwrap();
+
+    let diffs = compare_dirs(target.path(), output.path());
+    assert!(
+        diffs.is_empty(),
+        "new-symlink round-trip failed:\n{diffs:#?}"
+    );
+}
+
+// ── 14. test_roundtrip_unchanged_symlink_in_base ──────────────────────────────
+
+/// A symlink exists in both base and target with the same target string.
+///
+/// It is NOT modified → no record is generated for it → it should be copied
+/// from base by `copy_unchanged_from_base` (the symlink branch).
+#[tokio::test]
+async fn test_roundtrip_unchanged_symlink_in_base() {
+    let base = tempdir().unwrap();
+    let target = tempdir().unwrap();
+    let output = tempdir().unwrap();
+
+    // Unchanged symlink: same target in both base and target
+    write_file(base.path(), "real_file.txt", b"content");
+    write_symlink(base.path(), "link", "real_file.txt");
+
+    write_file(target.path(), "real_file.txt", b"content updated");
+    set_mtime_old(base.path(), "real_file.txt");
+    write_symlink(target.path(), "link", "real_file.txt"); // same target → no record
+
+    let (storage, compressor) = make_compressor();
+    save_root_meta(&*storage, "img-unch-sym-base").await;
+
+    compressor
+        .compress(
+            base.path(),
+            target.path(),
+            compress_opts("img-unch-sym", Some("img-unch-sym-base")),
+        )
+        .await
+        .unwrap();
+
+    compressor
+        .decompress(output.path(), decompress_opts("img-unch-sym", base.path()))
+        .await
+        .unwrap();
+
+    let diffs = compare_dirs(target.path(), output.path());
+    assert!(
+        diffs.is_empty(),
+        "unchanged-symlink round-trip failed:\n{diffs:#?}"
+    );
+}
+
+// ── 15. test_roundtrip_rename_and_change ─────────────────────────────────────
+
+/// A file is renamed AND its content changes in the same version.
+///
+/// This exercises the `old_path ≠ new_path` + `Patch::Real` combined path,
+/// unlike `test_roundtrip_rename` (same content) and `test_roundtrip_simple`
+/// (same path, changed content).
+#[tokio::test]
+async fn test_roundtrip_rename_and_change() {
+    let base = tempdir().unwrap();
+    let target = tempdir().unwrap();
+    let output = tempdir().unwrap();
+
+    // library renamed from v1 to v2 AND content updated
+    write_file(
+        base.path(),
+        "lib/libfoo-1.0.so",
+        b"ELF library version 1.0 data placeholder bytes",
+    );
+    write_file(base.path(), "unchanged.txt", b"this file stays");
+    set_mtime_old(base.path(), "lib/libfoo-1.0.so");
+
+    write_file(
+        target.path(),
+        "lib/libfoo-2.0.so",
+        b"ELF library version 2.0 data placeholder bytes updated",
+    );
+    write_file(target.path(), "unchanged.txt", b"this file stays");
+
+    let (storage, compressor) = make_compressor();
+    save_root_meta(&*storage, "img-rnc-base").await;
+
+    compressor
+        .compress(
+            base.path(),
+            target.path(),
+            compress_opts("img-rnc", Some("img-rnc-base")),
+        )
+        .await
+        .unwrap();
+
+    compressor
+        .decompress(output.path(), decompress_opts("img-rnc", base.path()))
+        .await
+        .unwrap();
+
+    let diffs = compare_dirs(target.path(), output.path());
+    assert!(
+        diffs.is_empty(),
+        "rename-and-change round-trip failed:\n{diffs:#?}"
+    );
+}
+
+// ── 16. test_roundtrip_compressed_patches ────────────────────────────────────
+
+/// Force `patches_compressed = true` by using large repetitive content.
+///
+/// The `try_gzip` function uses gzip only when it makes the archive smaller.
+/// Repetitive binary content compresses well, so this test exercises the
+/// gzip code path in both compress (archive creation) and decompress
+/// (archive extraction with `patches_compressed = true`).
+#[tokio::test]
+async fn test_roundtrip_compressed_patches() {
+    let base = tempdir().unwrap();
+    let target = tempdir().unwrap();
+    let output = tempdir().unwrap();
+
+    // Large repetitive content: gzip will shrink this significantly
+    let base_content: Vec<u8> = b"AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD"
+        .iter()
+        .cycle()
+        .copied()
+        .take(32 * 1024)
+        .collect();
+    let mut target_content = base_content.clone();
+    // Modify a few bytes in the middle
+    target_content[8000] = 0xFF;
+    target_content[16000] = 0xAB;
+    target_content[24000] = 0x42;
+
+    write_file(base.path(), "big_file.bin", &base_content);
+    set_mtime_old(base.path(), "big_file.bin");
+    write_file(target.path(), "big_file.bin", &target_content);
+
+    let (storage, compressor) = make_compressor();
+    save_root_meta(&*storage, "img-gzip-base").await;
+
+    compressor
+        .compress(
+            base.path(),
+            target.path(),
+            compress_opts("img-gzip", Some("img-gzip-base")),
+        )
+        .await
+        .unwrap();
+
+    // Verify that the patches archive was actually gzip-compressed
+    // (only if content is compressible enough; PassthroughEncoder stores full
+    // target content as patch, 32 KB of AAAAAA... compresses to ~100 bytes)
+    assert_eq!(
+        storage.patches_were_compressed("img-gzip"),
+        Some(true),
+        "expected gzip compression for highly repetitive content"
+    );
+
+    compressor
+        .decompress(output.path(), decompress_opts("img-gzip", base.path()))
+        .await
+        .unwrap();
+
+    let diffs = compare_dirs(target.path(), output.path());
+    assert!(
+        diffs.is_empty(),
+        "compressed-patches round-trip failed:\n{diffs:#?}"
+    );
+}

@@ -380,3 +380,18 @@ pub fn decompress_opts(image_id: &str, base_root: &Path) -> image_delta_core::De
         workers: 1,
     }
 }
+
+/// Register a base image in storage so chain-integrity checks pass.
+///
+/// Call this before compressing a delta that references `image_id` as its base.
+pub async fn save_root_meta_for_storage(storage: &dyn image_delta_core::Storage, image_id: &str) {
+    storage
+        .register_image(&image_delta_core::ImageMeta {
+            image_id: image_id.to_string(),
+            base_image_id: None,
+            format: "directory".into(),
+            status: "compressed".into(),
+        })
+        .await
+        .unwrap();
+}

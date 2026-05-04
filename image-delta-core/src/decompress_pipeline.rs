@@ -167,9 +167,19 @@ fn copy_unchanged_from_base(
                 std::fs::create_dir_all(parent).ok();
             }
             let data = read_file(abs)?;
+            // Capture source mtime before writing (write resets it).
+            let src_mtime = abs
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(filetime::FileTime::from_system_time);
             stats.bytes_written += data.len() as u64;
             std::fs::write(&dst, &data)
                 .map_err(|e| Error::Other(format!("write {}: {e}", dst.display())))?;
+            // Restore the source mtime so unchanged files retain their timestamp.
+            if let Some(ft) = src_mtime {
+                let _ = filetime::set_file_mtime(&dst, ft);
+            }
             stats.files_written += 1;
         }
     }
