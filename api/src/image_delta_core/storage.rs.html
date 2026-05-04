@@ -120,19 +120,24 @@
 <a href=#120 id=120 data-nosnippet>120</a>    /// against files in the new image.
 <a href=#121 id=121 data-nosnippet>121</a>    </span><span class="kw">async fn </span>find_blob_candidates(<span class="kw-2">&amp;</span><span class="self">self</span>, base_image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;BlobCandidate&gt;&gt;;
 <a href=#122 id=122 data-nosnippet>122</a>
-<a href=#123 id=123 data-nosnippet>123</a>    <span class="doccomment">/// Record that `blob_uuid` originated from `file_path` in `image_id`.
+<a href=#123 id=123 data-nosnippet>123</a>    <span class="doccomment">/// Record that `blob_uuid` originated from `file_path` in `orig_image_id`.
 <a href=#124 id=124 data-nosnippet>124</a>    ///
-<a href=#125 id=125 data-nosnippet>125</a>    /// Called by [`DefaultCompressor`] after each `upload_blob` so that future
-<a href=#126 id=126 data-nosnippet>126</a>    /// compress operations can use this blob as a delta base via
-<a href=#127 id=127 data-nosnippet>127</a>    /// [`find_blob_candidates`].
+<a href=#125 id=125 data-nosnippet>125</a>    /// `base_image_id` is the delta-source image that was used during the
+<a href=#126 id=126 data-nosnippet>126</a>    /// compress run that produced this blob (i.e. `options.base_image_id`).
+<a href=#127 id=127 data-nosnippet>127</a>    /// It is `None` for root (no-base) compress runs.
 <a href=#128 id=128 data-nosnippet>128</a>    ///
-<a href=#129 id=129 data-nosnippet>129</a>    /// [`DefaultCompressor`]: crate::DefaultCompressor
-<a href=#130 id=130 data-nosnippet>130</a>    /// [`find_blob_candidates`]: Storage::find_blob_candidates
-<a href=#131 id=131 data-nosnippet>131</a>    </span><span class="kw">async fn </span>record_blob_origin(
-<a href=#132 id=132 data-nosnippet>132</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#133 id=133 data-nosnippet>133</a>        blob_uuid: Uuid,
-<a href=#134 id=134 data-nosnippet>134</a>        image_id: <span class="kw-2">&amp;</span>str,
-<a href=#135 id=135 data-nosnippet>135</a>        file_path: <span class="kw-2">&amp;</span>str,
-<a href=#136 id=136 data-nosnippet>136</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
-<a href=#137 id=137 data-nosnippet>137</a>}
+<a href=#129 id=129 data-nosnippet>129</a>    /// Called by [`DefaultCompressor`] after each `upload_blob` so that future
+<a href=#130 id=130 data-nosnippet>130</a>    /// compress operations can use this blob as a delta base via
+<a href=#131 id=131 data-nosnippet>131</a>    /// [`find_blob_candidates`].
+<a href=#132 id=132 data-nosnippet>132</a>    ///
+<a href=#133 id=133 data-nosnippet>133</a>    /// [`DefaultCompressor`]: crate::DefaultCompressor
+<a href=#134 id=134 data-nosnippet>134</a>    /// [`find_blob_candidates`]: Storage::find_blob_candidates
+<a href=#135 id=135 data-nosnippet>135</a>    </span><span class="kw">async fn </span>record_blob_origin(
+<a href=#136 id=136 data-nosnippet>136</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#137 id=137 data-nosnippet>137</a>        blob_uuid: Uuid,
+<a href=#138 id=138 data-nosnippet>138</a>        orig_image_id: <span class="kw-2">&amp;</span>str,
+<a href=#139 id=139 data-nosnippet>139</a>        base_image_id: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;,
+<a href=#140 id=140 data-nosnippet>140</a>        file_path: <span class="kw-2">&amp;</span>str,
+<a href=#141 id=141 data-nosnippet>141</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#142 id=142 data-nosnippet>142</a>}
 </code></pre></div></section></main></body></html>

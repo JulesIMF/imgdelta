@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["SimpleMountHandle"],"trait":["Image","MountHandle"]};
+window.SIDEBAR_ITEMS = {"enum":["PartitionHandle"],"struct":["BiosBootHandle","FsHandle","OpenDirectory","RawHandle","SimpleMountHandle"],"trait":["Image","MountHandle","OpenImage"]};
