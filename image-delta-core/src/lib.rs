@@ -48,7 +48,10 @@ pub use encoders::{PassthroughEncoder, TextDiffEncoder, Xdelta3Encoder};
 pub use formats::DirectoryImage;
 #[cfg(all(target_os = "linux", feature = "qcow2"))]
 pub use formats::Qcow2Image;
-pub use image::{Image, MountHandle, SimpleMountHandle};
+pub use image::{
+    BiosBootHandle, FsHandle, Image, MountHandle, OpenImage, PartitionHandle, RawHandle,
+    SimpleMountHandle,
+};
 pub use manifest::{
     BlobRef, Data, DataRef, EntryType, Manifest, ManifestHeader, Metadata, PartitionContent,
     PartitionManifest, Patch, PatchRef, Record, MANIFEST_VERSION,

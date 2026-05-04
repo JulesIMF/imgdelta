@@ -1,4 +1,7 @@
-use crate::{image::SimpleMountHandle, Image, MountHandle, Result};
+use crate::{
+    image::{OpenDirectory, OpenImage, SimpleMountHandle},
+    Image, MountHandle, Result,
+};
 use std::path::Path;
 use walkdir::WalkDir;
 
@@ -24,6 +27,16 @@ impl Default for DirectoryImage {
 impl Image for DirectoryImage {
     fn format_name(&self) -> &'static str {
         "directory"
+    }
+
+    fn open(&self, path: &Path) -> Result<Box<dyn OpenImage>> {
+        if !path.is_dir() {
+            return Err(crate::Error::Format(format!(
+                "DirectoryImage::open: path is not a directory: {}",
+                path.display()
+            )));
+        }
+        Ok(Box::new(OpenDirectory::new(path.to_path_buf())))
     }
 
     fn mount(&self, path: &Path) -> Result<Box<dyn MountHandle>> {

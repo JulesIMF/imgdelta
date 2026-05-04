@@ -540,6 +540,16 @@ impl Image for Qcow2Image {
         "qcow2"
     }
 
+    /// Open a `.qcow2` file and parse its partition layout.
+    ///
+    /// **Not yet implemented** — will be completed in Phase 6.F.
+    /// Requires NBD mount + `sfdisk` + `blkid` on Linux.
+    fn open(&self, _path: &Path) -> crate::Result<Box<dyn crate::image::OpenImage>> {
+        Err(crate::Error::Format(
+            "Qcow2Image::open not yet implemented (Phase 6.F)".into(),
+        ))
+    }
+
     /// Mount `path` (a `.qcow2` file) read-only and return a RAII handle.
     ///
     /// Steps:
