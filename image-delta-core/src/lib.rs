@@ -20,6 +20,7 @@
 mod error;
 
 pub mod algorithm;
+pub mod compress_pipeline;
 pub mod compressor;
 pub mod encoder;
 pub mod encoders;
@@ -37,6 +38,7 @@ pub mod storage;
 pub use error::{Error, Result};
 
 pub use algorithm::{AlgorithmCode, FilePatch, FileSnapshot};
+pub use compress_pipeline::FsDraft;
 pub use compressor::{
     CompressOptions, CompressionStats, Compressor, DecompressOptions, DecompressionStats,
     DefaultCompressor,

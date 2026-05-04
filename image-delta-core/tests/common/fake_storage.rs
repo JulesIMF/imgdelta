@@ -50,6 +50,16 @@ impl FakeStorage {
             .or_default()
             .push((blob_id, file_path.to_string()));
     }
+
+    /// Returns `true` if a patches archive was uploaded for `image_id`.
+    pub fn has_patches(&self, image_id: &str) -> bool {
+        self.inner.lock().unwrap().patches.contains_key(image_id)
+    }
+
+    /// Returns the number of distinct blobs currently stored.
+    pub fn uploaded_blob_count(&self) -> usize {
+        self.inner.lock().unwrap().blobs.len()
+    }
 }
 
 #[async_trait]

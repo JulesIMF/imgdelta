@@ -24,9 +24,13 @@ xattr = "1"
 diffy = "0.3"
 async-trait = "0.1"
 rayon = "1"
+flate2 = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
+sha2 = "0.10"
+hex = "0.4"
+filetime = "0.2"
 
 [build-dependencies]
 cc = "1"
