@@ -668,7 +668,12 @@ impl Compressor for DefaultCompressor {
         for db in deferred_blobs {
             let blob_id = self.storage.upload_blob(&db.sha256, &db.bytes).await?;
             self.storage
-                .record_blob_origin(blob_id, &options.image_id, &db.path)
+                .record_blob_origin(
+                    blob_id,
+                    &options.image_id,
+                    options.base_image_id.as_deref(),
+                    &db.path,
+                )
                 .await?;
             stats.total_stored_bytes += db.size;
             entries.push(Entry {
@@ -734,7 +739,12 @@ impl Compressor for DefaultCompressor {
                     let size = target_bytes.len() as u64;
                     let blob_id = self.storage.upload_blob(&sha256, &target_bytes).await?;
                     self.storage
-                        .record_blob_origin(blob_id, &options.image_id, &result.path)
+                        .record_blob_origin(
+                            blob_id,
+                            &options.image_id,
+                            options.base_image_id.as_deref(),
+                            &result.path,
+                        )
                         .await?;
                     stats.total_stored_bytes += size;
                     stats.files_added += 1;

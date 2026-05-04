@@ -120,7 +120,11 @@ pub trait Storage: Send + Sync {
     /// against files in the new image.
     async fn find_blob_candidates(&self, base_image_id: &str) -> crate::Result<Vec<BlobCandidate>>;
 
-    /// Record that `blob_uuid` originated from `file_path` in `image_id`.
+    /// Record that `blob_uuid` originated from `file_path` in `orig_image_id`.
+    ///
+    /// `base_image_id` is the delta-source image that was used during the
+    /// compress run that produced this blob (i.e. `options.base_image_id`).
+    /// It is `None` for root (no-base) compress runs.
     ///
     /// Called by [`DefaultCompressor`] after each `upload_blob` so that future
     /// compress operations can use this blob as a delta base via
@@ -131,7 +135,8 @@ pub trait Storage: Send + Sync {
     async fn record_blob_origin(
         &self,
         blob_uuid: Uuid,
-        image_id: &str,
+        orig_image_id: &str,
+        base_image_id: Option<&str>,
         file_path: &str,
     ) -> crate::Result<()>;
 }

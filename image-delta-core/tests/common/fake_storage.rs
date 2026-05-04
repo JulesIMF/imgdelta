@@ -178,6 +178,7 @@ impl Storage for FakeStorage {
         &self,
         blob_uuid: Uuid,
         image_id: &str,
+        _base_image_id: Option<&str>,
         file_path: &str,
     ) -> Result<()> {
         self.inner

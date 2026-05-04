@@ -61,7 +61,8 @@ impl From<StoredImageMeta> for ImageMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BlobOriginRecord {
     pub blob_uuid: String,
-    pub image_id: String,
+    pub orig_image_id: String,
+    pub base_image_id: Option<String>,
     pub file_path: String,
 }
 
@@ -282,7 +283,7 @@ impl Storage for LocalStorage {
         let candidates = inner
             .blob_origins
             .iter()
-            .filter(|r| r.image_id == base_image_id)
+            .filter(|r| r.orig_image_id == base_image_id)
             .filter_map(|r| {
                 r.blob_uuid.parse::<Uuid>().ok().map(|uuid| {
                     // Look up sha256 from the reverse index.
@@ -305,13 +306,15 @@ impl Storage for LocalStorage {
     async fn record_blob_origin(
         &self,
         blob_uuid: Uuid,
-        image_id: &str,
+        orig_image_id: &str,
+        base_image_id: Option<&str>,
         file_path: &str,
     ) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
         inner.blob_origins.push(BlobOriginRecord {
             blob_uuid: blob_uuid.to_string(),
-            image_id: image_id.to_string(),
+            orig_image_id: orig_image_id.to_string(),
+            base_image_id: base_image_id.map(|s| s.to_string()),
             file_path: file_path.to_string(),
         });
         Self::save_blob_origins(&self.base_dir, &inner.blob_origins).map_err(Self::io_err)

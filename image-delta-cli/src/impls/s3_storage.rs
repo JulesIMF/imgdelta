@@ -294,7 +294,8 @@ impl Storage for S3Storage {
             "SELECT bo.blob_id, bi.sha256, bo.path \
              FROM blob_origins bo \
              JOIN blob_index bi ON bi.blob_id = bo.blob_id \
-             WHERE bo.image_id = $1",
+             WHERE bo.orig_image_id = $1 \
+             ORDER BY bo.created_at DESC",
         )
         .bind(base_image_id)
         .fetch_all(&self.pg)
@@ -314,15 +315,17 @@ impl Storage for S3Storage {
     async fn record_blob_origin(
         &self,
         blob_uuid: Uuid,
-        image_id: &str,
+        orig_image_id: &str,
+        base_image_id: Option<&str>,
         file_path: &str,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO blob_origins (blob_id, image_id, path, size) \
-             VALUES ($1, $2, $3, 0) ON CONFLICT (blob_id, image_id) DO NOTHING",
+            "INSERT INTO blob_origins (blob_id, orig_image_id, base_image_id, path, size) \
+             VALUES ($1, $2, $3, $4, 0) ON CONFLICT (blob_id, orig_image_id) DO NOTHING",
         )
         .bind(blob_uuid)
-        .bind(image_id)
+        .bind(orig_image_id)
+        .bind(base_image_id)
         .bind(file_path)
         .execute(&self.pg)
         .await
@@ -523,7 +526,7 @@ mod tests {
         let blob_uuid = storage.upload_blob(&sha256, data).await.unwrap();
 
         storage
-            .record_blob_origin(blob_uuid, &image_id, "usr/bin/tool")
+            .record_blob_origin(blob_uuid, &image_id, None, "usr/bin/tool")
             .await
             .unwrap();
 
