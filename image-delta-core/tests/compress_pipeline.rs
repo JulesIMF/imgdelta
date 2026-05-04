@@ -399,7 +399,7 @@ async fn test_pack_upload_archive_produces_fs_content() {
     let router = xdelta3_router();
     draft = compute_patches(draft, &router).unwrap();
 
-    let content = pack_and_upload_archive(draft, &storage, "img-001", "ext4")
+    let (content, _compressed) = pack_and_upload_archive(draft, &storage, "img-001", "ext4")
         .await
         .unwrap();
 
@@ -480,18 +480,19 @@ async fn test_compress_fs_partition_golden() {
     let descriptor = simple_descriptor();
     let router = xdelta3_router();
 
-    let partition_manifest = image_delta_core::compress_pipeline::compress_fs_partition(
-        base_dir.path(),
-        target_dir.path(),
-        &descriptor,
-        &storage,
-        "img-002",
-        Some("img-001"),
-        &router,
-        "ext4",
-    )
-    .await
-    .unwrap();
+    let (partition_manifest, _compressed) =
+        image_delta_core::compress_pipeline::compress_fs_partition(
+            base_dir.path(),
+            target_dir.path(),
+            &descriptor,
+            &storage,
+            "img-002",
+            Some("img-001"),
+            &router,
+            "ext4",
+        )
+        .await
+        .unwrap();
 
     let PartitionContent::Fs { fs_type, records } = &partition_manifest.content else {
         panic!("expected PartitionContent::Fs");
@@ -557,18 +558,19 @@ async fn test_compress_manifest_serialisation_roundtrip() {
     let descriptor = simple_descriptor();
     let router = xdelta3_router();
 
-    let partition_manifest = image_delta_core::compress_pipeline::compress_fs_partition(
-        base_dir.path(),
-        target_dir.path(),
-        &descriptor,
-        &storage,
-        "img-rt",
-        None,
-        &router,
-        "ext4",
-    )
-    .await
-    .unwrap();
+    let (partition_manifest, _compressed) =
+        image_delta_core::compress_pipeline::compress_fs_partition(
+            base_dir.path(),
+            target_dir.path(),
+            &descriptor,
+            &storage,
+            "img-rt",
+            None,
+            &router,
+            "ext4",
+        )
+        .await
+        .unwrap();
 
     let manifest = Manifest {
         header: ManifestHeader {
@@ -980,7 +982,7 @@ async fn test_pack_upload_archive_compressible_data_uses_gzip() {
         .patch_bytes
         .insert("000000.patch".to_string(), repetitive);
 
-    pack_and_upload_archive(draft, &storage, "img-comp", "ext4")
+    let (_content, _) = pack_and_upload_archive(draft, &storage, "img-comp", "ext4")
         .await
         .unwrap();
 
@@ -1017,18 +1019,19 @@ async fn test_compress_fs_partition_first_compression_many_new_files() {
     let descriptor = simple_descriptor();
     let router = xdelta3_router();
 
-    let partition_manifest = image_delta_core::compress_pipeline::compress_fs_partition(
-        base_dir.path(),
-        target_dir.path(),
-        &descriptor,
-        &storage,
-        "img-first",
-        None, // no base image — first compression
-        &router,
-        "ext4",
-    )
-    .await
-    .unwrap();
+    let (partition_manifest, _compressed) =
+        image_delta_core::compress_pipeline::compress_fs_partition(
+            base_dir.path(),
+            target_dir.path(),
+            &descriptor,
+            &storage,
+            "img-first",
+            None, // no base image — first compression
+            &router,
+            "ext4",
+        )
+        .await
+        .unwrap();
 
     let image_delta_core::manifest::PartitionContent::Fs { records, .. } =
         &partition_manifest.content

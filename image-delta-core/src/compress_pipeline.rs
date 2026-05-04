@@ -880,7 +880,7 @@ pub async fn pack_and_upload_archive(
     storage: &dyn Storage,
     image_id: &str,
     fs_type: &str,
-) -> Result<PartitionContent> {
+) -> Result<(PartitionContent, bool)> {
     // Build tar archive in memory.
     let tar_bytes = {
         let mut builder = tar::Builder::new(Vec::<u8>::new());
@@ -918,10 +918,13 @@ pub async fn pack_and_upload_archive(
         .filter(|r| !matches!(r.patch, Some(Patch::Lazy { .. })))
         .collect();
 
-    Ok(PartitionContent::Fs {
-        fs_type: fs_type.to_string(),
-        records,
-    })
+    Ok((
+        PartitionContent::Fs {
+            fs_type: fs_type.to_string(),
+            records,
+        },
+        compressed,
+    ))
 }
 
 /// Attempt to gzip `bytes`.  Returns `(bytes, true)` if the compressed form is
@@ -958,6 +961,9 @@ fn try_gzip(bytes: Vec<u8>) -> Result<(Vec<u8>, bool)> {
 ///
 /// [`Manifest`]: crate::Manifest
 #[allow(clippy::too_many_arguments)]
+/// Returns `(PartitionManifest, patches_compressed)` where `patches_compressed`
+/// is `true` when the uploaded patches archive is gzip-compressed (i.e.
+/// compression reduced the archive size).
 pub async fn compress_fs_partition(
     base_root: &Path,
     target_root: &Path,
@@ -967,7 +973,7 @@ pub async fn compress_fs_partition(
     base_image_id: Option<&str>,
     router: &RouterEncoder,
     fs_type: &str,
-) -> Result<PartitionManifest> {
+) -> Result<(PartitionManifest, bool)> {
     let tmp_dir = tempfile::TempDir::new()?;
 
     // Stage 1.
@@ -1000,12 +1006,16 @@ pub async fn compress_fs_partition(
     draft.tmp_files.clear();
 
     // Stage 8.
-    let content = pack_and_upload_archive(draft, storage, image_id, fs_type).await?;
+    let (content, patches_compressed) =
+        pack_and_upload_archive(draft, storage, image_id, fs_type).await?;
 
-    Ok(PartitionManifest {
-        descriptor: descriptor.clone(),
-        content,
-    })
+    Ok((
+        PartitionManifest {
+            descriptor: descriptor.clone(),
+            content,
+        },
+        patches_compressed,
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

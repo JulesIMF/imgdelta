@@ -2,7 +2,7 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use image_delta_core::{Compressor, DecompressOptions, DefaultCompressor};
+use image_delta_core::{Compressor, DecompressOptions, DefaultCompressor, DirectoryImage};
 
 use crate::commands::compress::load_config;
 
@@ -30,7 +30,11 @@ pub async fn run(args: DecompressArgs, config_path: Option<&Path>) -> anyhow::Re
 
     let storage = config.storage.build().await?;
     let router = config.compressor.build_router()?;
-    let compressor = DefaultCompressor::new(Arc::clone(&storage), router);
+    let compressor = DefaultCompressor::new(
+        Arc::new(DirectoryImage::new()),
+        Arc::clone(&storage),
+        router,
+    );
 
     let opts = DecompressOptions {
         image_id: args.image_id.clone(),

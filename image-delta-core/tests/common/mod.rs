@@ -332,6 +332,7 @@ pub fn make_compressor() -> (
     let storage = Arc::new(FakeStorage::new());
     let encoder = Arc::new(Xdelta3Encoder::new());
     let compressor = Arc::new(DefaultCompressor::with_encoder(
+        Arc::new(image_delta_core::DirectoryImage::new()),
         Arc::clone(&storage) as _,
         Arc::clone(&encoder) as _,
     ));

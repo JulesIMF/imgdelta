@@ -87,6 +87,17 @@ impl FakeStorage {
             .get(image_id)
             .map(|(_, c)| *c)
     }
+
+    /// Returns the current status string for `image_id`, or `None` if the
+    /// image has never been registered.
+    pub fn image_status(&self, image_id: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .unwrap()
+            .images
+            .get(image_id)
+            .map(|m| m.status.clone())
+    }
 }
 
 #[async_trait]
@@ -174,7 +185,17 @@ impl Storage for FakeStorage {
         Ok(self.inner.lock().unwrap().images.get(image_id).cloned())
     }
 
-    async fn update_status(&self, _image_id: &str, _status: ImageStatus) -> Result<()> {
+    async fn update_status(&self, image_id: &str, status: ImageStatus) -> Result<()> {
+        let status_str = match &status {
+            ImageStatus::Pending => "pending".to_string(),
+            ImageStatus::Compressing => "compressing".to_string(),
+            ImageStatus::Compressed => "compressed".to_string(),
+            ImageStatus::Failed(msg) => format!("failed: {msg}"),
+        };
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(meta) = inner.images.get_mut(image_id) {
+            meta.status = status_str;
+        }
         Ok(())
     }
 

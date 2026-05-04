@@ -1,8 +1,19 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
 
-use crate::{Result, Storage};
+use crate::compress_pipeline::compress_fs_partition;
+use crate::image::PartitionHandle;
+use crate::manifest::{
+    BlobRef, Manifest, ManifestHeader, PartitionContent, PartitionManifest, MANIFEST_VERSION,
+};
+use crate::partition::PartitionKind;
+use crate::storage::ImageStatus;
+use crate::{Image, ImageMeta, Result, Storage};
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
@@ -69,27 +80,35 @@ pub trait Compressor: Send + Sync {
 // ── DefaultCompressor ─────────────────────────────────────────────────────────
 
 pub struct DefaultCompressor {
-    #[allow(dead_code)]
-    storage: std::sync::Arc<dyn Storage>,
-    #[allow(dead_code)]
-    router: std::sync::Arc<crate::routing::RouterEncoder>,
+    storage: Arc<dyn Storage>,
+    router: Arc<crate::routing::RouterEncoder>,
+    image_format: Arc<dyn Image>,
 }
 
 impl DefaultCompressor {
+    /// Create a `DefaultCompressor` with a fully configured router.
     pub fn new(
-        storage: std::sync::Arc<dyn Storage>,
-        router: std::sync::Arc<crate::routing::RouterEncoder>,
+        image_format: Arc<dyn Image>,
+        storage: Arc<dyn Storage>,
+        router: Arc<crate::routing::RouterEncoder>,
     ) -> Self {
-        Self { storage, router }
+        Self {
+            image_format,
+            storage,
+            router,
+        }
     }
 
+    /// Create a `DefaultCompressor` with a single catch-all encoder.
     pub fn with_encoder(
-        storage: std::sync::Arc<dyn Storage>,
-        encoder: std::sync::Arc<dyn crate::encoder::PatchEncoder>,
+        image_format: Arc<dyn Image>,
+        storage: Arc<dyn Storage>,
+        encoder: Arc<dyn crate::encoder::PatchEncoder>,
     ) -> Self {
         Self::new(
+            image_format,
             storage,
-            std::sync::Arc::new(crate::routing::RouterEncoder::new(vec![], encoder)),
+            Arc::new(crate::routing::RouterEncoder::new(vec![], encoder)),
         )
     }
 }
@@ -98,11 +117,183 @@ impl DefaultCompressor {
 impl Compressor for DefaultCompressor {
     async fn compress(
         &self,
-        _source_root: &Path,
-        _target_root: &Path,
-        _options: CompressOptions,
+        source_root: &Path,
+        target_root: &Path,
+        options: CompressOptions,
     ) -> Result<CompressionStats> {
-        unimplemented!("compress is being redesigned in Phase 6.B")
+        let started_at = Instant::now();
+        let image_id = &options.image_id;
+        let base_image_id: Option<&str> = options.base_image_id.as_deref();
+
+        // ── 1. Register image and mark as compressing ─────────────────────────
+        self.storage
+            .register_image(&ImageMeta {
+                image_id: image_id.clone(),
+                base_image_id: options.base_image_id.clone(),
+                format: self.image_format.format_name().to_string(),
+                status: "pending".into(),
+            })
+            .await?;
+        self.storage
+            .update_status(image_id, ImageStatus::Compressing)
+            .await?;
+
+        // ── 2. Open target image ───────────────────────────────────────────────
+        let target_open = self.image_format.open(target_root)?;
+
+        // ── 3. Open base image (if any) and index its partitions by number ────
+        //
+        // `_base_open` is kept alive so that any mount handles derived from it
+        // stay valid during partition processing.  It must outlive
+        // `base_partitions`.
+        let _base_open: Option<Box<dyn crate::image::OpenImage>>;
+        let base_partitions: HashMap<u32, PartitionHandle>;
+        if let Some(_base_id) = base_image_id {
+            let open = self.image_format.open(source_root)?;
+            let mut map = HashMap::new();
+            for ph in open.partitions()? {
+                map.insert(ph.descriptor().number, ph);
+            }
+            base_partitions = map;
+            _base_open = Some(open);
+        } else {
+            base_partitions = HashMap::new();
+            _base_open = None;
+        }
+
+        // ── 4. Process each target partition ──────────────────────────────────
+        let disk_layout = target_open.disk_layout().clone();
+        let target_partitions = target_open.partitions()?;
+
+        let mut partition_manifests: Vec<PartitionManifest> = Vec::new();
+        let mut patches_compressed = false;
+        // Keep TempDirs and MountHandles alive until all processing is done.
+        let mut _live_mounts: Vec<Box<dyn crate::image::MountHandle>> = Vec::new();
+        let mut _live_tmpdirs: Vec<tempfile::TempDir> = Vec::new();
+
+        for target_ph in target_partitions {
+            match target_ph {
+                PartitionHandle::Fs(fs_handle) => {
+                    let descriptor = fs_handle.descriptor.clone();
+
+                    // Mount target partition.
+                    let target_mount = fs_handle.mount()?;
+                    let target_root_path: PathBuf = target_mount.root().to_path_buf();
+                    _live_mounts.push(target_mount);
+
+                    // Find matching base Fs partition, or create empty temp dir.
+                    let base_root_path: PathBuf = match base_partitions.get(&descriptor.number) {
+                        Some(PartitionHandle::Fs(base_fs)) => {
+                            let base_mount = base_fs.mount()?;
+                            let p = base_mount.root().to_path_buf();
+                            _live_mounts.push(base_mount);
+                            p
+                        }
+                        _ => {
+                            // No matching base — first compression or type mismatch.
+                            let tmp = tempfile::TempDir::new()?;
+                            let p = tmp.path().to_path_buf();
+                            _live_tmpdirs.push(tmp);
+                            p
+                        }
+                    };
+
+                    let fs_type = match &descriptor.kind {
+                        PartitionKind::Fs { fs_type } => fs_type.clone(),
+                        _ => "unknown".into(),
+                    };
+
+                    let (pm, compressed) = compress_fs_partition(
+                        &base_root_path,
+                        &target_root_path,
+                        &descriptor,
+                        self.storage.as_ref(),
+                        image_id,
+                        base_image_id,
+                        &self.router,
+                        &fs_type,
+                    )
+                    .await?;
+
+                    patches_compressed = compressed;
+                    partition_manifests.push(pm);
+                }
+
+                PartitionHandle::BiosBoot(bb_handle) => {
+                    let descriptor = bb_handle.descriptor.clone();
+                    let bytes = bb_handle.read_raw()?;
+                    let sha256 = hex::encode(Sha256::digest(&bytes));
+                    let size = bytes.len() as u64;
+                    let blob_id = match self.storage.blob_exists(&sha256).await? {
+                        Some(id) => id,
+                        None => self.storage.upload_blob(&sha256, &bytes).await?,
+                    };
+                    partition_manifests.push(PartitionManifest {
+                        descriptor,
+                        content: PartitionContent::BiosBoot {
+                            blob_id,
+                            sha256,
+                            size,
+                        },
+                    });
+                }
+
+                PartitionHandle::Raw(raw_handle) => {
+                    let descriptor = raw_handle.descriptor.clone();
+                    let bytes = raw_handle.read_raw()?;
+                    let sha256 = hex::encode(Sha256::digest(&bytes));
+                    let size = bytes.len() as u64;
+                    let blob_id = match self.storage.blob_exists(&sha256).await? {
+                        Some(id) => id,
+                        None => self.storage.upload_blob(&sha256, &bytes).await?,
+                    };
+                    partition_manifests.push(PartitionManifest {
+                        descriptor,
+                        content: PartitionContent::Raw {
+                            size,
+                            blob: Some(BlobRef { blob_id, size }),
+                            patch: None,
+                        },
+                    });
+                }
+            }
+        }
+
+        // ── 5. Build and upload the manifest ──────────────────────────────────
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let manifest = Manifest {
+            header: ManifestHeader {
+                version: MANIFEST_VERSION,
+                image_id: image_id.clone(),
+                base_image_id: options.base_image_id.clone(),
+                format: self.image_format.format_name().to_string(),
+                created_at,
+                patches_compressed,
+            },
+            disk_layout,
+            partitions: partition_manifests,
+        };
+
+        let manifest_bytes = rmp_serde::to_vec_named(&manifest)
+            .map_err(|e| crate::Error::Manifest(e.to_string()))?;
+        self.storage
+            .upload_manifest(image_id, &manifest_bytes)
+            .await?;
+
+        // ── 6. Mark as compressed ─────────────────────────────────────────────
+        self.storage
+            .update_status(image_id, ImageStatus::Compressed)
+            .await?;
+
+        // ── 7. Compute stats from manifest ────────────────────────────────────
+        let elapsed = started_at.elapsed();
+        let stats = stats_from_manifest(&manifest, elapsed);
+
+        Ok(stats)
     }
 
     async fn decompress(
@@ -112,4 +303,45 @@ impl Compressor for DefaultCompressor {
     ) -> Result<DecompressionStats> {
         unimplemented!("decompress is being redesigned in Phase 6.E")
     }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Derive `CompressionStats` from the final manifest and wall-clock elapsed time.
+///
+/// File counts are computed from record structure:
+/// - `files_added`   : `old_path = None, new_path = Some`
+/// - `files_removed` : `old_path = Some, new_path = None`
+/// - `files_patched` : `old_path = Some, new_path = Some, patch = Some(Real)`
+///
+/// `total_source_bytes` is the sum of `record.size` across all records.
+/// `total_stored_bytes` is currently `0` (requires storage instrumentation).
+fn stats_from_manifest(manifest: &Manifest, elapsed: std::time::Duration) -> CompressionStats {
+    let mut stats = CompressionStats {
+        elapsed_secs: elapsed.as_secs_f64(),
+        ..CompressionStats::default()
+    };
+    for pm in &manifest.partitions {
+        if let PartitionContent::Fs { records, .. } = &pm.content {
+            for r in records {
+                // Directory records are infrastructure changes; exclude them from
+                // file-level counters so callers get meaningful file statistics.
+                if matches!(r.entry_type, crate::manifest::EntryType::Directory) {
+                    continue;
+                }
+                match (&r.old_path, &r.new_path) {
+                    (None, Some(_)) => stats.files_added += 1,
+                    (Some(_), None) => stats.files_removed += 1,
+                    (Some(_), Some(_)) => {
+                        if matches!(r.patch, Some(crate::manifest::Patch::Real(_))) {
+                            stats.files_patched += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                stats.total_source_bytes += r.size;
+            }
+        }
+    }
+    stats
 }
