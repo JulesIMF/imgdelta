@@ -581,8 +581,17 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
     let removed_paths: Vec<String> = removed.iter().map(|(_, p)| p.clone()).collect();
     let added_paths: Vec<String> = added.iter().map(|(_, p)| p.clone()).collect();
 
-    let matches = match find_best_matches(&removed_paths, &added_paths, &PathMatchConfig::default())
-    {
+    // For rename detection we must not penalise cross-directory matches: a
+    // directory rename legitimately moves every file to a new first component.
+    // first_component_weight is kept at 0.0 here (the default 5.0 is designed
+    // for the delta-base lookup stage, where same-directory matches are
+    // preferred; here it would cause all directory-rename pairs to fall below
+    // the min_score threshold).
+    let rename_match_config = PathMatchConfig {
+        first_component_weight: 0.0,
+        ..PathMatchConfig::default()
+    };
+    let matches = match find_best_matches(&removed_paths, &added_paths, &rename_match_config) {
         Ok(m) => m,
         Err(_) => return draft,
     };
@@ -608,6 +617,9 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
         };
 
         let size = draft.records[*add_idx].size;
+        // Carry the target-file metadata from the "added" record so the
+        // decompressor restores mode/mtime/uid/gid on the renamed file.
+        let metadata = draft.records[*add_idx].metadata.clone();
         new_records.push(Record {
             old_path: Some(old_path.clone()),
             new_path: Some(new_path.clone()),
@@ -618,7 +630,7 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
                 old_data: old_data_path,
                 new_data: new_data_path,
             }),
-            metadata: None,
+            metadata,
         });
 
         remove_indices.push(*rem_idx);

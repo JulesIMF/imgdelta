@@ -148,6 +148,15 @@ fn copy_unchanged_from_base(
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&dst)
                 .map_err(|e| Error::Other(format!("create_dir {}: {e}", dst.display())))?;
+            // Preserve source directory mode.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                if let Ok(m) = abs.metadata() {
+                    let mode = m.mode() & 0o7777;
+                    let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode));
+                }
+            }
         } else if entry.file_type().is_symlink() {
             let link_target = std::fs::read_link(abs)
                 .map_err(|e| Error::Other(format!("readlink {}: {e}", abs.display())))?;
@@ -167,16 +176,27 @@ fn copy_unchanged_from_base(
                 std::fs::create_dir_all(parent).ok();
             }
             let data = read_file(abs)?;
-            // Capture source mtime before writing (write resets it).
-            let src_mtime = abs
-                .metadata()
-                .ok()
+            // Capture source mtime and mode before writing (write resets both).
+            let src_meta = abs.metadata().ok();
+            let src_mtime = src_meta
+                .as_ref()
                 .and_then(|m| m.modified().ok())
                 .map(filetime::FileTime::from_system_time);
+            #[cfg(unix)]
+            let src_mode: Option<u32> = {
+                use std::os::unix::fs::MetadataExt;
+                src_meta.as_ref().map(|m| m.mode() & 0o7777)
+            };
             stats.bytes_written += data.len() as u64;
             std::fs::write(&dst, &data)
                 .map_err(|e| Error::Other(format!("write {}: {e}", dst.display())))?;
-            // Restore the source mtime so unchanged files retain their timestamp.
+            // Restore mode.
+            #[cfg(unix)]
+            if let Some(mode) = src_mode {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode));
+            }
+            // Restore mtime.
             if let Some(ft) = src_mtime {
                 let _ = filetime::set_file_mtime(&dst, ft);
             }
@@ -256,6 +276,19 @@ async fn apply_record(
         EntryType::Directory => {
             std::fs::create_dir_all(&dst)
                 .map_err(|e| Error::Other(format!("mkdir {}: {e}", dst.display())))?;
+            // For a metadata-only dir update (old_path == new_path), the manifest
+            // records only the *diff* — mode may be absent if it didn't change.
+            // Copy the base mode first so we don't lose it when create_dir_all
+            // uses the umask default.
+            #[cfg(unix)]
+            if let Some(old) = &record.old_path {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                let base_dir = base_root.join(old);
+                if let Ok(m) = base_dir.metadata() {
+                    let mode = m.mode() & 0o7777;
+                    let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode));
+                }
+            }
         }
 
         EntryType::Symlink => {
@@ -304,9 +337,22 @@ async fn apply_record(
                     })?
                 }
                 _ => {
-                    return Err(Error::Format(format!(
-                        "symlink record {new_path} has no SoftlinkTo data or patch"
-                    )))
+                    // Metadata-only symlink change: target is unchanged, only
+                    // mtime (or similar) differs.  Re-read the target from base.
+                    let base_path = record
+                        .old_path
+                        .as_deref()
+                        .map(|p| base_root.join(p))
+                        .ok_or_else(|| {
+                            Error::Format(format!(
+                                "symlink record {new_path} has no SoftlinkTo data, patch, or old_path"
+                            ))
+                        })?;
+                    std::fs::read_link(&base_path)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .map_err(|e| {
+                            Error::Other(format!("readlink {}: {e}", base_path.display()))
+                        })?
                 }
             };
             #[cfg(unix)]
@@ -356,7 +402,31 @@ async fn apply_record(
 
     // Apply metadata (mode, mtime) if present.  Symlinks are excluded because
     // most Linux filesystems do not support lchmod.
-    if !matches!(record.entry_type, EntryType::Symlink | EntryType::Directory) {
+    if !matches!(record.entry_type, EntryType::Symlink) {
+        // The manifest records only the *diff*: fields absent from `metadata`
+        // mean "unchanged from base".  However, writing new content
+        // (std::fs::write, patches, create_dir_all) resets mode to the
+        // process umask and mtime to "now".  Restore any absent field from
+        // the base entry first, then let apply_metadata overwrite with the
+        // explicit delta value.
+        #[cfg(unix)]
+        if let Some(old) = &record.old_path {
+            let base_path = base_root.join(old);
+            if let Ok(base_meta) = base_path.symlink_metadata() {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                let meta = record.metadata.as_ref();
+                // Restore mode from base if not explicitly changed.
+                if meta.is_none_or(|m| m.mode.is_none()) {
+                    let mode = base_meta.mode() & 0o7777;
+                    let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode));
+                }
+                // Restore mtime from base if not explicitly changed.
+                if meta.is_none_or(|m| m.mtime.is_none()) {
+                    let ft = filetime::FileTime::from_unix_time(base_meta.mtime(), 0);
+                    let _ = filetime::set_file_mtime(&dst, ft);
+                }
+            }
+        }
         apply_metadata(&dst, record.metadata.as_ref());
     }
 

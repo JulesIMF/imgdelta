@@ -395,3 +395,252 @@ pub async fn save_root_meta_for_storage(storage: &dyn image_delta_core::Storage,
         .await
         .unwrap();
 }
+
+// ── manifest verification ─────────────────────────────────────────────────────
+
+/// Per-category accuracy metrics for manifest verification.
+///
+/// The combined metric is `correct / (correct + false_positive + unrecognized)`,
+/// which simultaneously captures precision and recall:
+///
+/// - precision = `correct / (correct + false_positive)`
+/// - recall    = `correct / (correct + unrecognized)`
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CategoryMetrics {
+    /// Manifest records that correctly match an actual event of this category.
+    pub correct: usize,
+    /// Manifest records classified as this category that don't match any actual
+    /// event (compressor over-reported or mis-classified).
+    pub false_positive: usize,
+    /// Actual events of this category with no matching manifest record
+    /// (compressor missed or encoded differently).
+    pub unrecognized: usize,
+}
+
+impl CategoryMetrics {
+    /// Combined accuracy: `correct / (correct + false_positive + unrecognized)`.
+    /// Returns 1.0 when the denominator is zero (nothing to detect → perfect).
+    pub fn accuracy(&self) -> f64 {
+        let denom = self.correct + self.false_positive + self.unrecognized;
+        if denom == 0 {
+            1.0
+        } else {
+            self.correct as f64 / denom as f64
+        }
+    }
+
+    /// True if all events were correctly encoded with no false positives.
+    pub fn is_perfect(&self) -> bool {
+        self.false_positive == 0 && self.unrecognized == 0
+    }
+}
+
+/// Aggregated per-iteration results across all chains × generations.
+#[derive(Debug, Default)]
+pub struct ManifestCheckResult {
+    /// Files newly appearing in curr that don't exist in prev
+    /// (excluding rename targets).
+    pub additions: CategoryMetrics,
+    /// Files present in prev that are absent from curr
+    /// (excluding rename sources).
+    pub deletions: CategoryMetrics,
+    /// File renames: same content moved to a new path.
+    pub renames: CategoryMetrics,
+    /// In-place content or metadata modifications (same path, changed data).
+    pub modifications: CategoryMetrics,
+}
+
+/// Compare manifest records against mutation log + filesystem diff and return
+/// four-category accuracy metrics.  Nothing is asserted — all results are
+/// informational counters.
+///
+/// **Four categories tracked:**
+///
+/// | Category     | Ground truth                                   | Manifest record            |
+/// |--------------|------------------------------------------------|----------------------------|
+/// | additions    | new path in curr not in prev, not rename-to    | `old_path = None`          |
+/// | deletions    | old path in prev not in curr, not rename-from  | `new_path = None`          |
+/// | renames      | file `(from, to)` pairs from mutation log      | `old_path ≠ new_path`      |
+/// | modifications| file modified in-place (mut_log `Modified`)    | `old_path = new_path`      |
+pub fn verify_manifest_records(
+    records: &[image_delta_core::Record],
+    prev_dir: &Path,
+    curr_dir: &Path,
+    mut_log: &[image_delta_synthetic_fs::mutator::MutationRecord],
+) -> ManifestCheckResult {
+    use image_delta_core::EntryType;
+    use image_delta_synthetic_fs::mutator::MutationKind;
+    use std::collections::HashSet;
+
+    // ── Ground truth: file rename pairs (from → to) ───────────────────────────
+    // For file renames: a single (from, to) pair.
+    // For directory renames: expand to one pair per file recursively inside the
+    // renamed directory, because the mutation log only records the directory
+    // rename but every file inside it physically moved to a new path.
+    let mut rename_pairs: HashSet<(String, String)> = HashSet::new();
+    for rec in mut_log {
+        if let MutationKind::Renamed { from } = &rec.kind {
+            let from_path = prev_dir.join(from);
+            match from_path.symlink_metadata() {
+                Ok(m) if m.file_type().is_file() || m.file_type().is_symlink() => {
+                    rename_pairs.insert((from.clone(), rec.path.clone()));
+                }
+                Ok(m) if m.file_type().is_dir() => {
+                    // Expand: every file/symlink under the old dir maps to the
+                    // corresponding path under the new dir.
+                    for entry in walkdir::WalkDir::new(&from_path)
+                        .follow_links(false)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                    {
+                        let ft = entry.path().symlink_metadata().map(|m| m.file_type()).ok();
+                        let is_entry = ft.as_ref().is_some_and(|t| t.is_file() || t.is_symlink());
+                        if !is_entry {
+                            continue;
+                        }
+                        let sub = entry
+                            .path()
+                            .strip_prefix(&from_path)
+                            .unwrap()
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        let old_rel = format!("{from}/{sub}");
+                        let new_rel = format!("{}/{sub}", rec.path);
+                        rename_pairs.insert((old_rel, new_rel));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let rename_froms: HashSet<&str> = rename_pairs.iter().map(|(f, _)| f.as_str()).collect();
+    let rename_tos: HashSet<&str> = rename_pairs.iter().map(|(_, t)| t.as_str()).collect();
+
+    // ── Ground truth: additions (new files/symlinks not from a rename) ─────────
+    let mut actual_added: HashSet<String> = HashSet::new();
+    for entry in walkdir::WalkDir::new(curr_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let ft = entry.path().symlink_metadata().map(|m| m.file_type());
+        let is_fs_entry = ft.as_ref().is_ok_and(|t| t.is_file() || t.is_symlink());
+        if !is_fs_entry {
+            continue;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(curr_dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !prev_dir.join(&rel).exists() && !rename_tos.contains(rel.as_str()) {
+            actual_added.insert(rel);
+        }
+    }
+
+    // ── Ground truth: deletions (removed files/symlinks not from a rename) ─────
+    let mut actual_deleted: HashSet<String> = HashSet::new();
+    for entry in walkdir::WalkDir::new(prev_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let ft = entry.path().symlink_metadata().map(|m| m.file_type());
+        let is_fs_entry = ft.as_ref().is_ok_and(|t| t.is_file() || t.is_symlink());
+        if !is_fs_entry {
+            continue;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(prev_dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !curr_dir.join(&rel).exists() && !rename_froms.contains(rel.as_str()) {
+            actual_deleted.insert(rel);
+        }
+    }
+
+    // ── Ground truth: modifications (in-place file changes, not rename targets) ─
+    // Use the mutation log: Modified events where the path still exists at the
+    // same location in curr_dir (not renamed away, not a fresh rename target).
+    let mut actual_modified: HashSet<String> = HashSet::new();
+    for rec in mut_log {
+        if matches!(rec.kind, MutationKind::Modified { .. })
+            && curr_dir.join(&rec.path).exists()
+            && !rename_tos.contains(rec.path.as_str())
+        {
+            actual_modified.insert(rec.path.clone());
+        }
+    }
+
+    // ── Match manifest records against ground truth ────────────────────────────
+    let mut matched_added: HashSet<String> = HashSet::new();
+    let mut matched_deleted: HashSet<String> = HashSet::new();
+    let mut matched_renames: HashSet<(String, String)> = HashSet::new();
+    let mut matched_modified: HashSet<String> = HashSet::new();
+
+    let mut result = ManifestCheckResult::default();
+
+    for rec in records {
+        match (&rec.old_path, &rec.new_path) {
+            // ── Addition: old_path absent ─────────────────────────────────────
+            (None, Some(new)) => {
+                if actual_added.contains(new.as_str()) && !matched_added.contains(new.as_str()) {
+                    result.additions.correct += 1;
+                    matched_added.insert(new.clone());
+                } else {
+                    result.additions.false_positive += 1;
+                }
+            }
+            // ── Deletion: new_path absent ─────────────────────────────────────
+            (Some(old), None) => {
+                if actual_deleted.contains(old.as_str()) && !matched_deleted.contains(old.as_str())
+                {
+                    result.deletions.correct += 1;
+                    matched_deleted.insert(old.clone());
+                } else {
+                    result.deletions.false_positive += 1;
+                }
+            }
+            // ── Rename: old_path ≠ new_path ───────────────────────────────────
+            (Some(old), Some(new)) if old != new => {
+                if matches!(rec.entry_type, EntryType::File) {
+                    let pair = (old.clone(), new.clone());
+                    if rename_pairs.contains(&pair) && !matched_renames.contains(&pair) {
+                        result.renames.correct += 1;
+                        matched_renames.insert(pair);
+                    } else {
+                        result.renames.false_positive += 1;
+                    }
+                }
+            }
+            // ── Modification: old_path = new_path ─────────────────────────────
+            (Some(old), Some(new)) if old == new => {
+                if matches!(rec.entry_type, EntryType::File)
+                    && (rec.patch.is_some() || rec.data.is_some())
+                {
+                    if actual_modified.contains(old.as_str())
+                        && !matched_modified.contains(old.as_str())
+                    {
+                        result.modifications.correct += 1;
+                        matched_modified.insert(old.clone());
+                    } else {
+                        result.modifications.false_positive += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ── Unrecognized = actual events with no matching manifest record ──────────
+    result.additions.unrecognized = actual_added.len().saturating_sub(matched_added.len());
+    result.deletions.unrecognized = actual_deleted.len().saturating_sub(matched_deleted.len());
+    result.renames.unrecognized = rename_pairs.len().saturating_sub(matched_renames.len());
+    result.modifications.unrecognized =
+        actual_modified.len().saturating_sub(matched_modified.len());
+
+    result
+}

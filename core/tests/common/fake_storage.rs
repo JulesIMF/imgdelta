@@ -104,6 +104,11 @@ impl FakeStorage {
             .get(image_id)
             .map(|m| m.status.clone())
     }
+
+    /// Returns the raw manifest bytes stored for `image_id`, or `None`.
+    pub fn get_manifest(&self, image_id: &str) -> Option<Vec<u8>> {
+        self.inner.lock().unwrap().manifests.get(image_id).cloned()
+    }
 }
 
 #[async_trait]
