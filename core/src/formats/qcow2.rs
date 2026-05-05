@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,8 @@ use nix::mount::{umount2, MntFlags};
 use tempfile::TempDir;
 use walkdir::WalkDir;
 
+use crate::image::{BiosBootHandle, FsHandle, OpenImage, PartitionHandle, RawHandle};
+use crate::partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
 use crate::{Image, MountHandle, Result};
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -496,8 +498,345 @@ where
     result
 }
 
-// ── Qcow2Image ────────────────────────────────────────────────────────────────
+// ── sfdisk JSON parsing ───────────────────────────────────────────────────────
 
+/// Top-level wrapper produced by `sfdisk --json`.
+#[derive(serde::Deserialize)]
+struct SfdiskOutput {
+    partitiontable: SfdiskTable,
+}
+
+#[derive(serde::Deserialize)]
+struct SfdiskTable {
+    label: String,
+    #[serde(default)]
+    id: Option<String>,
+    sectorsize: u64,
+    partitions: Vec<SfdiskPartition>,
+}
+
+#[derive(serde::Deserialize)]
+struct SfdiskPartition {
+    /// Full block-device node, e.g. `/dev/nbd3p2`.
+    node: String,
+    /// First sector (LBA).
+    start: u64,
+    /// Partition size in sectors.
+    size: u64,
+    /// GPT type GUID string or MBR type number.
+    #[serde(rename = "type", default)]
+    part_type: Option<String>,
+    /// GPT partition GUID string.
+    #[serde(default)]
+    uuid: Option<String>,
+    /// Partition label (UTF-8, decoded from GPT UTF-16).
+    #[serde(default)]
+    name: Option<String>,
+}
+
+// ── GPT type GUID constants ───────────────────────────────────────────────────
+
+/// BIOS Boot partition (`21686148-6449-6E6F-744E-656564454649`).
+const GUID_BIOS_BOOT: &str = "21686148-6449-6e6f-744e-656564454649";
+/// EFI System partition (`C12A7328-F81F-11D2-BA4B-00A0C93EC93B`).
+const GUID_EFI_SYSTEM: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+/// Linux Swap partition (`0657FD6D-A4AB-43C4-84E5-0933C84B4F4F`).
+const GUID_LINUX_SWAP: &str = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f";
+
+// ── NbdConn — RAII disconnect-only wrapper ────────────────────────────────────
+
+/// RAII wrapper around an open NBD connection.
+///
+/// `Drop` calls `qemu-nbd --disconnect` to release the kernel NBD slot.
+/// Does **not** unmount any filesystems that may be mounted on partitions
+/// of this device — that is the responsibility of each [`PartitionMountHandle`].
+struct NbdConn(String);
+
+impl Drop for NbdConn {
+    fn drop(&mut self) {
+        let _ = Command::new("qemu-nbd")
+            .args(["--disconnect", &self.0])
+            .output();
+    }
+}
+
+// ── PartitionMountHandle ──────────────────────────────────────────────────────
+
+/// RAII handle for a single partition mount within an open qcow2.
+///
+/// `Drop` calls `umount2(MNT_DETACH)` but does **not** disconnect the NBD
+/// device.  The `Arc<NbdConn>` field ensures the NBD connection stays alive
+/// until every partition handle derived from the same [`OpenQcow2Image`] is
+/// dropped.
+struct PartitionMountHandle {
+    _mount_dir: TempDir,
+    root: PathBuf,
+    /// Keeps the shared NBD connection alive.
+    _nbd: Arc<NbdConn>,
+}
+
+impl MountHandle for PartitionMountHandle {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for PartitionMountHandle {
+    fn drop(&mut self) {
+        let _ = umount2(self.root.as_path(), MntFlags::MNT_DETACH);
+        // _nbd drops here if this is the last Arc; qemu-nbd --disconnect
+        // is called only when all partition handles for this image are gone.
+    }
+}
+
+// ── PartInfo ──────────────────────────────────────────────────────────────────
+
+/// Precomputed info for a single partition in an open qcow2 image.
+struct PartInfo {
+    desc: PartitionDescriptor,
+    /// Block-device path, e.g. `/dev/nbd3p2`.
+    block_dev: String,
+}
+
+// ── OpenQcow2Image ────────────────────────────────────────────────────────────
+
+/// [`OpenImage`] implementation for a qcow2 image opened via NBD.
+///
+/// Holds an `Arc<NbdConn>` so the NBD connection is not released until this
+/// object **and** all [`PartitionHandle`]s derived from it are dropped.
+struct OpenQcow2Image {
+    layout: DiskLayout,
+    part_infos: Vec<PartInfo>,
+    nbd: Arc<NbdConn>,
+}
+
+impl OpenImage for OpenQcow2Image {
+    fn disk_layout(&self) -> &DiskLayout {
+        &self.layout
+    }
+
+    fn partitions(&self) -> crate::Result<Vec<PartitionHandle>> {
+        let mut handles = Vec::new();
+
+        for pi in &self.part_infos {
+            let nbd = Arc::clone(&self.nbd);
+            let dev = pi.block_dev.clone();
+            let desc = pi.desc.clone();
+            let kind = desc.kind.clone();
+
+            let handle = match kind {
+                PartitionKind::BiosBoot => {
+                    let size = desc.size_bytes as usize;
+                    PartitionHandle::BiosBoot(BiosBootHandle::new(desc, move || {
+                        let _ = &nbd; // keep NbdConn alive while reading
+                        read_block_device_bytes(&dev, size)
+                    }))
+                }
+                PartitionKind::Raw => {
+                    let size = desc.size_bytes as usize;
+                    PartitionHandle::Raw(RawHandle::new(desc, move || {
+                        let _ = &nbd;
+                        read_block_device_bytes(&dev, size)
+                    }))
+                }
+                PartitionKind::Fs { fs_type } => {
+                    PartitionHandle::Fs(FsHandle::new(desc, move || {
+                        mount_partition_ro(&dev, &fs_type, Arc::clone(&nbd))
+                    }))
+                }
+            };
+            handles.push(handle);
+        }
+
+        Ok(handles)
+    }
+}
+
+// ── open() helpers ────────────────────────────────────────────────────────────
+
+/// Read exactly `size_bytes` from a block device file descriptor.
+fn read_block_device_bytes(dev: &str, size_bytes: usize) -> crate::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut f =
+        fs::File::open(dev).map_err(|e| crate::Error::Format(format!("open({dev}): {e}")))?;
+    let mut buf = vec![0u8; size_bytes];
+    f.read_exact(&mut buf)
+        .map_err(|e| crate::Error::Format(format!("read_exact({dev}, {size_bytes}B): {e}")))?;
+    Ok(buf)
+}
+
+/// Mount `device` read-only with the given `fs_type` and return a RAII handle.
+///
+/// For XFS, `norecovery` is added to `mount(2)` data to avoid journal replay
+/// errors on a potentially dirty (but read-only) device.
+fn mount_partition_ro(
+    device: &str,
+    fs_type: &str,
+    nbd: Arc<NbdConn>,
+) -> crate::Result<Box<dyn MountHandle>> {
+    use nix::mount::{mount, MsFlags};
+
+    let mount_dir =
+        TempDir::new().map_err(|e| crate::Error::Format(format!("TempDir::new: {e}")))?;
+    let root = mount_dir.path().to_path_buf();
+
+    let flags = MsFlags::MS_RDONLY;
+    let extra: Option<&str> = if fs_type == "xfs" {
+        Some("norecovery")
+    } else {
+        None
+    };
+
+    mount(Some(device), root.as_path(), Some(fs_type), flags, extra)
+        .map_err(|e| crate::Error::Format(format!("mount({device}, {fs_type}): {e}")))?;
+
+    Ok(Box::new(PartitionMountHandle {
+        _mount_dir: mount_dir,
+        root,
+        _nbd: nbd,
+    }))
+}
+
+/// Run `blkid <device>` and extract the `TYPE=` value.
+///
+/// Returns `None` when blkid reports no recognized filesystem type (e.g.
+/// BIOS-boot, Linux swap, or an empty partition).
+fn blkid_fs_type(device: &str) -> Option<String> {
+    let out = Command::new("blkid").arg(device).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    // blkid output: /dev/nbdNpM: UUID="..." TYPE="ext4" PARTUUID="..."
+    for token in s.split_ascii_whitespace() {
+        if let Some(rest) = token.strip_prefix("TYPE=\"") {
+            return Some(rest.trim_end_matches('"').to_string());
+        }
+    }
+    None
+}
+
+/// Extract the partition number from a node path like `/dev/nbd3p2` → 2.
+///
+/// Finds the last `p` in the path and parses the trailing digits.
+fn node_partition_number(node: &str) -> u32 {
+    if let Some(pos) = node.rfind('p') {
+        if let Ok(n) = node[pos + 1..].parse::<u32>() {
+            return n;
+        }
+    }
+    1
+}
+
+/// Determine the [`PartitionKind`] from a GPT type GUID and `blkid` output.
+///
+/// Comparison is case-insensitive.  For unknown or Linux-data GUIDs,
+/// `blkid` is used to probe the filesystem type.
+fn classify_partition(type_guid: Option<&str>, block_dev: &str) -> PartitionKind {
+    let guid_lc = type_guid
+        .map(|g| g.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    match guid_lc.as_str() {
+        g if g == GUID_BIOS_BOOT => PartitionKind::BiosBoot,
+        g if g == GUID_LINUX_SWAP => PartitionKind::Raw,
+        g if g == GUID_EFI_SYSTEM => PartitionKind::Fs {
+            fs_type: "vfat".into(),
+        },
+        _ => match blkid_fs_type(block_dev) {
+            Some(fs) => PartitionKind::Fs { fs_type: fs },
+            None => PartitionKind::Raw,
+        },
+    }
+}
+
+/// Run `sfdisk --json <nbd_device>` and parse the output into a [`DiskLayout`].
+///
+/// Each partition's [`PartitionKind`] is determined by combining the GPT type
+/// GUID (from sfdisk) with a `blkid` probe on the partition device node.
+fn parse_disk_layout(nbd_device: &str) -> crate::Result<DiskLayout> {
+    let out = Command::new("sfdisk")
+        .args(["--json", nbd_device])
+        .output()
+        .map_err(|e| crate::Error::Format(format!("failed to spawn sfdisk: {e}")))?;
+
+    if !out.status.success() || out.stdout.is_empty() {
+        return Err(crate::Error::Format(format!(
+            "sfdisk --json {nbd_device} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+
+    let parsed: SfdiskOutput = serde_json::from_slice(&out.stdout)
+        .map_err(|e| crate::Error::Format(format!("parse sfdisk JSON: {e}")))?;
+
+    let table = parsed.partitiontable;
+
+    let scheme = match table.label.as_str() {
+        "gpt" => DiskScheme::Gpt,
+        "dos" => DiskScheme::Mbr,
+        other => {
+            return Err(crate::Error::Format(format!(
+                "unsupported partition table label: {other}"
+            )));
+        }
+    };
+
+    let disk_guid = if scheme == DiskScheme::Gpt {
+        table
+            .id
+            .as_deref()
+            .and_then(|s| s.parse::<uuid::Uuid>().ok())
+    } else {
+        None
+    };
+
+    let mut partitions = Vec::new();
+    for p in &table.partitions {
+        let part_num = node_partition_number(&p.node);
+        let kind = classify_partition(p.part_type.as_deref(), &p.node);
+        let size_bytes = p.size * table.sectorsize;
+
+        let partition_guid = if scheme == DiskScheme::Gpt {
+            p.uuid.as_deref().and_then(|s| s.parse::<uuid::Uuid>().ok())
+        } else {
+            None
+        };
+        let type_guid = if scheme == DiskScheme::Gpt {
+            p.part_type
+                .as_deref()
+                .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        } else {
+            None
+        };
+
+        partitions.push(PartitionDescriptor {
+            number: part_num,
+            partition_guid,
+            type_guid,
+            name: if p.name.as_deref().unwrap_or("").is_empty() {
+                None
+            } else {
+                p.name.clone()
+            },
+            start_lba: p.start,
+            end_lba: p.start + p.size - 1,
+            size_bytes,
+            flags: 0,
+            kind,
+        });
+    }
+
+    partitions.sort_by_key(|p| p.number);
+
+    Ok(DiskLayout {
+        scheme,
+        disk_guid,
+        partitions,
+    })
+}
+
+// ── Qcow2Image ────────────────────────────────────────────────────────────────
 /// [`Image`] implementation for qcow2 VM disk images.
 ///
 /// Requires:
@@ -546,14 +885,66 @@ impl Image for Qcow2Image {
         "qcow2"
     }
 
-    /// Open a `.qcow2` file and parse its partition layout.
+    /// Open a `.qcow2` file, parse its partition table via `sfdisk`, and
+    /// return an [`OpenImage`] that holds the NBD connection for the lifetime
+    /// of the returned handle.
     ///
-    /// **Not yet implemented** — will be completed in Phase 6.F.
-    /// Requires NBD mount + `sfdisk` + `blkid` on Linux.
-    fn open(&self, _path: &Path) -> crate::Result<Box<dyn crate::image::OpenImage>> {
-        Err(crate::Error::Format(
-            "Qcow2Image::open not yet implemented (Phase 6.F)".into(),
-        ))
+    /// # Steps
+    ///
+    /// 1. Hold [`NBD_ALLOC`], find a free `/dev/nbdN`, connect read-only.
+    /// 2. Wait for `/dev/nbdNp1` to appear (kernel partition re-read).
+    /// 3. `sfdisk --json /dev/nbdN` → parse into [`DiskLayout`].
+    /// 4. Classify each partition via GPT type GUID + `blkid`.
+    /// 5. Return [`OpenQcow2Image`].
+    ///
+    /// The NBD connection is released (via [`NbdConn`] RAII) when both the
+    /// [`OpenQcow2Image`] **and** all [`PartitionHandle`]s derived from it are
+    /// dropped.
+    ///
+    /// # Environment variables
+    ///
+    /// - `QCOW2_DEVICE=N` — start scanning for free NBD at index N (default: 0).
+    fn open(&self, path: &Path) -> crate::Result<Box<dyn OpenImage>> {
+        let start_index: u32 = std::env::var("QCOW2_DEVICE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
+        // 1. Allocate a free NBD device and connect read-only.
+        let nbd_device = {
+            let _guard = NBD_ALLOC
+                .lock()
+                .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
+            let dev = find_free_nbd(start_index)?;
+            nbd_connect(&dev, path)?;
+            dev
+        };
+
+        // Wrap in Arc so partition handles share the NBD connection lifetime.
+        let nbd = Arc::new(NbdConn(nbd_device.clone()));
+
+        // 2. Wait for partition device nodes (kernel re-reads partition table).
+        let _ = wait_for_block_device(&nbd_device);
+
+        // 3. Parse the partition table.  On failure the NbdConn Arc will
+        // disconnect automatically when it drops at end of scope.
+        let layout = parse_disk_layout(&nbd_device)?;
+
+        // 4. Build PartInfo for each partition.
+        let part_infos: Vec<PartInfo> = layout
+            .partitions
+            .iter()
+            .map(|desc| PartInfo {
+                desc: desc.clone(),
+                block_dev: format!("{nbd_device}p{}", desc.number),
+            })
+            .collect();
+
+        Ok(Box::new(OpenQcow2Image {
+            layout,
+            part_infos,
+            nbd,
+        }))
     }
 
     /// Mount `path` (a `.qcow2` file) read-only and return a RAII handle.

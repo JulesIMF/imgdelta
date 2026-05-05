@@ -265,4 +265,168 @@ mod tests {
 
         // `handle` drops here → umount + qemu-nbd --disconnect
     }
+
+    // ── 7. open() — disk layout ───────────────────────────────────────────────
+
+    /// `Qcow2Image::open()` must parse the GPT partition table and return a
+    /// [`DiskLayout`] with the correct scheme and partition count.
+    ///
+    /// Assumes the image at `QCOW2_PATH` uses GPT with at least 2 partitions
+    /// (BIOS Boot on p1, Linux data on p2) — true for all GCP cloud images.
+    #[test]
+    #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH"]
+    fn test_qcow2_open_disk_layout() {
+        use image_delta_core::partition::DiskScheme;
+
+        let path = test_image_path().expect("no qcow2 fixture; set QCOW2_PATH");
+        let img = Qcow2Image::new();
+        let opened = img.open(&path).expect("Qcow2Image::open must succeed");
+
+        let layout = opened.disk_layout();
+        assert_eq!(
+            layout.scheme,
+            DiskScheme::Gpt,
+            "GCP qcow2 images use GPT; got {:?}",
+            layout.scheme
+        );
+        assert!(
+            layout.disk_guid.is_some(),
+            "GPT layout must have a disk GUID"
+        );
+        assert!(
+            layout.partitions.len() >= 2,
+            "GCP images must have at least 2 partitions, got {}",
+            layout.partitions.len()
+        );
+        // Partition numbers must be unique and start from 1.
+        let nums: Vec<u32> = layout.partitions.iter().map(|p| p.number).collect();
+        assert!(nums.contains(&1), "partition 1 must exist");
+        assert!(nums.contains(&2), "partition 2 must exist");
+    }
+
+    // ── 8. open() — partition kinds ───────────────────────────────────────────
+
+    /// The first partition of a GCP qcow2 is BIOS Boot and the second is a
+    /// mountable filesystem (ext4 for Debian/Ubuntu, xfs for CentOS).
+    #[test]
+    #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH"]
+    fn test_qcow2_open_partition_kinds() {
+        use image_delta_core::partition::PartitionKind;
+
+        let path = test_image_path().expect("no qcow2 fixture; set QCOW2_PATH");
+        let img = Qcow2Image::new();
+        let opened = img.open(&path).expect("Qcow2Image::open must succeed");
+
+        let layout = opened.disk_layout();
+
+        let p1 = layout
+            .partitions
+            .iter()
+            .find(|p| p.number == 1)
+            .expect("partition 1 must exist");
+        assert_eq!(
+            p1.kind,
+            PartitionKind::BiosBoot,
+            "p1 must be classified as BiosBoot; got {:?}",
+            p1.kind
+        );
+
+        let p2 = layout
+            .partitions
+            .iter()
+            .find(|p| p.number == 2)
+            .expect("partition 2 must exist");
+        assert!(
+            matches!(p2.kind, PartitionKind::Fs { .. }),
+            "p2 must be a filesystem partition; got {:?}",
+            p2.kind
+        );
+    }
+
+    // ── 9. open() — filesystem partition is readable ──────────────────────────
+
+    /// Get the Fs partition handle from `open()`, mount it, and read at least
+    /// one file from the root — proving the full open→mount→read path works.
+    #[test]
+    #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH"]
+    fn test_qcow2_open_fs_partition_readable() {
+        use image_delta_core::image::PartitionHandle;
+
+        let path = test_image_path().expect("no qcow2 fixture; set QCOW2_PATH");
+        let img = Qcow2Image::new();
+        let opened = img.open(&path).expect("Qcow2Image::open must succeed");
+
+        let handles = opened.partitions().expect("partitions() must succeed");
+
+        // Find the first Fs handle.
+        let fs_handle = handles
+            .into_iter()
+            .find_map(|h| {
+                if let PartitionHandle::Fs(fh) = h {
+                    Some(fh)
+                } else {
+                    None
+                }
+            })
+            .expect("at least one Fs partition handle must exist");
+
+        let mount = fs_handle
+            .mount()
+            .expect("mount() on Fs handle must succeed");
+        let root = mount.root();
+
+        assert!(root.is_dir(), "mount root must be a directory: {root:?}");
+
+        let entries: Vec<_> = std::fs::read_dir(root)
+            .expect("should be able to list mount root")
+            .collect();
+        assert!(
+            !entries.is_empty(),
+            "mounted filesystem partition must not be empty"
+        );
+
+        // drop(mount) → umount(MNT_DETACH);  drop(opened) → qemu-nbd --disconnect
+    }
+
+    // ── 10. open() — BIOS boot partition returns non-empty bytes ─────────────
+
+    /// Read the raw bytes of the BIOS Boot partition.  It must be non-empty
+    /// (GRUB stage 1 or equivalent bootstrap code lives there).
+    #[test]
+    #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH"]
+    fn test_qcow2_open_bios_boot_readable() {
+        use image_delta_core::image::PartitionHandle;
+
+        let path = test_image_path().expect("no qcow2 fixture; set QCOW2_PATH");
+        let img = Qcow2Image::new();
+        let opened = img.open(&path).expect("Qcow2Image::open must succeed");
+
+        let handles = opened.partitions().expect("partitions() must succeed");
+
+        let bios_handle = handles
+            .into_iter()
+            .find_map(|h| {
+                if let PartitionHandle::BiosBoot(bh) = h {
+                    Some(bh)
+                } else {
+                    None
+                }
+            })
+            .expect("at least one BiosBoot partition handle must exist");
+
+        let bytes = bios_handle
+            .read_raw()
+            .expect("read_raw() on BiosBoot handle must succeed");
+
+        assert!(
+            !bytes.is_empty(),
+            "BIOS Boot partition must contain non-zero bytes"
+        );
+        // The BIOS Boot partition should be at least 1 KiB (GRUB bootstrap).
+        assert!(
+            bytes.len() >= 1024,
+            "BIOS Boot partition must be >= 1 KiB; got {} bytes",
+            bytes.len()
+        );
+    }
 }
