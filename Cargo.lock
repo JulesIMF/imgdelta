@@ -1791,6 +1791,7 @@ dependencies = [
  "hex",
  "image-delta-synthetic-fs",
  "indicatif 0.17.11",
+ "libc",
  "nix",
  "num_enum",
  "rand 0.8.6",

@@ -40,14 +40,17 @@ use walkdir::WalkDir;
 
 use crate::algorithm::FileSnapshot;
 use crate::manifest::{
-    BlobRef, Data, DataRef, EntryType, Metadata, PartitionContent, PartitionManifest, Patch,
-    PatchRef, Record,
+    BlobRef, Data, DataRef, DeviceInfo, EntryType, Metadata, PartitionContent, PartitionManifest,
+    Patch, PatchRef, Record,
 };
 use crate::partition::PartitionDescriptor;
 use crate::path_match::{find_best_matches, PathMatchConfig};
 use crate::routing::{FileInfo, RouterEncoder};
 use crate::storage::Storage;
 use crate::{PassthroughEncoder, PatchEncoder, Result};
+
+#[cfg(unix)]
+use libc;
 
 // ── FsDraft ───────────────────────────────────────────────────────────────────
 
@@ -98,6 +101,8 @@ struct EntrySnapshot {
     size: u64,
     dev_ino: (u64, u64),
     nlink: u64,
+    /// Raw device number (`st_rdev`) — set only for special files.
+    rdev: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,13 +218,6 @@ fn snapshot(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
         let is_file = ft.is_file();
         let is_dir = ft.is_dir();
 
-        // Skip special files (devices, FIFOs, sockets) — they cannot be
-        // meaningfully delta-compressed and are usually re-created at runtime.
-        if !is_file && !is_dir && !is_symlink {
-            debug!(path = %entry.path().display(), "skipping special file");
-            continue;
-        }
-
         let sha256 = if is_file {
             Some(sha256_of_file(entry.path())?)
         } else {
@@ -233,6 +231,11 @@ fn snapshot(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
             )
         } else {
             None
+        };
+        let rdev = if !is_file && !is_dir && !is_symlink {
+            meta.rdev()
+        } else {
+            0
         };
 
         map.insert(
@@ -250,6 +253,7 @@ fn snapshot(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
                 size: if is_file { meta.size() } else { 0 },
                 dev_ino: (meta.dev(), meta.ino()),
                 nlink: meta.nlink(),
+                rdev,
             },
         );
     }
@@ -280,7 +284,17 @@ fn snap_entry_type(e: &EntrySnapshot) -> EntryType {
     } else if e.is_dir {
         EntryType::Directory
     } else {
-        EntryType::Other
+        EntryType::Special
+    }
+}
+
+/// Extract the device_info for a special-file snapshot.
+#[cfg(unix)]
+fn device_info_from_snapshot(e: &EntrySnapshot) -> DeviceInfo {
+    DeviceInfo {
+        file_type_bits: e.mode & 0o170000,
+        major: libc::major(e.rdev) as u32,
+        minor: libc::minor(e.rdev) as u32,
     }
 }
 
@@ -331,6 +345,7 @@ fn make_removed_record(path: &str, b: &EntrySnapshot, base_root: &Path) -> Recor
         data,
         patch: None,
         metadata: None,
+        special_device: None,
     }
 }
 
@@ -351,6 +366,7 @@ fn make_added_record(
             data: Some(Data::SoftlinkTo(t.link_target.clone().unwrap_or_default())),
             patch: None,
             metadata,
+            special_device: None,
         };
     }
 
@@ -363,6 +379,7 @@ fn make_added_record(
             data: None,
             patch: None,
             metadata,
+            special_device: None,
         };
     }
 
@@ -378,9 +395,36 @@ fn make_added_record(
                     data: Some(Data::HardlinkTo(canonical.clone())),
                     patch: None,
                     metadata,
+                    special_device: None,
                 };
             }
         }
+    }
+
+    // Special file (char/block device, FIFO, socket) — metadata-only record.
+    if !t.is_file && !t.is_dir && !t.is_symlink {
+        #[cfg(unix)]
+        return Record {
+            old_path: None,
+            new_path: Some(path.to_string()),
+            entry_type: EntryType::Special,
+            size: 0,
+            data: None,
+            patch: None,
+            metadata,
+            special_device: Some(device_info_from_snapshot(t)),
+        };
+        #[cfg(not(unix))]
+        return Record {
+            old_path: None,
+            new_path: Some(path.to_string()),
+            entry_type: EntryType::Special,
+            size: 0,
+            data: None,
+            patch: None,
+            metadata,
+            special_device: None,
+        };
     }
 
     Record {
@@ -391,6 +435,7 @@ fn make_added_record(
         data: Some(Data::LazyBlob(target_root.join(path))),
         patch: None,
         metadata,
+        special_device: None,
     }
 }
 
@@ -425,6 +470,7 @@ fn diff_entry(
                     data: None,
                     patch: None,
                     metadata: Some(meta),
+                    special_device: None,
                 }]
             })
             .unwrap_or_default();
@@ -448,7 +494,39 @@ fn diff_entry(
             data: None,
             patch,
             metadata: meta,
+            special_device: None,
         }];
+    }
+
+    // Special file (char/block device, FIFO, socket).
+    if !t.is_file && !t.is_dir && !t.is_symlink {
+        // If raw device number or file-type bits changed → remove + add.
+        let type_or_dev_changed = (b.mode & 0o170000) != (t.mode & 0o170000) || b.rdev != t.rdev;
+        if type_or_dev_changed {
+            return vec![
+                make_removed_record(path, b, base_root),
+                make_added_record(path, t, target_root, hardlink_canonicals),
+            ];
+        }
+        // Only metadata (uid/gid/mtime/mode-bits) changed.
+        return metadata_diff(b, t)
+            .map(|meta| {
+                #[cfg(unix)]
+                let special_device = Some(device_info_from_snapshot(t));
+                #[cfg(not(unix))]
+                let special_device = None;
+                vec![Record {
+                    old_path: Some(path.to_string()),
+                    new_path: Some(path.to_string()),
+                    entry_type: EntryType::Special,
+                    size: 0,
+                    data: None,
+                    patch: None,
+                    metadata: Some(meta),
+                    special_device,
+                }]
+            })
+            .unwrap_or_default();
     }
 
     // Regular file.
@@ -476,6 +554,7 @@ fn diff_entry(
         data: None,
         patch,
         metadata: meta,
+        special_device: None,
     }]
 }
 
@@ -658,6 +737,7 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
                 new_data: new_data_path,
             }),
             metadata,
+            special_device: None,
         });
 
         remove_indices.push(*rem_idx);
@@ -1477,6 +1557,7 @@ mod tests {
             },
             patch: None,
             metadata: None,
+            special_device: None,
         }
     }
 
@@ -1545,6 +1626,7 @@ mod tests {
                 new_data: DataRef::FilePath("/mnt/target/lib/libfoo.so.2".into()),
             }),
             metadata: None,
+            special_device: None,
         });
 
         let before_count = draft.records.len();
@@ -1586,6 +1668,7 @@ mod tests {
                 mode: Some(0o644),
                 ..Default::default()
             }),
+            special_device: None,
         });
 
         let draft = cleanup(draft);
@@ -1610,6 +1693,7 @@ mod tests {
                 new_data: DataRef::FilePath("/mnt/target/etc/changed.conf".into()),
             }),
             metadata: None,
+            special_device: None,
         });
 
         let draft = cleanup(draft);
@@ -1650,6 +1734,7 @@ mod tests {
                 new_data: DataRef::FilePath(target_dir.path().join("lib/libz.so.1")),
             }),
             metadata: None,
+            special_device: None,
         });
 
         let router = make_xdelta3_router();
@@ -1701,6 +1786,7 @@ mod tests {
                 new_data: DataRef::FilePath(target_dir.path().join("usr/bin/python")),
             }),
             metadata: None,
+            special_device: None,
         });
 
         let router = make_xdelta3_router();
@@ -1733,6 +1819,7 @@ mod tests {
             data: None,
             patch: None,
             metadata: None,
+            special_device: None,
         });
 
         let router = make_xdelta3_router();

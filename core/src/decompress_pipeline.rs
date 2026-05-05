@@ -41,6 +41,17 @@ use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::{Error, Result};
 
+#[cfg(unix)]
+use libc;
+
+// ── Device helpers (Linux major/minor encoding) ───────────────────────────────
+
+/// Encode a major/minor pair into a raw `dev_t` (Linux kernel encoding).
+#[cfg(unix)]
+fn linux_makedev(major: u32, minor: u32) -> u64 {
+    libc::makedev(major, minor)
+}
+
 // ── Public stats type ─────────────────────────────────────────────────────────
 
 /// Per-partition decompress statistics.
@@ -202,6 +213,38 @@ fn copy_unchanged_from_base(
                 let _ = filetime::set_file_mtime(&dst, ft);
             }
             stats.files_written += 1;
+        } else {
+            // Special file (char/block device, FIFO, socket) — recreate via mknod.
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                use std::os::unix::ffi::OsStrExt;
+                use std::os::unix::fs::MetadataExt;
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                if let Ok(meta) = abs.symlink_metadata() {
+                    let rdev = meta.rdev();
+                    let mode = meta.mode(); // includes S_IF* type bits
+                    let dev = linux_makedev(libc::major(rdev) as u32, libc::minor(rdev) as u32);
+                    if let Ok(c_path) = CString::new(dst.as_os_str().as_bytes()) {
+                        let ret = unsafe {
+                            libc::mknod(c_path.as_ptr(), mode as libc::mode_t, dev as libc::dev_t)
+                        };
+                        if ret == 0 {
+                            let ft = filetime::FileTime::from_unix_time(meta.mtime(), 0);
+                            let _ = filetime::set_file_mtime(&dst, ft);
+                            stats.files_written += 1;
+                        } else {
+                            debug!(
+                                path = %dst.display(),
+                                err = %std::io::Error::last_os_error(),
+                                "mknod failed for base special file (skipping)"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -428,7 +471,7 @@ async fn apply_record(
             stats.files_written += 1;
         }
 
-        EntryType::File | EntryType::Other => {
+        EntryType::File => {
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent).ok();
             }
@@ -437,10 +480,51 @@ async fn apply_record(
             )
             .await?;
         }
+
+        EntryType::Special => {
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                use std::os::unix::ffi::OsStrExt;
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                let dev_info = record.special_device.as_ref().ok_or_else(|| {
+                    Error::Format(format!(
+                        "special file record {new_path} is missing device info"
+                    ))
+                })?;
+                let mode = record
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.mode)
+                    .unwrap_or(0o644);
+                let full_mode = (mode & 0o7777) | dev_info.file_type_bits;
+                let dev = linux_makedev(dev_info.major, dev_info.minor);
+                let c_path = CString::new(dst.as_os_str().as_bytes())
+                    .map_err(|e| Error::Other(format!("path contains null byte: {e}")))?;
+                let ret = unsafe {
+                    libc::mknod(
+                        c_path.as_ptr(),
+                        full_mode as libc::mode_t,
+                        dev as libc::dev_t,
+                    )
+                };
+                if ret != 0 {
+                    let err = std::io::Error::last_os_error();
+                    return Err(Error::Other(format!("mknod {}: {err}", dst.display())));
+                }
+                stats.files_written += 1;
+            }
+            #[cfg(not(unix))]
+            {
+                debug!(path = %dst.display(), "skipping special file on non-unix platform");
+            }
+        }
     }
 
-    // Apply metadata (mode, mtime) if present.  Symlinks are excluded because
-    // most Linux filesystems do not support lchmod.
+    // Apply metadata (mode, mtime) if present.
+    // Symlinks: most Linux filesystems do not support lchmod.
     if !matches!(record.entry_type, EntryType::Symlink) {
         // The manifest records only the *diff*: fields absent from `metadata`
         // mean "unchanged from base".  However, writing new content

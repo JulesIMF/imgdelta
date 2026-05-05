@@ -17,7 +17,7 @@ use crate::AlgorithmCode;
 ///
 /// Increment this constant on every breaking schema change so that older
 /// decompressors can refuse to process manifests they don't understand.
-pub const MANIFEST_VERSION: u32 = 2;
+pub const MANIFEST_VERSION: u32 = 3;
 
 /// Top-level manifest produced by a compress operation.
 /// Serialised as MessagePack for storage; JSON for debugging.
@@ -161,7 +161,7 @@ pub enum Patch {
 /// | `Some(p)`   | `None`      | File at `p` deleted             |
 /// | `Some(p)`   | `Some(p)`   | File at `p` changed in-place    |
 /// | `Some(old)` | `Some(new)` | File renamed `old` → `new`      |
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Record {
     /// Path in the base image, or `None` for newly added files.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -181,16 +181,34 @@ pub struct Record {
     /// Changed filesystem attributes.  `None` when no attributes changed.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub metadata: Option<Metadata>,
+    /// Device info for `EntryType::Special` entries.  `None` for all other types.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub special_device: Option<DeviceInfo>,
 }
 
+/// Major/minor device number and file-type bits for a special file
+/// (character device, block device, FIFO, or socket).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceInfo {
+    /// The `S_IF*` bits from the mode: `S_IFCHR` (0o020000), `S_IFBLK` (0o060000),
+    /// `S_IFIFO` (0o010000), or `S_IFSOCK` (0o140000).
+    pub file_type_bits: u32,
+    /// Device major number (0 for FIFO and socket).
+    pub major: u32,
+    /// Device minor number (0 for FIFO and socket).
+    pub minor: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryType {
+    #[default]
     File,
     Directory,
     Symlink,
     Hardlink,
-    Other,
+    /// Special file: character device, block device, FIFO, or socket.
+    Special,
 }
 
 /// Manifest for a single partition.
@@ -445,6 +463,7 @@ mod tests {
             data: Some(Data::BlobRef(simple_blob_ref())),
             patch: None,
             metadata: None,
+            special_device: None,
         }
     }
 
@@ -457,6 +476,7 @@ mod tests {
             data: None,
             patch: None,
             metadata: None,
+            special_device: None,
         }
     }
 
@@ -469,6 +489,7 @@ mod tests {
             data: None,
             patch: Some(simple_patch_ref_real()),
             metadata: None,
+            special_device: None,
         }
     }
 
@@ -481,6 +502,7 @@ mod tests {
             data: None,
             patch: Some(simple_patch_ref_real()),
             metadata: Some(Metadata::default()),
+            special_device: None,
         }
     }
 
@@ -493,6 +515,7 @@ mod tests {
             data: Some(Data::SoftlinkTo("/usr/bin/python3.11".into())),
             patch: None,
             metadata: None,
+            special_device: None,
         }
     }
 
@@ -508,6 +531,7 @@ mod tests {
                 mode: Some(0o755),
                 ..Default::default()
             }),
+            special_device: None,
         }
     }
 
@@ -570,7 +594,7 @@ mod tests {
             (EntryType::Directory, "\"directory\""),
             (EntryType::Symlink, "\"symlink\""),
             (EntryType::Hardlink, "\"hardlink\""),
-            (EntryType::Other, "\"other\""),
+            (EntryType::Special, "\"special\""),
         ];
         for (variant, expected) in cases {
             let json = serde_json::to_string(&variant).unwrap();

@@ -82,6 +82,7 @@ async fn test_s3_lookup_exact_path_match() {
         data: Some(Data::LazyBlob(target_dir.path().join("usr/lib/libz.so.1"))),
         patch: None,
         metadata: None,
+        special_device: None,
     });
 
     let draft = s3_lookup(draft, &storage, "img-base", None).await.unwrap();
@@ -124,6 +125,7 @@ async fn test_s3_lookup_no_candidates_is_noop() {
         data: Some(Data::LazyBlob(target_dir.path().join("etc/config"))),
         patch: None,
         metadata: None,
+        special_device: None,
     });
 
     let draft = s3_lookup(draft, &storage, "img-base", None).await.unwrap();
@@ -160,6 +162,7 @@ async fn test_s3_lookup_only_matches_added_files() {
             new_data: DataRef::FilePath(target_dir.path().join("lib/libfoo.so.1")),
         }),
         metadata: None,
+        special_device: None,
     });
 
     let draft = s3_lookup(draft, &storage, "img-base", None).await.unwrap();
@@ -193,6 +196,7 @@ async fn test_upload_lazy_blobs_new_file() {
         data: Some(Data::LazyBlob(target_dir.path().join("usr/bin/newcmd"))),
         patch: None,
         metadata: None,
+        special_device: None,
     });
 
     let draft = upload_lazy_blobs(draft, &storage, "img-001", None, None)
@@ -227,6 +231,7 @@ async fn test_upload_lazy_blobs_sha256_dedup() {
             data: Some(Data::LazyBlob(path)),
             patch: None,
             metadata: None,
+            special_device: None,
         });
     }
 
@@ -265,6 +270,7 @@ async fn test_upload_lazy_blobs_skips_non_lazy() {
         })),
         patch: None,
         metadata: None,
+        special_device: None,
     });
 
     let before = draft.records[0].data.clone();
@@ -308,6 +314,7 @@ async fn test_download_blobs_for_patches_replaces_blob_ref() {
             new_data: DataRef::FilePath(target_dir.path().join("lib/lib.so")),
         }),
         metadata: None,
+        special_device: None,
     });
 
     let tmp_dir = TempDir::new().unwrap();
@@ -361,6 +368,7 @@ async fn test_download_blobs_for_patches_dedup_within_call() {
                 new_data: DataRef::FilePath(target_dir.path().join(tgt)),
             }),
             metadata: None,
+            special_device: None,
         });
     }
 
@@ -625,6 +633,7 @@ async fn test_upload_lazy_blobs_dedup_skips_upload() {
             data: Some(Data::LazyBlob(target_dir.path().join(rel))),
             patch: None,
             metadata: None,
+            special_device: None,
         });
     }
 
@@ -713,6 +722,7 @@ async fn test_upload_lazy_blobs_concurrent_batches() {
                 data: Some(Data::LazyBlob(target_dir.path().join(&rel))),
                 patch: None,
                 metadata: None,
+                special_device: None,
             });
         }
         draft
@@ -983,6 +993,7 @@ async fn test_pack_upload_archive_compressible_data_uses_gzip() {
         data: None,
         patch: Some(image_delta_core::manifest::Patch::Real(pref)),
         metadata: None,
+        special_device: None,
     });
     draft
         .patch_bytes

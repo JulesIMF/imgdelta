@@ -46,6 +46,9 @@ image-delta-synthetic-fs = { path = "../synthetic-fs" }
 [build-dependencies]
 cc = "1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.29", features = ["mount", "fs"], optional = true }
 
