@@ -18,6 +18,7 @@
 /// QCOW2_PATH=/path/to/image.qcow2 \
 ///     cargo test -p image-delta-core --features qcow2 --test qcow2_mount -- --ignored
 /// ```
+mod common;
 #[cfg(all(target_os = "linux", feature = "qcow2"))]
 mod tests {
     use image_delta_core::{Image, Qcow2Image};
@@ -428,5 +429,162 @@ mod tests {
             "BIOS Boot partition must be >= 1 KiB; got {} bytes",
             bytes.len()
         );
+    }
+
+    // ── 11. pack_from_manifest roundtrip ──────────────────────────────────────
+
+    /// Full roundtrip: open a real qcow2, compress the Fs partition against no
+    /// base (producing a full-image manifest stored in FakeStorage), then call
+    /// `Qcow2Image::pack_from_manifest` to reconstruct a new qcow2, and finally
+    /// verify that the reconstructed Fs partition is mountable and non-empty.
+    ///
+    /// BiosBoot and Raw partitions are uploaded as verbatim blobs; only the Fs
+    /// partition is compressed with the full pipeline.
+    #[test]
+    #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH + sgdisk + mkfs.*"]
+    fn test_qcow2_pack_from_manifest() {
+        use crate::common::fake_storage::FakeStorage;
+        use image_delta_core::compress_pipeline::compress_fs_partition;
+        use image_delta_core::image::PartitionHandle;
+        use image_delta_core::manifest::{
+            BlobRef, Manifest, ManifestHeader, PartitionContent, PartitionManifest,
+            MANIFEST_VERSION,
+        };
+        use image_delta_core::routing::RouterEncoder;
+        use image_delta_core::{Storage, Xdelta3Encoder};
+        use sha2::{Digest, Sha256};
+        use std::sync::Arc;
+        use tempfile::tempdir;
+
+        let path = test_image_path().expect("no qcow2 fixture; set QCOW2_PATH");
+        let img = Qcow2Image::new();
+        let opened = img.open(&path).expect("open must succeed");
+
+        let layout = opened.disk_layout().clone();
+        let handles = opened.partitions().expect("partitions() must succeed");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let storage = Arc::new(FakeStorage::new());
+
+        let router = Arc::new(RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new())));
+
+        let image_id = "test-pack-roundtrip";
+        let mut patches_compressed = false;
+        let mut partition_manifests: Vec<PartitionManifest> = Vec::new();
+
+        for handle in handles {
+            match handle {
+                PartitionHandle::BiosBoot(bh) => {
+                    let raw = bh.read_raw().expect("BiosBoot read_raw must succeed");
+                    let sha256 = hex::encode(Sha256::digest(&raw));
+                    let blob_id = rt
+                        .block_on(storage.upload_blob(&sha256, &raw))
+                        .expect("upload BiosBoot blob");
+                    let size = raw.len() as u64;
+                    partition_manifests.push(PartitionManifest {
+                        descriptor: bh.descriptor.clone(),
+                        content: PartitionContent::BiosBoot {
+                            blob_id,
+                            sha256,
+                            size,
+                        },
+                    });
+                }
+                PartitionHandle::Fs(fh) => {
+                    let desc = fh.descriptor.clone();
+                    let fs_type = match &desc.kind {
+                        image_delta_core::partition::PartitionKind::Fs { fs_type } => {
+                            fs_type.clone()
+                        }
+                        _ => "ext4".into(),
+                    };
+                    let mount = fh.mount().expect("mount Fs partition");
+                    let empty_base = tempdir().unwrap();
+                    let (pm, compressed) = rt
+                        .block_on(compress_fs_partition(
+                            empty_base.path(),
+                            mount.root(),
+                            &desc,
+                            storage.as_ref(),
+                            image_id,
+                            None,
+                            &router,
+                            &fs_type,
+                        ))
+                        .expect("compress_fs_partition must succeed");
+                    patches_compressed = compressed;
+                    partition_manifests.push(pm);
+                }
+                PartitionHandle::Raw(rh) => {
+                    let raw = rh.read_raw().expect("Raw read_raw must succeed");
+                    let sha256 = hex::encode(Sha256::digest(&raw));
+                    let blob_id = rt
+                        .block_on(storage.upload_blob(&sha256, &raw))
+                        .expect("upload Raw blob");
+                    let size = raw.len() as u64;
+                    partition_manifests.push(PartitionManifest {
+                        descriptor: rh.descriptor.clone(),
+                        content: PartitionContent::Raw {
+                            size,
+                            blob: Some(BlobRef { blob_id, size }),
+                            patch: None,
+                        },
+                    });
+                }
+            }
+        }
+
+        let manifest = Manifest {
+            header: ManifestHeader {
+                version: MANIFEST_VERSION,
+                image_id: image_id.into(),
+                base_image_id: None,
+                format: "qcow2".into(),
+                created_at: 0,
+                patches_compressed,
+            },
+            disk_layout: layout,
+            partitions: partition_manifests,
+        };
+
+        // ── Reconstruct via pack_from_manifest ───────────────────────────────
+
+        let out_dir = tempdir().unwrap();
+        let out_path = out_dir.path().join("reconstructed.qcow2");
+
+        rt.block_on(img.pack_from_manifest(&manifest, storage.as_ref(), &out_path))
+            .expect("pack_from_manifest must succeed");
+
+        assert!(
+            out_path.exists(),
+            "reconstructed qcow2 must exist at {out_path:?}"
+        );
+
+        // ── Verify reconstructed image ───────────────────────────────────────
+
+        let reconst = img.open(&out_path).expect("open reconstructed qcow2");
+        let reconst_handles = reconst
+            .partitions()
+            .expect("partitions() on reconstructed qcow2");
+
+        assert!(
+            !reconst_handles.is_empty(),
+            "reconstructed image must have at least one partition"
+        );
+
+        // Verify the Fs partition is mountable and non-empty.
+        for h in reconst_handles {
+            if let PartitionHandle::Fs(fh) = h {
+                let mnt = fh.mount().expect("mount reconstructed Fs partition");
+                let entries: Vec<_> = std::fs::read_dir(mnt.root())
+                    .expect("read_dir reconstructed mount")
+                    .collect();
+                assert!(
+                    !entries.is_empty(),
+                    "reconstructed Fs partition must not be empty"
+                );
+                break;
+            }
+        }
     }
 }

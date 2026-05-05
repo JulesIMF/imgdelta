@@ -7,6 +7,7 @@
 #![cfg(all(target_os = "linux", feature = "qcow2"))]
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -15,10 +16,16 @@ use std::time::{Duration, Instant};
 
 use nix::mount::{umount2, MntFlags};
 use tempfile::TempDir;
+use uuid::Uuid;
 use walkdir::WalkDir;
 
+use crate::decompress_pipeline::decompress_fs_partition;
+use crate::encoders::Xdelta3Encoder;
 use crate::image::{BiosBootHandle, FsHandle, OpenImage, PartitionHandle, RawHandle};
+use crate::manifest::{Manifest, PartitionContent};
 use crate::partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
+use crate::routing::RouterEncoder;
+use crate::storage::Storage;
 use crate::{Image, MountHandle, Result};
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -29,6 +36,8 @@ const NBD_PARTITION_TIMEOUT: Duration = Duration::from_secs(10);
 const NBD_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// How many NBD devices to scan when looking for a free slot.
 const NBD_MAX_DEVICES: u32 = 16;
+/// Logical sector size assumed for all disk offset calculations.
+const SECTOR_SIZE: u64 = 512;
 
 /// Process-global lock serialising `find_free_nbd` + `qemu-nbd --connect`.
 ///
@@ -1018,6 +1027,259 @@ impl Image for Qcow2Image {
             pack_with_base(base, source_dir, output_path)
         } else {
             pack_fresh(source_dir, output_path)
+        }
+    }
+}
+
+// ── pack_from_manifest ────────────────────────────────────────────────────────
+
+impl Qcow2Image {
+    /// Reconstruct a qcow2 image from a [`Manifest`] and a blob/patch store.
+    ///
+    /// # Steps
+    ///
+    /// 1. Calculate total image size from `manifest.disk_layout`
+    /// 2. `qemu-img create -f qcow2 output <size>`
+    /// 3. Connect via `qemu-nbd --connect` (writable)
+    /// 4. Write GPT partition table with `sgdisk`
+    /// 5. For each [`PartitionManifest`]:
+    ///    - `BiosBoot` → download blob → write raw bytes to partition device
+    ///    - `Raw`      → download blob → write raw bytes to partition device
+    ///    - `Fs`       → `mkfs.{ext4|xfs|vfat}` → mount rw →
+    ///      [`decompress_fs_partition`] with an empty base dir
+    /// 6. Disconnect NBD (RAII [`NbdConn`] drop)
+    ///
+    /// Only GPT partition tables are supported; MBR returns
+    /// [`crate::Error::Format`].
+    ///
+    /// # Requirements
+    ///
+    /// - `qemu-img`, `qemu-nbd`, `sgdisk`, `mkfs.*` in `PATH`
+    /// - `CAP_SYS_ADMIN` (root or equivalent) for `mount(2)` / `umount(2)`
+    pub async fn pack_from_manifest(
+        &self,
+        manifest: &Manifest,
+        storage: &(dyn Storage + Sync),
+        output: &Path,
+    ) -> crate::Result<()> {
+        let layout = &manifest.disk_layout;
+
+        // 1. Calculate total image size.
+        let image_size = calculate_image_size(layout);
+
+        // 2. Create the qcow2 container.
+        run_command(
+            Command::new("qemu-img").args([
+                "create",
+                "-f",
+                "qcow2",
+                output
+                    .to_str()
+                    .ok_or_else(|| crate::Error::Format("non-UTF-8 output path".into()))?,
+                &image_size.to_string(),
+            ]),
+            "qemu-img create",
+        )?;
+
+        // 3. Connect via NBD (writable).
+        let start_index: u32 = std::env::var("QCOW2_DEVICE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
+        let nbd_device = {
+            let _guard = NBD_ALLOC
+                .lock()
+                .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
+            let dev = find_free_nbd(start_index)?;
+            nbd_connect_rw(&dev, output)?;
+            dev
+        };
+        // RAII: disconnects NBD on drop.
+        let _nbd = NbdConn(nbd_device.clone());
+
+        // 4. Write GPT.
+        write_gpt(&nbd_device, layout)?;
+
+        // 5. Wait for partition device nodes to appear.
+        let _ = wait_for_block_device(&nbd_device);
+
+        // 6. Process each partition.
+        let image_id = &manifest.header.image_id;
+        for pm in &manifest.partitions {
+            let part_dev = format!("{nbd_device}p{}", pm.descriptor.number);
+            apply_partition(pm, &part_dev, image_id, storage, manifest).await?;
+        }
+
+        // `_nbd` drops here → `qemu-nbd --disconnect`
+        Ok(())
+    }
+}
+
+// ── pack_from_manifest helpers ────────────────────────────────────────────────
+
+/// Calculate the total qcow2 image size in bytes from a [`DiskLayout`].
+///
+/// Takes the highest `end_lba` across all partitions, adds the 33-sector GPT
+/// backup area (32 partition-entry sectors + 1 backup header), and rounds up
+/// to a 1 MiB boundary.
+fn calculate_image_size(layout: &DiskLayout) -> u64 {
+    let max_end_lba = layout
+        .partitions
+        .iter()
+        .map(|p| p.end_lba)
+        .max()
+        .unwrap_or(2047); // minimum sane GPT disk
+
+    // GPT backup area: 33 LBA (32 partition-entry blocks + backup header).
+    let total_sectors = max_end_lba + 34;
+    let size_bytes = total_sectors * SECTOR_SIZE;
+
+    // Round up to 1 MiB boundary.
+    (size_bytes + (1024 * 1024 - 1)) & !(1024 * 1024 - 1)
+}
+
+/// Write a GPT partition table to `nbd_device` using `sgdisk`.
+///
+/// Only [`DiskScheme::Gpt`] is supported; other schemes return an error.
+fn write_gpt(nbd_device: &str, layout: &DiskLayout) -> crate::Result<()> {
+    if layout.scheme != DiskScheme::Gpt {
+        return Err(crate::Error::Format(format!(
+            "pack_from_manifest: only GPT is supported (got {:?})",
+            layout.scheme
+        )));
+    }
+
+    let mut args: Vec<String> = vec!["--clear".into()];
+
+    if let Some(guid) = layout.disk_guid {
+        args.push(format!("--disk-guid={guid}"));
+    }
+
+    for p in &layout.partitions {
+        args.push(format!("--new={}:{}:{}", p.number, p.start_lba, p.end_lba));
+        if let Some(tg) = p.type_guid {
+            args.push(format!("--typecode={}:{}", p.number, tg));
+        }
+        if let Some(pg) = p.partition_guid {
+            args.push(format!("--partition-guid={}:{}", p.number, pg));
+        }
+        if let Some(name) = &p.name {
+            if !name.is_empty() {
+                args.push(format!("--change-name={}:{}", p.number, name));
+            }
+        }
+    }
+
+    args.push(nbd_device.into());
+    run_command(Command::new("sgdisk").args(&args), "sgdisk")
+}
+
+/// Format a partition with the appropriate `mkfs` tool.
+fn mkfs_partition(part_dev: &str, fs_type: &str) -> crate::Result<()> {
+    match fs_type {
+        "ext4" => run_command(
+            Command::new("mkfs.ext4").args(["-F", part_dev]),
+            "mkfs.ext4",
+        ),
+        "xfs" => run_command(Command::new("mkfs.xfs").args(["-f", part_dev]), "mkfs.xfs"),
+        "vfat" | "fat32" | "fat16" => run_command(
+            Command::new("mkfs.fat").args(["-F", "32", part_dev]),
+            "mkfs.fat",
+        ),
+        other => Err(crate::Error::Format(format!(
+            "mkfs_partition: unsupported fs_type '{other}'"
+        ))),
+    }
+}
+
+/// Mount `device` read-write at `mount_point` with `fs_type`.
+fn mount_partition_rw_plain(device: &str, fs_type: &str, mount_point: &Path) -> crate::Result<()> {
+    use nix::mount::{mount, MsFlags};
+    mount(
+        Some(device),
+        mount_point,
+        Some(fs_type),
+        MsFlags::empty(),
+        None::<&str>,
+    )
+    .map_err(|e| crate::Error::Format(format!("mount_rw({device}, {fs_type}): {e}")))
+}
+
+/// Download a blob from `storage` and write it verbatim to `device`.
+async fn write_blob_to_device(
+    storage: &(dyn Storage + Sync),
+    blob_id: Uuid,
+    device: &str,
+) -> crate::Result<()> {
+    let data = storage.download_blob(blob_id).await?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(device)
+        .map_err(|e| crate::Error::Format(format!("open({device}): {e}")))?;
+    f.write_all(&data)
+        .map_err(|e| crate::Error::Format(format!("write_all({device}): {e}")))?;
+    Ok(())
+}
+
+/// Apply one [`PartitionManifest`] to its block device.
+///
+/// - `BiosBoot` / `Raw` → download blob → `write_blob_to_device`
+/// - `Fs` → `mkfs` → mount rw → [`decompress_fs_partition`] with an empty
+///   base dir (suitable for full-image manifests; delta manifests should call
+///   the decompress pipeline directly with a mounted base partition).
+async fn apply_partition(
+    pm: &crate::manifest::PartitionManifest,
+    part_dev: &str,
+    image_id: &str,
+    storage: &(dyn Storage + Sync),
+    manifest: &Manifest,
+) -> crate::Result<()> {
+    match &pm.content {
+        PartitionContent::BiosBoot { blob_id, .. } => {
+            write_blob_to_device(storage, *blob_id, part_dev).await
+        }
+        PartitionContent::Raw { blob, .. } => {
+            if let Some(b) = blob {
+                write_blob_to_device(storage, b.blob_id, part_dev).await?;
+            }
+            Ok(())
+        }
+        PartitionContent::Fs { fs_type, records } => {
+            // Format the partition.
+            mkfs_partition(part_dev, fs_type)?;
+
+            // Mount read-write.
+            let mount_dir =
+                TempDir::new().map_err(|e| crate::Error::Format(format!("TempDir::new: {e}")))?;
+            mount_partition_rw_plain(part_dev, fs_type, mount_dir.path())?;
+
+            // Use an empty directory as the base (full-image manifest: no
+            // files to copy from a base partition).
+            let empty_base = TempDir::new()
+                .map_err(|e| crate::Error::Format(format!("TempDir::new (base): {e}")))?;
+
+            // Download patch archive (may be empty for full-image manifests).
+            let archive_bytes = storage.download_patches(image_id).await.unwrap_or_default();
+
+            // Build a default router (xdelta3 fallback, no glob rules).
+            let router = RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new()));
+
+            let result = decompress_fs_partition(
+                empty_base.path(),
+                mount_dir.path(),
+                records,
+                &archive_bytes,
+                manifest.header.patches_compressed,
+                storage,
+                &router,
+            )
+            .await;
+
+            // Always unmount before returning.
+            let _ = umount2(mount_dir.path(), MntFlags::MNT_DETACH);
+
+            result.map(|_| ())
         }
     }
 }
