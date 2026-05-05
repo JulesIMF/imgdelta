@@ -295,18 +295,37 @@ impl Storage for S3Storage {
             .collect())
     }
 
-    async fn find_blob_candidates(&self, base_image_id: &str) -> Result<Vec<BlobCandidate>> {
-        let rows = sqlx::query(
-            "SELECT bo.blob_id, bi.sha256, bo.path \
-             FROM blob_origins bo \
-             JOIN blob_index bi ON bi.blob_id = bo.blob_id \
-             WHERE bo.orig_image_id = $1 \
-             ORDER BY bo.created_at DESC",
-        )
-        .bind(base_image_id)
-        .fetch_all(&self.pg)
-        .await
-        .map_err(|e| Error::Storage(format!("find_blob_candidates: {e}")))?;
+    async fn find_blob_candidates(
+        &self,
+        base_image_id: &str,
+        partition_number: Option<i32>,
+    ) -> Result<Vec<BlobCandidate>> {
+        let rows = if let Some(pn) = partition_number {
+            sqlx::query(
+                "SELECT bo.blob_id, bi.sha256, bo.path \
+                 FROM blob_origins bo \
+                 JOIN blob_index bi ON bi.blob_id = bo.blob_id \
+                 WHERE bo.orig_image_id = $1 AND bo.partition_number = $2 \
+                 ORDER BY bo.created_at DESC",
+            )
+            .bind(base_image_id)
+            .bind(pn)
+            .fetch_all(&self.pg)
+            .await
+            .map_err(|e| Error::Storage(format!("find_blob_candidates(part={pn}): {e}")))?
+        } else {
+            sqlx::query(
+                "SELECT bo.blob_id, bi.sha256, bo.path \
+                 FROM blob_origins bo \
+                 JOIN blob_index bi ON bi.blob_id = bo.blob_id \
+                 WHERE bo.orig_image_id = $1 \
+                 ORDER BY bo.created_at DESC",
+            )
+            .bind(base_image_id)
+            .fetch_all(&self.pg)
+            .await
+            .map_err(|e| Error::Storage(format!("find_blob_candidates: {e}")))?
+        };
 
         Ok(rows
             .into_iter()
@@ -323,15 +342,19 @@ impl Storage for S3Storage {
         blob_uuid: Uuid,
         orig_image_id: &str,
         base_image_id: Option<&str>,
+        partition_number: Option<i32>,
         file_path: &str,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO blob_origins (blob_id, orig_image_id, base_image_id, path, size) \
-             VALUES ($1, $2, $3, $4, 0) ON CONFLICT (blob_id, orig_image_id) DO NOTHING",
+            "INSERT INTO blob_origins \
+             (blob_id, orig_image_id, base_image_id, partition_number, path, size) \
+             VALUES ($1, $2, $3, $4, $5, 0) \
+             ON CONFLICT (blob_id, orig_image_id) DO NOTHING",
         )
         .bind(blob_uuid)
         .bind(orig_image_id)
         .bind(base_image_id)
+        .bind(partition_number)
         .bind(file_path)
         .execute(&self.pg)
         .await
@@ -532,11 +555,11 @@ mod tests {
         let blob_uuid = storage.upload_blob(&sha256, data).await.unwrap();
 
         storage
-            .record_blob_origin(blob_uuid, &image_id, None, "usr/bin/tool")
+            .record_blob_origin(blob_uuid, &image_id, None, None, "usr/bin/tool")
             .await
             .unwrap();
 
-        let candidates = storage.find_blob_candidates(&image_id).await.unwrap();
+        let candidates = storage.find_blob_candidates(&image_id, None).await.unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].uuid, blob_uuid);
         assert_eq!(candidates[0].sha256, sha256);

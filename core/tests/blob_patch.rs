@@ -166,6 +166,7 @@ async fn test_blob_patch_fallback_to_blob() {
             unrelated_blob_id,
             "img-base",
             None,
+            None,
             "something/unrelated.txt",
         )
         .await
@@ -234,7 +235,7 @@ async fn test_record_blob_origin_stored() {
 
     // find_blob_candidates for the image we just produced should return the two new blobs.
     let candidates = storage
-        .find_blob_candidates("img-with-blobs")
+        .find_blob_candidates("img-with-blobs", None)
         .await
         .unwrap();
     let candidate_paths: Vec<&str> = candidates

@@ -124,13 +124,24 @@ pub trait Storage: Send + Sync {
 
     /// Return blobs from `base_image_id` that are candidates for delta encoding
     /// against files in the new image.
-    async fn find_blob_candidates(&self, base_image_id: &str) -> crate::Result<Vec<BlobCandidate>>;
+    ///
+    /// When `partition_number` is `Some(n)`, only blobs recorded for partition
+    /// `n` are returned (i.e. same-partition candidates for multi-partition
+    /// images).  Pass `None` to return blobs from all partitions.
+    async fn find_blob_candidates(
+        &self,
+        base_image_id: &str,
+        partition_number: Option<i32>,
+    ) -> crate::Result<Vec<BlobCandidate>>;
 
     /// Record that `blob_uuid` originated from `file_path` in `orig_image_id`.
     ///
     /// `base_image_id` is the delta-source image that was used during the
     /// compress run that produced this blob (i.e. `options.base_image_id`).
     /// It is `None` for root (no-base) compress runs.
+    ///
+    /// `partition_number` is the 1-based partition number in the source image.
+    /// `None` for single-partition (`DirectoryImage`) images.
     ///
     /// Called by [`DefaultCompressor`] after each `upload_blob` so that future
     /// compress operations can use this blob as a delta base via
@@ -143,6 +154,7 @@ pub trait Storage: Send + Sync {
         blob_uuid: Uuid,
         orig_image_id: &str,
         base_image_id: Option<&str>,
+        partition_number: Option<i32>,
         file_path: &str,
     ) -> crate::Result<()>;
 }

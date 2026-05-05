@@ -84,7 +84,7 @@ async fn test_s3_lookup_exact_path_match() {
         metadata: None,
     });
 
-    let draft = s3_lookup(draft, &storage, "img-base").await.unwrap();
+    let draft = s3_lookup(draft, &storage, "img-base", None).await.unwrap();
 
     let record = &draft.records[0];
     // data should become BlobRef (delta base from S3).
@@ -126,7 +126,7 @@ async fn test_s3_lookup_no_candidates_is_noop() {
         metadata: None,
     });
 
-    let draft = s3_lookup(draft, &storage, "img-base").await.unwrap();
+    let draft = s3_lookup(draft, &storage, "img-base", None).await.unwrap();
 
     assert!(
         matches!(draft.records[0].data, Some(Data::LazyBlob(_))),
@@ -162,7 +162,7 @@ async fn test_s3_lookup_only_matches_added_files() {
         metadata: None,
     });
 
-    let draft = s3_lookup(draft, &storage, "img-base").await.unwrap();
+    let draft = s3_lookup(draft, &storage, "img-base", None).await.unwrap();
 
     // The changed record must not be altered by s3_lookup.
     assert!(
@@ -195,7 +195,7 @@ async fn test_upload_lazy_blobs_new_file() {
         metadata: None,
     });
 
-    let draft = upload_lazy_blobs(draft, &storage, "img-001", None)
+    let draft = upload_lazy_blobs(draft, &storage, "img-001", None, None)
         .await
         .unwrap();
 
@@ -230,7 +230,7 @@ async fn test_upload_lazy_blobs_sha256_dedup() {
         });
     }
 
-    let draft = upload_lazy_blobs(draft, &storage, "img-001", None)
+    let draft = upload_lazy_blobs(draft, &storage, "img-001", None, None)
         .await
         .unwrap();
 
@@ -268,7 +268,7 @@ async fn test_upload_lazy_blobs_skips_non_lazy() {
     });
 
     let before = draft.records[0].data.clone();
-    let draft = upload_lazy_blobs(draft, &storage, "img-001", None)
+    let draft = upload_lazy_blobs(draft, &storage, "img-001", None, None)
         .await
         .unwrap();
 
@@ -628,7 +628,7 @@ async fn test_upload_lazy_blobs_dedup_skips_upload() {
         });
     }
 
-    let _draft = upload_lazy_blobs(draft, &storage, "img-dedup", None)
+    let _draft = upload_lazy_blobs(draft, &storage, "img-dedup", None, None)
         .await
         .unwrap();
 
@@ -719,11 +719,11 @@ async fn test_upload_lazy_blobs_concurrent_batches() {
     };
 
     let (r0, r1, r2, r3, r4) = tokio::join!(
-        upload_lazy_blobs(make_draft(0), &storage, "img-conc", None),
-        upload_lazy_blobs(make_draft(10), &storage, "img-conc", None),
-        upload_lazy_blobs(make_draft(20), &storage, "img-conc", None),
-        upload_lazy_blobs(make_draft(30), &storage, "img-conc", None),
-        upload_lazy_blobs(make_draft(40), &storage, "img-conc", None),
+        upload_lazy_blobs(make_draft(0), &storage, "img-conc", None, None),
+        upload_lazy_blobs(make_draft(10), &storage, "img-conc", None, None),
+        upload_lazy_blobs(make_draft(20), &storage, "img-conc", None, None),
+        upload_lazy_blobs(make_draft(30), &storage, "img-conc", None, None),
+        upload_lazy_blobs(make_draft(40), &storage, "img-conc", None, None),
     );
 
     for (batch_idx, draft) in [r0, r1, r2, r3, r4].into_iter().enumerate() {

@@ -221,7 +221,11 @@ impl Storage for FakeStorage {
             .collect())
     }
 
-    async fn find_blob_candidates(&self, base_image_id: &str) -> Result<Vec<BlobCandidate>> {
+    async fn find_blob_candidates(
+        &self,
+        base_image_id: &str,
+        _partition_number: Option<i32>,
+    ) -> Result<Vec<BlobCandidate>> {
         let inner = self.inner.lock().unwrap();
         let origins = match inner.blob_origins.get(base_image_id) {
             Some(o) => o,
@@ -251,6 +255,7 @@ impl Storage for FakeStorage {
         blob_uuid: Uuid,
         image_id: &str,
         _base_image_id: Option<&str>,
+        _partition_number: Option<i32>,
         file_path: &str,
     ) -> Result<()> {
         self.inner

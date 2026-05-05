@@ -284,7 +284,11 @@ impl Storage for LocalStorage {
         Ok(result)
     }
 
-    async fn find_blob_candidates(&self, base_image_id: &str) -> Result<Vec<BlobCandidate>> {
+    async fn find_blob_candidates(
+        &self,
+        base_image_id: &str,
+        _partition_number: Option<i32>,
+    ) -> Result<Vec<BlobCandidate>> {
         let inner = self.inner.lock().unwrap();
         let candidates = inner
             .blob_origins
@@ -314,6 +318,7 @@ impl Storage for LocalStorage {
         blob_uuid: Uuid,
         orig_image_id: &str,
         base_image_id: Option<&str>,
+        _partition_number: Option<i32>,
         file_path: &str,
     ) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();

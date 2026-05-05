@@ -480,8 +480,11 @@ pub async fn s3_lookup(
     mut draft: FsDraft,
     storage: &dyn Storage,
     base_image_id: &str,
+    partition_number: Option<i32>,
 ) -> Result<FsDraft> {
-    let candidates = storage.find_blob_candidates(base_image_id).await?;
+    let candidates = storage
+        .find_blob_candidates(base_image_id, partition_number)
+        .await?;
     if candidates.is_empty() {
         return Ok(draft);
     }
@@ -682,6 +685,7 @@ pub async fn upload_lazy_blobs(
     storage: &dyn Storage,
     image_id: &str,
     base_image_id: Option<&str>,
+    partition_number: Option<i32>,
 ) -> Result<FsDraft> {
     for record in &mut draft.records {
         let lazy_path = match &record.data {
@@ -703,6 +707,7 @@ pub async fn upload_lazy_blobs(
                 blob_id,
                 image_id,
                 base_image_id,
+                partition_number,
                 record.new_path.as_deref().unwrap_or(""),
             )
             .await?;
@@ -999,7 +1004,8 @@ pub async fn compress_fs_partition(
 
     // Stage 2.
     if let Some(base_id) = base_image_id {
-        draft = s3_lookup(draft, storage, base_id).await?;
+        let pn = Some(descriptor.number as i32);
+        draft = s3_lookup(draft, storage, base_id, pn).await?;
     }
 
     // Stage 3.
@@ -1009,7 +1015,14 @@ pub async fn compress_fs_partition(
     draft = cleanup(draft);
 
     // Stage 5.
-    draft = upload_lazy_blobs(draft, storage, image_id, base_image_id).await?;
+    draft = upload_lazy_blobs(
+        draft,
+        storage,
+        image_id,
+        base_image_id,
+        Some(descriptor.number as i32),
+    )
+    .await?;
 
     // Stage 6.
     draft = download_blobs_for_patches(draft, storage, tmp_dir.path()).await?;
