@@ -299,7 +299,7 @@ async fn test_compress_manifest_roundtrip() {
         .unwrap();
 
     let raw = storage.download_manifest("img-rt").await.unwrap();
-    let recovered: Manifest = rmp_serde::from_slice(&raw).unwrap();
+    let recovered: Manifest = Manifest::from_bytes(&raw).unwrap();
 
     assert_eq!(recovered.header.image_id, "img-rt");
     assert_eq!(recovered.header.base_image_id, Some("img-base".into()));
