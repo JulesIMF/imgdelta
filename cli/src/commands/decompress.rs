@@ -23,8 +23,9 @@ pub struct DecompressArgs {
     pub output: PathBuf,
 
     /// Path to the base image directory (required for delta images).
+    /// Omit only if the image was compressed without a base (first image).
     #[arg(long, value_name = "PATH")]
-    pub base_image: PathBuf,
+    pub base_image: Option<PathBuf>,
 
     /// Number of parallel worker threads (overrides config).
     #[arg(long, value_name = "N")]
@@ -42,9 +43,21 @@ pub async fn run(args: DecompressArgs, config_path: Option<&Path>) -> anyhow::Re
         router,
     );
 
+    // When no base is provided, use an empty temp directory so that all files
+    // are reconstructed from stored blobs (first-image bootstrap case).
+    let _empty_tmp;
+    let base_root: PathBuf = match args.base_image {
+        Some(p) => p,
+        None => {
+            _empty_tmp =
+                tempfile::tempdir().map_err(|e| anyhow::anyhow!("cannot create temp dir: {e}"))?;
+            _empty_tmp.path().to_path_buf()
+        }
+    };
+
     let opts = DecompressOptions {
         image_id: args.image_id.clone(),
-        base_root: args.base_image.clone(),
+        base_root,
         workers: args.workers.unwrap_or(config.compressor.workers),
     };
 

@@ -19,16 +19,18 @@ pub struct CompressArgs {
     pub image: PathBuf,
 
     /// Path to the base image used as delta source.
+    /// Omit for the very first (base) image — an empty directory is assumed.
     #[arg(long, value_name = "PATH")]
-    pub base_image: PathBuf,
+    pub base_image: Option<PathBuf>,
 
     /// Provider-assigned identifier for the target image.
     #[arg(long, value_name = "ID")]
     pub image_id: String,
 
     /// Provider-assigned identifier for the base image.
+    /// Omit when compressing the first image with no prior base.
     #[arg(long, value_name = "ID")]
-    pub base_image_id: String,
+    pub base_image_id: Option<String>,
 
     /// Image format override. Detected from file extension if omitted.
     #[arg(long, value_name = "FORMAT", value_parser = ["directory", "qcow2"])]
@@ -50,24 +52,38 @@ pub async fn run(args: CompressArgs, config_path: Option<&Path>) -> anyhow::Resu
         router,
     );
 
+    // When no base is provided, use an empty temp directory as source so the
+    // compressor stores all files as "added" blobs (first-image bootstrap).
+    let _empty_tmp;
+    let base_root: &Path = match &args.base_image {
+        Some(p) => p.as_path(),
+        None => {
+            _empty_tmp =
+                tempfile::tempdir().map_err(|e| anyhow::anyhow!("cannot create temp dir: {e}"))?;
+            _empty_tmp.path()
+        }
+    };
+
     let opts = image_delta_core::CompressOptions {
         image_id: args.image_id.clone(),
-        base_image_id: Some(args.base_image_id.clone()),
+        base_image_id: args.base_image_id.clone(),
         workers: args.workers.unwrap_or(config.compressor.workers),
         passthrough_threshold: config.compressor.passthrough_threshold,
     };
 
-    let stats = compressor
-        .compress(&args.base_image, &args.image, opts)
-        .await?;
+    let stats = compressor.compress(base_root, &args.image, opts).await?;
 
+    let base_label = args.base_image_id.as_deref().unwrap_or("(none)");
     eprintln!(
-        "Compressed {} → {}\n  added={}, patched={}, removed={}, elapsed={:.2}s",
-        args.base_image_id,
+        "Compressed {} → {}\n  base={}, added={}, patched={}, removed={}, source_bytes={}, stored_bytes={}, elapsed={:.2}s",
+        base_label,
         args.image_id,
+        base_label,
         stats.files_added,
         stats.files_patched,
         stats.files_removed,
+        stats.total_source_bytes,
+        stats.total_stored_bytes,
         stats.elapsed_secs,
     );
     Ok(())

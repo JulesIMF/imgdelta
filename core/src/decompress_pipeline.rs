@@ -462,40 +462,29 @@ async fn apply_file_record(
 ) -> Result<()> {
     // Case A: patch stored in archive
     if let Some(Patch::Real(pref)) = &record.patch {
-        let base_path = match &record.old_path {
-            Some(p) => base_root.join(p),
-            None => {
-                // Patched addition — no base. Use empty source.
-                let source: &[u8] = &[];
-                let patch_bytes = patch_map.get(&pref.archive_entry).ok_or_else(|| {
-                    Error::Archive(format!(
-                        "patch archive entry '{}' not found",
-                        pref.archive_entry
-                    ))
-                })?;
-                // Verify SHA-256 of patch bytes.
-                let actual_sha = hex::encode(Sha256::digest(patch_bytes));
-                if actual_sha != pref.sha256 {
-                    return Err(Error::Decode(format!(
-                        "patch SHA-256 mismatch for {new_path}: expected {}, got {actual_sha}",
-                        pref.sha256
-                    )));
-                }
-                let fp = FilePatch {
-                    bytes: patch_bytes.clone(),
-                    code: pref.algorithm_code,
-                    algorithm_id: pref.algorithm_id.clone(),
-                };
-                let decoded = router.decode(source, &fp)?;
-                let n = decoded.len() as u64;
-                write_file(dst, &decoded)?;
-                stats.files_written += 1;
-                stats.patches_verified += 1;
-                stats.bytes_written += n;
-                return Ok(());
+        // Resolve the source bytes:
+        //   - old_path present → read file from base directory.
+        //   - old_path absent, data = BlobRef → s3_lookup match: download the
+        //     base blob that was used as the xdelta3 source during compression.
+        //   - old_path absent, no BlobRef → truly new file encoded from empty.
+        let source_bytes: Vec<u8>;
+        let source: &[u8] = match &record.old_path {
+            Some(p) => {
+                source_bytes = read_file(&base_root.join(p))?;
+                &source_bytes
             }
+            None => match &record.data {
+                Some(Data::BlobRef(bref)) => {
+                    source_bytes = storage.download_blob(bref.blob_id).await?;
+                    &source_bytes
+                }
+                _ => {
+                    source_bytes = Vec::new();
+                    &source_bytes
+                }
+            },
         };
-        let source = read_file(&base_path)?;
+
         let patch_bytes = patch_map.get(&pref.archive_entry).ok_or_else(|| {
             Error::Archive(format!(
                 "patch archive entry '{}' not found",
@@ -515,7 +504,7 @@ async fn apply_file_record(
             code: pref.algorithm_code,
             algorithm_id: pref.algorithm_id.clone(),
         };
-        let decoded = router.decode(&source, &fp)?;
+        let decoded = router.decode(source, &fp)?;
         let n = decoded.len() as u64;
         write_file(dst, &decoded)?;
         stats.files_written += 1;

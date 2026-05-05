@@ -42,5 +42,6 @@ sqlx = { version = "0.8", features = [
   "uuid",
 ] }
 sha2 = "0.10"
+tempfile = "3"
 
 [dev-dependencies]
