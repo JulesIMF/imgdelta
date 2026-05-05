@@ -345,7 +345,6 @@ fn make_removed_record(path: &str, b: &EntrySnapshot, base_root: &Path) -> Recor
         data,
         patch: None,
         metadata: None,
-        special_device: None,
     }
 }
 
@@ -366,7 +365,6 @@ fn make_added_record(
             data: Some(Data::SoftlinkTo(t.link_target.clone().unwrap_or_default())),
             patch: None,
             metadata,
-            special_device: None,
         };
     }
 
@@ -379,7 +377,6 @@ fn make_added_record(
             data: None,
             patch: None,
             metadata,
-            special_device: None,
         };
     }
 
@@ -395,35 +392,25 @@ fn make_added_record(
                     data: Some(Data::HardlinkTo(canonical.clone())),
                     patch: None,
                     metadata,
-                    special_device: None,
                 };
             }
         }
     }
 
-    // Special file (char/block device, FIFO, socket) — metadata-only record.
+    // Special file (char/block device, FIFO, socket).
     if !t.is_file && !t.is_dir && !t.is_symlink {
         #[cfg(unix)]
-        return Record {
-            old_path: None,
-            new_path: Some(path.to_string()),
-            entry_type: EntryType::Special,
-            size: 0,
-            data: None,
-            patch: None,
-            metadata,
-            special_device: Some(device_info_from_snapshot(t)),
-        };
+        let dev_data = Some(Data::SpecialDevice(device_info_from_snapshot(t)));
         #[cfg(not(unix))]
+        let dev_data: Option<Data> = None;
         return Record {
             old_path: None,
             new_path: Some(path.to_string()),
             entry_type: EntryType::Special,
             size: 0,
-            data: None,
+            data: dev_data,
             patch: None,
             metadata,
-            special_device: None,
         };
     }
 
@@ -435,7 +422,6 @@ fn make_added_record(
         data: Some(Data::LazyBlob(target_root.join(path))),
         patch: None,
         metadata,
-        special_device: None,
     }
 }
 
@@ -470,7 +456,6 @@ fn diff_entry(
                     data: None,
                     patch: None,
                     metadata: Some(meta),
-                    special_device: None,
                 }]
             })
             .unwrap_or_default();
@@ -494,7 +479,6 @@ fn diff_entry(
             data: None,
             patch,
             metadata: meta,
-            special_device: None,
         }];
     }
 
@@ -512,18 +496,17 @@ fn diff_entry(
         return metadata_diff(b, t)
             .map(|meta| {
                 #[cfg(unix)]
-                let special_device = Some(device_info_from_snapshot(t));
+                let dev_data = Some(Data::SpecialDevice(device_info_from_snapshot(t)));
                 #[cfg(not(unix))]
-                let special_device = None;
+                let dev_data: Option<Data> = None;
                 vec![Record {
                     old_path: Some(path.to_string()),
                     new_path: Some(path.to_string()),
                     entry_type: EntryType::Special,
                     size: 0,
-                    data: None,
+                    data: dev_data,
                     patch: None,
                     metadata: Some(meta),
-                    special_device,
                 }]
             })
             .unwrap_or_default();
@@ -554,7 +537,6 @@ fn diff_entry(
         data: None,
         patch,
         metadata: meta,
-        special_device: None,
     }]
 }
 
@@ -737,7 +719,6 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
                 new_data: new_data_path,
             }),
             metadata,
-            special_device: None,
         });
 
         remove_indices.push(*rem_idx);
@@ -1557,7 +1538,6 @@ mod tests {
             },
             patch: None,
             metadata: None,
-            special_device: None,
         }
     }
 
@@ -1626,7 +1606,6 @@ mod tests {
                 new_data: DataRef::FilePath("/mnt/target/lib/libfoo.so.2".into()),
             }),
             metadata: None,
-            special_device: None,
         });
 
         let before_count = draft.records.len();
@@ -1668,7 +1647,6 @@ mod tests {
                 mode: Some(0o644),
                 ..Default::default()
             }),
-            special_device: None,
         });
 
         let draft = cleanup(draft);
@@ -1693,7 +1671,6 @@ mod tests {
                 new_data: DataRef::FilePath("/mnt/target/etc/changed.conf".into()),
             }),
             metadata: None,
-            special_device: None,
         });
 
         let draft = cleanup(draft);
@@ -1734,7 +1711,6 @@ mod tests {
                 new_data: DataRef::FilePath(target_dir.path().join("lib/libz.so.1")),
             }),
             metadata: None,
-            special_device: None,
         });
 
         let router = make_xdelta3_router();
@@ -1786,7 +1762,6 @@ mod tests {
                 new_data: DataRef::FilePath(target_dir.path().join("usr/bin/python")),
             }),
             metadata: None,
-            special_device: None,
         });
 
         let router = make_xdelta3_router();
@@ -1819,7 +1794,6 @@ mod tests {
             data: None,
             patch: None,
             metadata: None,
-            special_device: None,
         });
 
         let router = make_xdelta3_router();

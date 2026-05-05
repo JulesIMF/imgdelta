@@ -130,6 +130,8 @@ pub enum Data {
     SoftlinkTo(String),
     /// Hardlink canonical target path — for newly added hardlinks.
     HardlinkTo(String),
+    /// Device info for `EntryType::Special` entries (char/block device, FIFO, socket).
+    SpecialDevice(DeviceInfo),
 }
 
 /// Patch descriptor for a [`Record`] entry.
@@ -173,6 +175,14 @@ pub struct Record {
     /// Uncompressed size in bytes.  Zero for directories, symlinks, and deletions.
     pub size: u64,
     /// Content data.  `None` for metadata-only changes and deletions.
+    ///
+    /// | `entry_type`  | `data` variant                         |
+    /// |---------------|----------------------------------------|
+    /// | `File`        | `LazyBlob` / `BlobRef` / `OriginalFile`|
+    /// | `Symlink`     | `SoftlinkTo(target)` or `None`         |
+    /// | `Hardlink`    | `HardlinkTo(canonical_path)`           |
+    /// | `Directory`   | `None`                                 |
+    /// | `Special`     | `SpecialDevice(DeviceInfo)`            |
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub data: Option<Data>,
     /// Binary patch.  `None` for blob-only entries and deletions.
@@ -181,9 +191,6 @@ pub struct Record {
     /// Changed filesystem attributes.  `None` when no attributes changed.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub metadata: Option<Metadata>,
-    /// Device info for `EntryType::Special` entries.  `None` for all other types.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub special_device: Option<DeviceInfo>,
 }
 
 /// Major/minor device number and file-type bits for a special file
@@ -202,12 +209,17 @@ pub struct DeviceInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryType {
+    /// Regular file.  `data` = `LazyBlob` | `BlobRef` | `OriginalFile` | `None` (metadata-only).
     #[default]
     File,
+    /// Directory.  `data` = `None`.
     Directory,
+    /// Symbolic link.  `data` = `SoftlinkTo(target)` (added) or `None` (metadata-only / target changed via patch).
     Symlink,
+    /// Hard link to a canonical path already written.  `data` = `HardlinkTo(canonical_path)`.
     Hardlink,
     /// Special file: character device, block device, FIFO, or socket.
+    /// `data` = `SpecialDevice(DeviceInfo)` (always present for non-deletion records).
     Special,
 }
 
@@ -463,7 +475,6 @@ mod tests {
             data: Some(Data::BlobRef(simple_blob_ref())),
             patch: None,
             metadata: None,
-            special_device: None,
         }
     }
 
@@ -476,7 +487,6 @@ mod tests {
             data: None,
             patch: None,
             metadata: None,
-            special_device: None,
         }
     }
 
@@ -489,7 +499,6 @@ mod tests {
             data: None,
             patch: Some(simple_patch_ref_real()),
             metadata: None,
-            special_device: None,
         }
     }
 
@@ -502,7 +511,6 @@ mod tests {
             data: None,
             patch: Some(simple_patch_ref_real()),
             metadata: Some(Metadata::default()),
-            special_device: None,
         }
     }
 
@@ -515,7 +523,6 @@ mod tests {
             data: Some(Data::SoftlinkTo("/usr/bin/python3.11".into())),
             patch: None,
             metadata: None,
-            special_device: None,
         }
     }
 
@@ -531,7 +538,6 @@ mod tests {
                 mode: Some(0o755),
                 ..Default::default()
             }),
-            special_device: None,
         }
     }
 

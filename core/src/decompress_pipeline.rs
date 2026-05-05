@@ -131,12 +131,21 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
 
 /// Copy all entries in `base_root` whose relative path is NOT in `affected`
 /// into `output_root`, preserving directory structure.
+///
+/// Hard links from the base tree are preserved: the first inode seen is
+/// written as a regular file; subsequent paths with the same `(dev, ino)` are
+/// created as hard links to the already-written copy.
 fn copy_unchanged_from_base(
     base_root: &Path,
     output_root: &Path,
     affected: &HashSet<String>,
 ) -> Result<PartitionDecompressStats> {
     let mut stats = PartitionDecompressStats::default();
+
+    // (dev, ino) → first output path written — used to recreate hard links.
+    #[cfg(unix)]
+    let mut hardlink_map: std::collections::HashMap<(u64, u64), std::path::PathBuf> =
+        std::collections::HashMap::new();
 
     for entry in WalkDir::new(base_root)
         .follow_links(false)
@@ -148,99 +157,129 @@ fn copy_unchanged_from_base(
             Ok(r) if !r.as_os_str().is_empty() => r.to_string_lossy().into_owned(),
             _ => continue, // skip the root itself
         };
-        // Normalise path separator to '/'
         let rel = rel.replace(std::path::MAIN_SEPARATOR, "/");
 
         if affected.contains(&rel) {
-            continue; // this entry is covered by a record — skip
+            continue; // covered by a manifest record
         }
 
         let dst = output_root.join(&rel);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
 
-        if entry.file_type().is_dir() {
-            std::fs::create_dir_all(&dst)
-                .map_err(|e| Error::Other(format!("create_dir {}: {e}", dst.display())))?;
-            // Preserve source directory mode.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::{MetadataExt, PermissionsExt};
-                if let Ok(m) = abs.metadata() {
-                    let mode = m.mode() & 0o7777;
+        let ft = entry.file_type();
+
+        match () {
+            // ── Directory ─────────────────────────────────────────────────
+            _ if ft.is_dir() => {
+                std::fs::create_dir_all(&dst)
+                    .map_err(|e| Error::Other(format!("create_dir {}: {e}", dst.display())))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                    if let Ok(m) = abs.metadata() {
+                        let mode = m.mode() & 0o7777;
+                        let _ =
+                            std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode));
+                    }
+                }
+            }
+
+            // ── Symbolic link ─────────────────────────────────────────────
+            _ if ft.is_symlink() => {
+                let link_target = std::fs::read_link(abs)
+                    .map_err(|e| Error::Other(format!("readlink {}: {e}", abs.display())))?;
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&link_target, &dst).map_err(|e| {
+                    Error::Other(format!(
+                        "symlink {} → {}: {e}",
+                        dst.display(),
+                        link_target.display()
+                    ))
+                })?;
+                stats.files_written += 1;
+            }
+
+            // ── Regular file (possibly a hard link) ───────────────────────
+            _ if ft.is_file() => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if let Ok(meta) = abs.symlink_metadata() {
+                        let key = (meta.dev(), meta.ino());
+                        if meta.nlink() > 1 {
+                            if let Some(first) = hardlink_map.get(&key) {
+                                // Re-create as a hard link to the first copy.
+                                std::fs::hard_link(first, &dst).map_err(|e| {
+                                    Error::Other(format!(
+                                        "hard_link {} → {}: {e}",
+                                        first.display(),
+                                        dst.display()
+                                    ))
+                                })?;
+                                stats.files_written += 1;
+                                continue;
+                            }
+                            hardlink_map.insert(key, dst.clone());
+                        }
+                    }
+                }
+                let data = read_file(abs)?;
+                let src_meta = abs.metadata().ok();
+                let src_mtime = src_meta
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .map(filetime::FileTime::from_system_time);
+                #[cfg(unix)]
+                let src_mode: Option<u32> = {
+                    use std::os::unix::fs::MetadataExt;
+                    src_meta.as_ref().map(|m| m.mode() & 0o7777)
+                };
+                stats.bytes_written += data.len() as u64;
+                std::fs::write(&dst, &data)
+                    .map_err(|e| Error::Other(format!("write {}: {e}", dst.display())))?;
+                #[cfg(unix)]
+                if let Some(mode) = src_mode {
+                    use std::os::unix::fs::PermissionsExt;
                     let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode));
                 }
-            }
-        } else if entry.file_type().is_symlink() {
-            let link_target = std::fs::read_link(abs)
-                .map_err(|e| Error::Other(format!("readlink {}: {e}", abs.display())))?;
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&link_target, &dst).map_err(|e| {
-                Error::Other(format!(
-                    "symlink {} → {}: {e}",
-                    dst.display(),
-                    link_target.display()
-                ))
-            })?;
-        } else if entry.file_type().is_file() {
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-            let data = read_file(abs)?;
-            // Capture source mtime and mode before writing (write resets both).
-            let src_meta = abs.metadata().ok();
-            let src_mtime = src_meta
-                .as_ref()
-                .and_then(|m| m.modified().ok())
-                .map(filetime::FileTime::from_system_time);
-            #[cfg(unix)]
-            let src_mode: Option<u32> = {
-                use std::os::unix::fs::MetadataExt;
-                src_meta.as_ref().map(|m| m.mode() & 0o7777)
-            };
-            stats.bytes_written += data.len() as u64;
-            std::fs::write(&dst, &data)
-                .map_err(|e| Error::Other(format!("write {}: {e}", dst.display())))?;
-            // Restore mode.
-            #[cfg(unix)]
-            if let Some(mode) = src_mode {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode));
-            }
-            // Restore mtime.
-            if let Some(ft) = src_mtime {
-                let _ = filetime::set_file_mtime(&dst, ft);
-            }
-            stats.files_written += 1;
-        } else {
-            // Special file (char/block device, FIFO, socket) — recreate via mknod.
-            #[cfg(unix)]
-            {
-                use std::ffi::CString;
-                use std::os::unix::ffi::OsStrExt;
-                use std::os::unix::fs::MetadataExt;
-                if let Some(parent) = dst.parent() {
-                    std::fs::create_dir_all(parent).ok();
+                if let Some(ft) = src_mtime {
+                    let _ = filetime::set_file_mtime(&dst, ft);
                 }
-                if let Ok(meta) = abs.symlink_metadata() {
-                    let rdev = meta.rdev();
-                    let mode = meta.mode(); // includes S_IF* type bits
-                    let dev = linux_makedev(libc::major(rdev) as u32, libc::minor(rdev) as u32);
-                    if let Ok(c_path) = CString::new(dst.as_os_str().as_bytes()) {
-                        let ret = unsafe {
-                            libc::mknod(c_path.as_ptr(), mode as libc::mode_t, dev as libc::dev_t)
-                        };
-                        if ret == 0 {
-                            let ft = filetime::FileTime::from_unix_time(meta.mtime(), 0);
-                            let _ = filetime::set_file_mtime(&dst, ft);
-                            stats.files_written += 1;
-                        } else {
-                            debug!(
-                                path = %dst.display(),
-                                err = %std::io::Error::last_os_error(),
-                                "mknod failed for base special file (skipping)"
-                            );
+                stats.files_written += 1;
+            }
+
+            // ── Special file (char/block device, FIFO, socket) ────────────
+            _ => {
+                #[cfg(unix)]
+                {
+                    use std::ffi::CString;
+                    use std::os::unix::ffi::OsStrExt;
+                    use std::os::unix::fs::MetadataExt;
+                    if let Ok(meta) = abs.symlink_metadata() {
+                        let rdev = meta.rdev();
+                        let mode = meta.mode();
+                        let dev = linux_makedev(libc::major(rdev) as u32, libc::minor(rdev) as u32);
+                        if let Ok(c_path) = CString::new(dst.as_os_str().as_bytes()) {
+                            let ret = unsafe {
+                                libc::mknod(
+                                    c_path.as_ptr(),
+                                    mode as libc::mode_t,
+                                    dev as libc::dev_t,
+                                )
+                            };
+                            if ret == 0 {
+                                let ft = filetime::FileTime::from_unix_time(meta.mtime(), 0);
+                                let _ = filetime::set_file_mtime(&dst, ft);
+                                stats.files_written += 1;
+                            } else {
+                                debug!(
+                                    path = %dst.display(),
+                                    err = %std::io::Error::last_os_error(),
+                                    "mknod failed for base special file (skipping)"
+                                );
+                            }
                         }
                     }
                 }
@@ -489,11 +528,14 @@ async fn apply_record(
                 if let Some(parent) = dst.parent() {
                     std::fs::create_dir_all(parent).ok();
                 }
-                let dev_info = record.special_device.as_ref().ok_or_else(|| {
-                    Error::Format(format!(
-                        "special file record {new_path} is missing device info"
-                    ))
-                })?;
+                let dev_info = match &record.data {
+                    Some(Data::SpecialDevice(d)) => d,
+                    _ => {
+                        return Err(Error::Format(format!(
+                            "special file record {new_path} is missing SpecialDevice data"
+                        )))
+                    }
+                };
                 let mode = record
                     .metadata
                     .as_ref()
