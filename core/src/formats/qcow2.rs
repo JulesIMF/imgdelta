@@ -27,6 +27,7 @@ use crate::partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKin
 use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::{Image, MountHandle, Result};
+use tracing::debug;
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
@@ -88,12 +89,39 @@ impl Drop for Qcow2MountHandle {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/// Wait until `/sys/block/nbdN/size` becomes non-zero, indicating that the
+/// kernel has fully connected the NBD device to a qemu-nbd server.
+///
+/// **Call this while holding [`NBD_ALLOC`]** so that concurrent `open()` /
+/// `mount()` calls see the device as busy and skip to the next one.
+///
+/// The sysfs `pid` attribute is NOT used because it records a transient
+/// fork-helper PID that disappears as soon as the daemon child continues —
+/// making it unreliable for liveness checks.
+fn wait_for_nbd_connected(dev: &str) {
+    let base_name = dev.trim_start_matches("/dev/"); // e.g. "nbd0"
+    let size_path = format!("/sys/block/{base_name}/size");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        let size: u64 = fs::read_to_string(&size_path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+        if size > 0 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Return the path to the first free NBD device at or after `start_index`.
 ///
-/// A device is free when its `/sys/block/nbdN` directory exists but the `pid`
-/// file is absent or empty.  Scanning stops at the first index whose sysfs
-/// directory does not exist (the kernel only creates entries for devices that
-/// have been allocated by the `nbd` module).
+/// A device is free when its `/sys/block/nbdN/size` reads `0`.  Scanning stops
+/// at the first index whose sysfs directory does not exist (the kernel only
+/// creates entries for devices that have been allocated by the `nbd` module).
 ///
 /// Pass `start_index > 0` (via the `QCOW2_DEVICE` env var) to skip devices
 /// that are known to be pre-occupied on the host (e.g. nbd0/nbd1 held by the
@@ -109,19 +137,20 @@ fn find_free_nbd(start_index: u32) -> Result<String> {
             break;
         }
 
-        let pid_path = format!("{sys_block_dir}/pid");
-        match fs::read_to_string(&pid_path) {
-            Err(_) => {
-                // For idle NBD devices, `pid` may be absent in sysfs.
-                return Ok(format!("/dev/nbd{n}"));
-            }
-            Ok(content) if content.trim().is_empty() => {
-                return Ok(format!("/dev/nbd{n}"));
-            }
-            Ok(_) => {
-                // Device is in use, try next.
-            }
+        let size_path = format!("{sys_block_dir}/size");
+        let size: u64 = fs::read_to_string(&size_path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+
+        if size == 0 {
+            // Device is free (size == 0 means not connected to any image).
+            return Ok(format!("/dev/nbd{n}"));
         }
+
+        // size > 0 → device is in use by another connection.
+        // (The pid file is unreliable: it may point to a transient fork-helper
+        //  PID that no longer exists even though the NBD daemon is alive.)
     }
     Err(crate::Error::Format(format!(
         "no free NBD device found (all /dev/nbd{start_index}..nbd{} are in use)",
@@ -387,6 +416,7 @@ fn pack_fresh(source_dir: &Path, output_path: &Path) -> Result<()> {
             .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
         let dev = find_free_nbd(start_index)?;
         nbd_connect_rw(&dev, output_path)?;
+        wait_for_nbd_connected(&dev);
         dev
     };
 
@@ -444,6 +474,7 @@ fn pack_with_base(base: &Path, source_dir: &Path, output_path: &Path) -> Result<
             .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
         let dev = find_free_nbd(start_index)?;
         nbd_connect_rw(&dev, output_path)?;
+        wait_for_nbd_connected(&dev);
         dev
     };
 
@@ -689,6 +720,7 @@ fn mount_partition_ro(
         TempDir::new().map_err(|e| crate::Error::Format(format!("TempDir::new: {e}")))?;
     let root = mount_dir.path().to_path_buf();
 
+    debug!(device, fs_type, mount_root = %root.display(), "mount_partition_ro: mounting");
     let flags = MsFlags::MS_RDONLY;
     let extra: Option<&str> = if fs_type == "xfs" {
         Some("norecovery")
@@ -926,8 +958,21 @@ impl Image for Qcow2Image {
                 .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
             let dev = find_free_nbd(start_index)?;
             nbd_connect(&dev, path)?;
+            // Wait until the device size becomes non-zero (kernel has completed
+            // the NBD handshake). Must hold NBD_ALLOC so concurrent open()
+            // calls see this device as busy.
+            wait_for_nbd_connected(&dev);
             dev
         };
+
+        // Flush the block-device page cache to ensure that any pages cached by
+        // a prior connection (possibly to a different qcow2 image) are evicted.
+        // This prevents stale reads after NBD device reuse.
+        let _ = Command::new("blockdev")
+            .args(["--flushbufs", &nbd_device])
+            .output();
+
+        debug!(qcow2 = %path.display(), nbd = %nbd_device, "open: connected qcow2 to nbd device");
 
         // Wrap in Arc so partition handles share the NBD connection lifetime.
         let nbd = Arc::new(NbdConn(nbd_device.clone()));
@@ -981,6 +1026,7 @@ impl Image for Qcow2Image {
                 .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
             let dev = find_free_nbd(start_index)?;
             nbd_connect(&dev, path)?;
+            wait_for_nbd_connected(&dev);
             dev
             // _guard drops here; the device is now visible in sysfs as busy.
         };
@@ -1093,6 +1139,7 @@ impl Qcow2Image {
                 .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
             let dev = find_free_nbd(start_index)?;
             nbd_connect_rw(&dev, output)?;
+            wait_for_nbd_connected(&dev);
             dev
         };
         // RAII: disconnects NBD on drop.

@@ -119,8 +119,14 @@ struct EntrySnapshot {
 /// | `Some`     | `None`     | Removed from base           |
 /// | `Some`     | `Some`     | Changed in-place            |
 pub fn walkdir(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
+    debug!(base_root = %base_root.display(), target_root = %target_root.display(), "walkdir: scanning paths");
     let base_snap = snapshot(base_root)?;
     let target_snap = snapshot(target_root)?;
+    debug!(
+        base_entries = base_snap.len(),
+        target_entries = target_snap.len(),
+        "walkdir: snapshot sizes"
+    );
 
     // Detect hardlink groups in target: (dev, ino) → canonical path (first alphabetically).
     let hardlink_canonicals: HashMap<(u64, u64), String> = {
@@ -206,6 +212,13 @@ fn snapshot(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
         let is_symlink = ft.is_symlink();
         let is_file = ft.is_file();
         let is_dir = ft.is_dir();
+
+        // Skip special files (devices, FIFOs, sockets) — they cannot be
+        // meaningfully delta-compressed and are usually re-created at runtime.
+        if !is_file && !is_dir && !is_symlink {
+            debug!(path = %entry.path().display(), "skipping special file");
+            continue;
+        }
 
         let sha256 = if is_file {
             Some(sha256_of_file(entry.path())?)
@@ -704,7 +717,12 @@ pub async fn upload_lazy_blobs(
             _ => continue,
         };
 
-        let bytes = std::fs::read(&lazy_path)?;
+        let bytes = std::fs::read(&lazy_path).map_err(|e| {
+            std::io::Error::other(format!(
+                "upload_lazy_blobs: cannot read lazy blob '{}': {e}",
+                lazy_path.display()
+            ))
+        })?;
         let sha256_hex = hex_sha256_bytes(&bytes);
 
         // Check before uploading to avoid a redundant network PUT for

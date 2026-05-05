@@ -4,6 +4,7 @@
 // image-delta — incremental disk-image compression toolkit
 // RouterEncoder: selects a PatchEncoder per file path using glob rules
 
+use crate::encoders::PassthroughEncoder;
 use crate::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder, Result};
 use std::sync::Arc;
 
@@ -85,6 +86,11 @@ impl RouterEncoder {
             } else if enc.algorithm_code() == Some(code) {
                 return Some(enc);
             }
+        }
+        // PassthroughEncoder is always a valid decoder for code 0x00,
+        // regardless of routing rules configured for encode-side.
+        if code == AlgorithmCode::Passthrough {
+            return Some(Arc::new(PassthroughEncoder::new()));
         }
         None
     }

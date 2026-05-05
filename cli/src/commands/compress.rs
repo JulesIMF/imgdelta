@@ -8,7 +8,7 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use image_delta_core::{Compressor, DefaultCompressor, DirectoryImage};
+use image_delta_core::{Compressor, DefaultCompressor, DirectoryImage, Qcow2Image};
 
 use crate::config::{CompressorConfig, Config, EncoderKind, StorageConfig};
 
@@ -51,11 +51,19 @@ pub async fn run(args: CompressArgs, config_path: Option<&Path>) -> anyhow::Resu
 
     let storage = config.storage.build().await?;
     let router = config.compressor.build_router()?;
-    let compressor = DefaultCompressor::new(
-        Arc::new(DirectoryImage::new()),
-        Arc::clone(&storage),
-        router,
-    );
+
+    // Detect image format: explicit flag > file extension.
+    let fmt = args
+        .image_format
+        .as_deref()
+        .unwrap_or_else(|| detect_format(&args.image));
+
+    let image_format: Arc<dyn image_delta_core::Image> = match fmt {
+        "qcow2" => Arc::new(Qcow2Image::new()),
+        _ => Arc::new(DirectoryImage::new()),
+    };
+
+    let compressor = DefaultCompressor::new(image_format, Arc::clone(&storage), router);
 
     // When no base is provided, use an empty temp directory as source so the
     // compressor stores all files as "added" blobs (first-image bootstrap).
@@ -93,6 +101,16 @@ pub async fn run(args: CompressArgs, config_path: Option<&Path>) -> anyhow::Resu
         stats.elapsed_secs,
     );
     Ok(())
+}
+
+/// Infer image format from file extension or directory-ness.
+fn detect_format(path: &Path) -> &'static str {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if ext.eq_ignore_ascii_case("qcow2") {
+            return "qcow2";
+        }
+    }
+    "directory"
 }
 
 /// Load config from `path` (if given) or fall back to a default local-storage config.
