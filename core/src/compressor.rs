@@ -421,8 +421,9 @@ impl Compressor for DefaultCompressor {
                             records,
                             &archive_bytes,
                             patches_compressed,
-                            self.storage.as_ref(),
+                            Arc::clone(&self.storage),
                             &self.router,
+                            options.workers,
                         )
                         .await?;
                         total_files += part_stats.files_written;

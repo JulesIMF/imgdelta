@@ -1105,7 +1105,7 @@ impl Qcow2Image {
     pub async fn pack_from_manifest(
         &self,
         manifest: &Manifest,
-        storage: &(dyn Storage + Sync),
+        storage: Arc<dyn Storage>,
         output: &Path,
     ) -> crate::Result<()> {
         let layout = &manifest.disk_layout;
@@ -1155,7 +1155,7 @@ impl Qcow2Image {
         let image_id = &manifest.header.image_id;
         for pm in &manifest.partitions {
             let part_dev = format!("{nbd_device}p{}", pm.descriptor.number);
-            apply_partition(pm, &part_dev, image_id, storage, manifest).await?;
+            apply_partition(pm, &part_dev, image_id, Arc::clone(&storage), manifest).await?;
         }
 
         // `_nbd` drops here → `qemu-nbd --disconnect`
@@ -1255,7 +1255,7 @@ fn mount_partition_rw_plain(device: &str, fs_type: &str, mount_point: &Path) -> 
 
 /// Download a blob from `storage` and write it verbatim to `device`.
 async fn write_blob_to_device(
-    storage: &(dyn Storage + Sync),
+    storage: &dyn Storage,
     blob_id: Uuid,
     device: &str,
 ) -> crate::Result<()> {
@@ -1279,16 +1279,16 @@ async fn apply_partition(
     pm: &crate::manifest::PartitionManifest,
     part_dev: &str,
     image_id: &str,
-    storage: &(dyn Storage + Sync),
+    storage: Arc<dyn Storage>,
     manifest: &Manifest,
 ) -> crate::Result<()> {
     match &pm.content {
         PartitionContent::BiosBoot { blob_id, .. } => {
-            write_blob_to_device(storage, *blob_id, part_dev).await
+            write_blob_to_device(storage.as_ref(), *blob_id, part_dev).await
         }
         PartitionContent::Raw { blob, .. } => {
             if let Some(b) = blob {
-                write_blob_to_device(storage, b.blob_id, part_dev).await?;
+                write_blob_to_device(storage.as_ref(), b.blob_id, part_dev).await?;
             }
             Ok(())
         }
@@ -1320,6 +1320,7 @@ async fn apply_partition(
                 manifest.header.patches_compressed,
                 storage,
                 &router,
+                1, // workers: qcow2 pack uses a single worker (no workers config here)
             )
             .await;
 

@@ -552,8 +552,12 @@ mod tests {
         let out_dir = tempdir().unwrap();
         let out_path = out_dir.path().join("reconstructed.qcow2");
 
-        rt.block_on(img.pack_from_manifest(&manifest, storage.as_ref(), &out_path))
-            .expect("pack_from_manifest must succeed");
+        rt.block_on(img.pack_from_manifest(
+            &manifest,
+            Arc::clone(&storage) as Arc<dyn image_delta_core::Storage>,
+            &out_path,
+        ))
+        .expect("pack_from_manifest must succeed");
 
         assert!(
             out_path.exists(),

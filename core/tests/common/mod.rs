@@ -375,10 +375,19 @@ pub fn compress_opts_workers(
 
 /// Default [`DecompressOptions`] for tests.
 pub fn decompress_opts(image_id: &str, base_root: &Path) -> image_delta_core::DecompressOptions {
+    decompress_opts_workers(image_id, base_root, 1)
+}
+
+/// Like [`decompress_opts`] but with a configurable worker count.
+pub fn decompress_opts_workers(
+    image_id: &str,
+    base_root: &Path,
+    workers: usize,
+) -> image_delta_core::DecompressOptions {
     image_delta_core::DecompressOptions {
         image_id: image_id.to_string(),
         base_root: base_root.to_path_buf(),
-        workers: 1,
+        workers,
     }
 }
 

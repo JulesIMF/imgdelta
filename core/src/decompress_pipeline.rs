@@ -26,12 +26,16 @@
 //! Output statistics are accumulated per-partition and returned as
 //! [`PartitionDecompressStats`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use tokio::task::JoinSet;
 use tracing::{debug, info};
+use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::algorithm::FilePatch;
@@ -296,16 +300,19 @@ fn copy_unchanged_from_base(
 ///
 /// `archive_bytes` is the raw content returned by [`Storage::download_patches`].
 /// `patches_compressed` must match the flag in [`ManifestHeader::patches_compressed`].
+/// `workers` controls the size of the rayon thread pool used for parallel record application.
 ///
 /// Returns accumulated [`PartitionDecompressStats`] for the partition.
+#[allow(clippy::too_many_arguments)]
 pub async fn decompress_fs_partition(
     base_root: &Path,
     output_root: &Path,
     records: &[Record],
     archive_bytes: &[u8],
     patches_compressed: bool,
-    storage: &dyn Storage,
+    storage: Arc<dyn Storage>,
     router: &RouterEncoder,
+    workers: usize,
 ) -> Result<PartitionDecompressStats> {
     // Step 1: Extract patch archive.
     info!(
@@ -315,7 +322,7 @@ pub async fn decompress_fs_partition(
         "decompress: step 1/4 extract archive"
     );
     let patch_map = if archive_bytes.is_empty() {
-        std::collections::HashMap::new()
+        HashMap::new()
     } else {
         extract_archive(archive_bytes, patches_compressed)?
     };
@@ -339,23 +346,127 @@ pub async fn decompress_fs_partition(
         "decompress: step 3/4 done"
     );
 
-    // Step 4: Process each record.
+    // Step 4: Apply records in three phases to respect ordering constraints:
+    //   4a. Directories      — must exist before any nested file is written.
+    //   4b. Files/Symlinks/Specials — independent of each other; run in parallel.
+    //   4c. Hardlinks        — each references a canonical path written in 4b.
     info!(
         records = records.len(),
-        "decompress: step 4/4 apply records"
+        workers, "decompress: step 4/4 apply records (parallel)"
     );
-    for record in records {
-        apply_record(
+
+    // Partition records into the three phases.
+    let dir_records: Vec<&Record> = records
+        .iter()
+        .filter(|r| matches!(r.entry_type, EntryType::Directory))
+        .collect();
+    let main_records: Vec<&Record> = records
+        .iter()
+        .filter(|r| !matches!(r.entry_type, EntryType::Directory | EntryType::Hardlink))
+        .collect();
+    let hardlink_records: Vec<&Record> = records
+        .iter()
+        .filter(|r| matches!(r.entry_type, EntryType::Hardlink))
+        .collect();
+
+    // Pre-download all blobs referenced by main_records concurrently.
+    // Blob IDs used either as verbatim file content or as patch source.
+    let blob_ids: HashSet<Uuid> = main_records
+        .iter()
+        .filter(|r| matches!(r.entry_type, EntryType::File))
+        .filter_map(|r| {
+            if let Some(Data::BlobRef(bref)) = &r.data {
+                Some(bref.blob_id)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    info!(blobs = blob_ids.len(), "decompress: pre-downloading blobs");
+    let mut join_set: JoinSet<Result<(Uuid, Vec<u8>)>> = JoinSet::new();
+    for id in blob_ids {
+        let s = Arc::clone(&storage);
+        join_set.spawn(async move {
+            let data = s.download_blob(id).await?;
+            Ok((id, data))
+        });
+    }
+    let mut blob_cache: HashMap<Uuid, Vec<u8>> = HashMap::new();
+    while let Some(task_result) = join_set.join_next().await {
+        let (id, data) = task_result
+            .map_err(|e| Error::Other(format!("blob download task panicked: {e}")))??;
+        blob_cache.insert(id, data);
+    }
+    let blob_cache = Arc::new(blob_cache);
+    info!(blobs = blob_cache.len(), "decompress: blobs ready");
+
+    // Phase 4a: Directories (sequential — fast, no contention).
+    for record in &dir_records {
+        let mut local = PartitionDecompressStats::default();
+        apply_record_sync(
             record,
             base_root,
             output_root,
             &patch_map,
-            storage,
+            &blob_cache,
             router,
-            &mut stats,
-        )
-        .await?;
+            &mut local,
+        )?;
+        stats.files_written += local.files_written;
+        stats.bytes_written += local.bytes_written;
+        stats.patches_verified += local.patches_verified;
     }
+
+    // Phase 4b: Files, symlinks, specials — parallel via rayon.
+    let phase2_stats = Mutex::new(PartitionDecompressStats::default());
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .map_err(|e| Error::Other(format!("failed to build rayon pool: {e}")))?;
+
+    let phase2_result: Result<()> = pool.install(|| {
+        main_records.par_iter().try_for_each(|record| {
+            let mut local = PartitionDecompressStats::default();
+            apply_record_sync(
+                record,
+                base_root,
+                output_root,
+                &patch_map,
+                &blob_cache,
+                router,
+                &mut local,
+            )?;
+            let mut g = phase2_stats.lock().expect("phase2 stats mutex poisoned");
+            g.files_written += local.files_written;
+            g.bytes_written += local.bytes_written;
+            g.patches_verified += local.patches_verified;
+            Ok(())
+        })
+    });
+    phase2_result?;
+    let p2 = phase2_stats
+        .into_inner()
+        .expect("phase2 stats mutex poisoned");
+    stats.files_written += p2.files_written;
+    stats.bytes_written += p2.bytes_written;
+    stats.patches_verified += p2.patches_verified;
+
+    // Phase 4c: Hardlinks (sequential — each depends on its canonical path).
+    for record in &hardlink_records {
+        let mut local = PartitionDecompressStats::default();
+        apply_record_sync(
+            record,
+            base_root,
+            output_root,
+            &patch_map,
+            &blob_cache,
+            router,
+            &mut local,
+        )?;
+        stats.files_written += local.files_written;
+    }
+
     info!(
         files_written = stats.files_written,
         bytes_written = stats.bytes_written,
@@ -366,14 +477,20 @@ pub async fn decompress_fs_partition(
     Ok(stats)
 }
 
-// ── Per-record application ────────────────────────────────────────────────────
+// ── Per-record application (sync) ─────────────────────────────────────────────
 
-async fn apply_record(
+/// Apply one record to `output_root`.
+///
+/// This is the synchronous version of the old async `apply_record`.  All
+/// async work (blob downloads) must be completed before calling this function;
+/// the results are passed in via `blob_cache`.
+#[allow(clippy::too_many_arguments)]
+fn apply_record_sync(
     record: &Record,
     base_root: &Path,
     output_root: &Path,
-    patch_map: &std::collections::HashMap<String, Vec<u8>>,
-    storage: &dyn Storage,
+    patch_map: &HashMap<String, Vec<u8>>,
+    blob_cache: &HashMap<Uuid, Vec<u8>>,
     router: &RouterEncoder,
     stats: &mut PartitionDecompressStats,
 ) -> Result<()> {
@@ -397,10 +514,6 @@ async fn apply_record(
         EntryType::Directory => {
             std::fs::create_dir_all(&dst)
                 .map_err(|e| Error::Other(format!("mkdir {}: {e}", dst.display())))?;
-            // For a metadata-only dir update (old_path == new_path), the manifest
-            // records only the *diff* — mode may be absent if it didn't change.
-            // Copy the base mode first so we don't lose it when create_dir_all
-            // uses the umask default.
             #[cfg(unix)]
             if let Some(old) = &record.old_path {
                 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -416,12 +529,9 @@ async fn apply_record(
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent).ok();
             }
-            // Added symlink: data = SoftlinkTo(target)
-            // Changed symlink: data = None, patch = Real (patch bytes = new link target as UTF-8)
             let target_str = match (&record.data, &record.patch) {
                 (Some(Data::SoftlinkTo(t)), _) => t.clone(),
                 (None, Some(Patch::Real(pref))) => {
-                    // Changed symlink — decode patch using old link_target as base
                     let base_path = record
                         .old_path
                         .as_deref()
@@ -429,7 +539,6 @@ async fn apply_record(
                         .ok_or_else(|| {
                             Error::Format(format!("changed symlink {new_path} has no old_path"))
                         })?;
-                    // Old "content" of a symlink = its target string as UTF-8 bytes
                     let old_bytes = std::fs::read_link(&base_path)
                         .map(|p| p.to_string_lossy().into_owned().into_bytes())
                         .unwrap_or_default();
@@ -458,8 +567,6 @@ async fn apply_record(
                     })?
                 }
                 _ => {
-                    // Metadata-only symlink change: target is unchanged, only
-                    // mtime (or similar) differs.  Re-read the target from base.
                     let base_path = record
                         .old_path
                         .as_deref()
@@ -483,7 +590,6 @@ async fn apply_record(
                     dst = dst.display()
                 ))
             })?;
-            // symlinks count toward files_written for symmetry with compress stats
             stats.files_written += 1;
         }
 
@@ -514,10 +620,9 @@ async fn apply_record(
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent).ok();
             }
-            apply_file_record(
-                record, new_path, &dst, base_root, patch_map, storage, router, stats,
-            )
-            .await?;
+            apply_file_record_sync(
+                record, new_path, &dst, base_root, patch_map, blob_cache, router, stats,
+            )?;
         }
 
         EntryType::Special => {
@@ -566,26 +671,17 @@ async fn apply_record(
     }
 
     // Apply metadata (mode, mtime) if present.
-    // Symlinks: most Linux filesystems do not support lchmod.
     if !matches!(record.entry_type, EntryType::Symlink) {
-        // The manifest records only the *diff*: fields absent from `metadata`
-        // mean "unchanged from base".  However, writing new content
-        // (std::fs::write, patches, create_dir_all) resets mode to the
-        // process umask and mtime to "now".  Restore any absent field from
-        // the base entry first, then let apply_metadata overwrite with the
-        // explicit delta value.
         #[cfg(unix)]
         if let Some(old) = &record.old_path {
             let base_path = base_root.join(old);
             if let Ok(base_meta) = base_path.symlink_metadata() {
                 use std::os::unix::fs::{MetadataExt, PermissionsExt};
                 let meta = record.metadata.as_ref();
-                // Restore mode from base if not explicitly changed.
                 if meta.is_none_or(|m| m.mode.is_none()) {
                     let mode = base_meta.mode() & 0o7777;
                     let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode));
                 }
-                // Restore mtime from base if not explicitly changed.
                 if meta.is_none_or(|m| m.mtime.is_none()) {
                     let ft = filetime::FileTime::from_unix_time(base_meta.mtime(), 0);
                     let _ = filetime::set_file_mtime(&dst, ft);
@@ -613,15 +709,17 @@ fn apply_metadata(path: &Path, meta: Option<&crate::manifest::Metadata>) {
     }
 }
 
-/// Write a regular file record — handles blob, patch, and metadata-only cases.
+/// Write a regular file record — handles patch, verbatim blob (from cache), and
+/// metadata-only cases.  All async work (blob downloads) must be completed before
+/// calling this function; blob data is looked up in `blob_cache`.
 #[allow(clippy::too_many_arguments)]
-async fn apply_file_record(
+fn apply_file_record_sync(
     record: &Record,
     new_path: &str,
     dst: &Path,
     base_root: &Path,
-    patch_map: &std::collections::HashMap<String, Vec<u8>>,
-    storage: &dyn Storage,
+    patch_map: &HashMap<String, Vec<u8>>,
+    blob_cache: &HashMap<Uuid, Vec<u8>>,
     router: &RouterEncoder,
     stats: &mut PartitionDecompressStats,
 ) -> Result<()> {
@@ -629,8 +727,8 @@ async fn apply_file_record(
     if let Some(Patch::Real(pref)) = &record.patch {
         // Resolve the source bytes:
         //   - old_path present → read file from base directory.
-        //   - old_path absent, data = BlobRef → s3_lookup match: download the
-        //     base blob that was used as the xdelta3 source during compression.
+        //   - old_path absent, data = BlobRef → blob was used as xdelta3 source;
+        //     look it up in the pre-downloaded blob_cache.
         //   - old_path absent, no BlobRef → truly new file encoded from empty.
         let source_bytes: Vec<u8>;
         let source: &[u8] = match &record.old_path {
@@ -640,7 +738,12 @@ async fn apply_file_record(
             }
             None => match &record.data {
                 Some(Data::BlobRef(bref)) => {
-                    source_bytes = storage.download_blob(bref.blob_id).await?;
+                    source_bytes = blob_cache.get(&bref.blob_id).cloned().ok_or_else(|| {
+                        Error::Other(format!(
+                            "blob {} not in cache (pre-download missed it)",
+                            bref.blob_id
+                        ))
+                    })?;
                     &source_bytes
                 }
                 _ => {
@@ -656,7 +759,6 @@ async fn apply_file_record(
                 pref.archive_entry
             ))
         })?;
-        // Verify patch integrity before decoding.
         let actual_sha = hex::encode(Sha256::digest(patch_bytes));
         if actual_sha != pref.sha256 {
             return Err(Error::Decode(format!(
@@ -684,11 +786,16 @@ async fn apply_file_record(
         return Ok(());
     }
 
-    // Case B: verbatim blob in storage
+    // Case B: verbatim blob (looked up from pre-downloaded cache)
     if let Some(Data::BlobRef(bref)) = &record.data {
-        let data = storage.download_blob(bref.blob_id).await?;
+        let data = blob_cache.get(&bref.blob_id).ok_or_else(|| {
+            Error::Other(format!(
+                "blob {} not in cache (pre-download missed it)",
+                bref.blob_id
+            ))
+        })?;
         let n = data.len() as u64;
-        write_file(dst, &data)?;
+        write_file(dst, data)?;
         stats.files_written += 1;
         stats.bytes_written += n;
         debug!(path = new_path, bytes = n, blob_id = %bref.blob_id, "file written from blob");

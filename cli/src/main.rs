@@ -60,9 +60,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Initialise tracing subscriber based on --log-level flag or RUST_LOG env var.
-    // Default level is "warn" for quiet operation.  Use --log-level info/debug for
-    // pipeline stage messages and per-file details respectively.
-    let level = cli.log_level.as_deref().unwrap_or("warn");
+    // Default level is "info".  Use --log-level debug for per-file details respectively.
+    let level = cli.log_level.as_deref().unwrap_or("info");
     fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level)),

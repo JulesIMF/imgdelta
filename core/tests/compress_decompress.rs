@@ -8,8 +8,9 @@
 mod common;
 
 use common::{
-    compare_dirs, compress_opts, decompress_opts, make_compressor, set_mode, set_mtime_old,
-    write_file, write_symlink,
+    compare_dirs, compress_opts, compress_opts_workers, decompress_opts, decompress_opts_workers,
+    make_compressor, save_root_meta_for_storage, set_mode, set_mtime_old, write_file,
+    write_symlink,
 };
 use image_delta_core::{Compressor, ImageMeta, Storage};
 use tempfile::tempdir;
@@ -1048,5 +1049,97 @@ async fn test_roundtrip_realistic_image() {
         diffs.is_empty(),
         "realistic-image round-trip produced {} diff(s):\n{diffs:#?}",
         diffs.len()
+    );
+}
+
+// ── 18. test_parallel_decompress_same_result_as_sequential ───────────────────
+
+/// Stress test: decompress the same image with workers=1 (sequential) and
+/// workers=N (parallel) concurrently, then verify both outputs are identical.
+///
+/// This exercises:
+/// 1. Correctness of the three-phase decompress algorithm under concurrency.
+/// 2. That rayon parallelism in Phase 2 (files/symlinks/specials) produces
+///    the same file content and metadata as the sequential path.
+/// 3. That concurrent decompresses of the same image don't interfere (distinct
+///    output directories, shared read-only base + storage).
+#[tokio::test]
+async fn test_parallel_decompress_same_result_as_sequential() {
+    const WORKERS: usize = 4;
+
+    let base = tempdir().unwrap();
+    let target = tempdir().unwrap();
+    let out_seq = tempdir().unwrap();
+    let out_par = tempdir().unwrap();
+
+    // Build a target with enough variety to exercise all record types:
+    // - patched files (old content + new content)
+    // - new files (blob addition)
+    // - deleted files (only in base)
+    // - unchanged files (copied from base)
+    // - a subdirectory
+    // - a symlink
+
+    for i in 0..16 {
+        let name = format!("dir_a/file_{i:02}.dat");
+        let old: Vec<u8> = format!("base content for file {i} --- padding --")
+            .bytes()
+            .cycle()
+            .take(512)
+            .collect();
+        let mut new_content = old.clone();
+        new_content[i * 8 % 512] ^= 0xAB; // single-byte flip → small patch
+        write_file(base.path(), &name, &old);
+        set_mtime_old(base.path(), &name);
+        write_file(target.path(), &name, &new_content);
+    }
+    // A few new (blob) files.
+    for i in 0..4 {
+        let name = format!("dir_b/new_{i:02}.dat");
+        let content: Vec<u8> = format!("brand-new content {i}")
+            .bytes()
+            .cycle()
+            .take(256)
+            .collect();
+        write_file(target.path(), &name, &content);
+    }
+    // Unchanged file (not in manifest — copied from base by copy_unchanged_from_base).
+    write_file(base.path(), "unchanged.txt", b"same in both");
+    write_file(target.path(), "unchanged.txt", b"same in both");
+    // A symlink.
+    write_symlink(target.path(), "link_to_dir_a", "dir_a");
+
+    // Compress once into shared storage.
+    let (storage, compressor) = make_compressor();
+    save_root_meta_for_storage(&*storage, "stress-base").await;
+    compressor
+        .compress(
+            base.path(),
+            target.path(),
+            compress_opts_workers("stress-img", Some("stress-base"), 1),
+        )
+        .await
+        .expect("compress must succeed");
+
+    // Decompress with workers=1 and workers=WORKERS concurrently (both share
+    // the same compressor / storage, distinct output directories).
+    let (seq_res, par_res) = tokio::join!(
+        compressor.decompress(
+            out_seq.path(),
+            decompress_opts_workers("stress-img", base.path(), 1),
+        ),
+        compressor.decompress(
+            out_par.path(),
+            decompress_opts_workers("stress-img", base.path(), WORKERS),
+        ),
+    );
+    seq_res.expect("sequential decompress must succeed");
+    par_res.expect("parallel decompress must succeed");
+
+    // Both outputs must be byte-for-byte identical.
+    let diffs = compare_dirs(out_seq.path(), out_par.path());
+    assert!(
+        diffs.is_empty(),
+        "parallel decompress (workers={WORKERS}) differs from sequential:\n{diffs:#?}"
     );
 }
