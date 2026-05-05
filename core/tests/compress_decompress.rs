@@ -912,3 +912,141 @@ async fn test_roundtrip_compressed_patches() {
         "compressed-patches round-trip failed:\n{diffs:#?}"
     );
 }
+
+// ── 17. test_roundtrip_realistic_image ───────────────────────────────────────
+
+/// End-to-end round-trip with a realistic OS-image-like directory structure.
+///
+/// Simulates a typical cloud image update:
+/// - base  : etc/{hosts,fstab,ssh/sshd_config}, usr/{bin/bash,lib/libssl.so},
+///           var/{log/syslog,run/ntpd.pid}, boot/grub/grub.cfg
+/// - v2    : etc/hosts updated (new DNS entry), usr/bin/curl added,
+///           usr/lib/libssl.so replaced (new version bytes),
+///           var/log/syslog deleted (log rotation),
+///           var/run/ntpd.pid unchanged, boot/grub/grub.cfg unchanged,
+///           etc/fstab unchanged, etc/ssh/sshd_config unchanged
+///
+/// The test then compresses base→v2, decompresses base+manifest→output,
+/// and asserts output == v2 byte-for-byte.
+///
+/// This is the "golden" round-trip verification for Phase 6.F: it can be run
+/// locally without qemu-nbd or any cloud resources and covers the full
+/// compress/decompress pipeline for directory-format images.
+#[tokio::test]
+async fn test_roundtrip_realistic_image() {
+    let base = tempdir().unwrap();
+    let v2 = tempdir().unwrap();
+    let output = tempdir().unwrap();
+
+    // ── base image ────────────────────────────────────────────────────────────
+    write_file(
+        base.path(),
+        "etc/hosts",
+        b"127.0.0.1   localhost\n::1         localhost\n",
+    );
+    write_file(
+        base.path(),
+        "etc/fstab",
+        b"UUID=abc123 / ext4 defaults 0 1\nUUID=def456 /boot ext4 defaults 0 2\n",
+    );
+    write_file(
+        base.path(),
+        "etc/ssh/sshd_config",
+        b"Port 22\nPermitRootLogin no\nPasswordAuthentication yes\n",
+    );
+    // Simulate a binary: 64 KiB of pseudo-random bytes derived from a seed.
+    let bash_bytes: Vec<u8> = (0u32..65536)
+        .map(|i| ((i.wrapping_mul(1664525).wrapping_add(1013904223)) >> 16) as u8)
+        .collect();
+    write_file(base.path(), "usr/bin/bash", &bash_bytes);
+    let libssl_v1: Vec<u8> = (0u32..32768)
+        .map(|i| ((i.wrapping_mul(22695477).wrapping_add(1)) >> 16) as u8)
+        .collect();
+    write_file(base.path(), "usr/lib/libssl.so", &libssl_v1);
+    write_file(
+        base.path(),
+        "var/log/syslog",
+        b"May  4 12:00:01 host kernel: started\nMay  4 12:00:02 host sshd[1234]: listening\n",
+    );
+    write_file(base.path(), "var/run/ntpd.pid", b"1234\n");
+    write_file(
+        base.path(),
+        "boot/grub/grub.cfg",
+        b"set default=0\nset timeout=5\nmenuentry 'Linux' { linux /vmlinuz root=/dev/sda1 }\n",
+    );
+
+    // ── v2 image (typical minor update) ──────────────────────────────────────
+    // etc/hosts: new entry added.
+    write_file(
+        v2.path(),
+        "etc/hosts",
+        b"127.0.0.1   localhost\n::1         localhost\n10.0.0.1    myserver\n",
+    );
+    // etc/fstab: unchanged.
+    write_file(
+        v2.path(),
+        "etc/fstab",
+        b"UUID=abc123 / ext4 defaults 0 1\nUUID=def456 /boot ext4 defaults 0 2\n",
+    );
+    // etc/ssh/sshd_config: PasswordAuthentication disabled.
+    write_file(
+        v2.path(),
+        "etc/ssh/sshd_config",
+        b"Port 22\nPermitRootLogin no\nPasswordAuthentication no\n",
+    );
+    // usr/bin/bash: unchanged.
+    write_file(v2.path(), "usr/bin/bash", &bash_bytes);
+    // usr/bin/curl: new binary (32 KiB, different seed).
+    let curl_bytes: Vec<u8> = (0u32..32768)
+        .map(|i| ((i.wrapping_mul(134775813).wrapping_add(1)) >> 16) as u8)
+        .collect();
+    write_file(v2.path(), "usr/bin/curl", &curl_bytes);
+    // usr/lib/libssl.so: updated to v2 (similar but different bytes for good xdelta ratio).
+    let libssl_v2: Vec<u8> = libssl_v1
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| if i % 512 == 0 { b.wrapping_add(1) } else { b })
+        .collect();
+    write_file(v2.path(), "usr/lib/libssl.so", &libssl_v2);
+    // var/log/syslog: DELETED (log rotation).
+    // var/run/ntpd.pid: unchanged.
+    write_file(v2.path(), "var/run/ntpd.pid", b"1234\n");
+    // boot/grub/grub.cfg: unchanged.
+    write_file(
+        v2.path(),
+        "boot/grub/grub.cfg",
+        b"set default=0\nset timeout=5\nmenuentry 'Linux' { linux /vmlinuz root=/dev/sda1 }\n",
+    );
+
+    // ── compress base → v2 ────────────────────────────────────────────────────
+    let (storage, compressor) = make_compressor();
+    save_root_meta(&*storage, "os-base-v1").await;
+
+    let stats = compressor
+        .compress(
+            base.path(),
+            v2.path(),
+            compress_opts("os-v2", Some("os-base-v1")),
+        )
+        .await
+        .expect("compress must succeed");
+
+    assert!(
+        stats.files_added + stats.files_patched + stats.files_removed > 0,
+        "manifest must record at least one change; got stats={stats:?}"
+    );
+
+    // ── decompress base + manifest → output ───────────────────────────────────
+    compressor
+        .decompress(output.path(), decompress_opts("os-v2", base.path()))
+        .await
+        .expect("decompress must succeed");
+
+    // ── compare output == v2 ──────────────────────────────────────────────────
+    let diffs = compare_dirs(v2.path(), output.path());
+    assert!(
+        diffs.is_empty(),
+        "realistic-image round-trip produced {} diff(s):\n{diffs:#?}",
+        diffs.len()
+    );
+}
