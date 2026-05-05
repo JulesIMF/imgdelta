@@ -725,7 +725,10 @@ fn mount_partition_ro(
 
     debug!(device, fs_type, mount_root = %root.display(), "mount_partition_ro: mounting");
     let flags = MsFlags::MS_RDONLY;
-    let extra: Option<&str> = if fs_type == "xfs" {
+    // ext4 and XFS need `norecovery` when mounted read-only with a dirty
+    // journal; without it the kernel tries to replay the journal but cannot
+    // write, returning EROFS ("Read-only file system").
+    let extra: Option<&str> = if fs_type == "xfs" || fs_type == "ext4" {
         Some("norecovery")
     } else {
         None

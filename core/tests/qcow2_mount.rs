@@ -500,7 +500,7 @@ mod tests {
                     };
                     let mount = fh.mount().expect("mount Fs partition");
                     let empty_base = tempdir().unwrap();
-                    let (pm, compressed) = rt
+                    let (pm, compressed, _archive_bytes) = rt
                         .block_on(compress_fs_partition(
                             empty_base.path(),
                             mount.root(),

@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
-use tracing::{info, warn};
+use tracing::{error, info};
 
 use crate::compress_pipeline::compress_fs_partition;
 use crate::image::PartitionHandle;
@@ -195,6 +195,7 @@ impl Compressor for DefaultCompressor {
 
             let mut partition_manifests: Vec<PartitionManifest> = Vec::new();
             let mut patches_compressed = false;
+            let mut archive_stored_bytes: u64 = 0;
             // Keep TempDirs and MountHandles alive until all processing is done.
             let mut _live_mounts: Vec<Box<dyn crate::image::MountHandle>> = Vec::new();
             let mut _live_tmpdirs: Vec<tempfile::TempDir> = Vec::new();
@@ -237,7 +238,7 @@ impl Compressor for DefaultCompressor {
                             _ => "unknown".into(),
                         };
 
-                        let (pm, compressed) = compress_fs_partition(
+                        let (pm, compressed, archive_bytes) = compress_fs_partition(
                             &base_root_path,
                             &target_root_path,
                             &descriptor,
@@ -251,6 +252,7 @@ impl Compressor for DefaultCompressor {
                         .await?;
 
                         patches_compressed = compressed;
+                        archive_stored_bytes += archive_bytes;
                         partition_manifests.push(pm);
                     }
 
@@ -333,13 +335,21 @@ impl Compressor for DefaultCompressor {
 
             // ── 7. Compute stats from manifest ────────────────────────────────────
             let elapsed = started_at.elapsed();
-            let stats = stats_from_manifest(&manifest, elapsed);
+            let manifest_stored_bytes = manifest_bytes_gz.len() as u64;
+            let stats = stats_from_manifest(
+                &manifest,
+                elapsed,
+                archive_stored_bytes + manifest_stored_bytes,
+            );
 
             info!(
                 image_id,
                 added = stats.files_added,
                 patched = stats.files_patched,
                 removed = stats.files_removed,
+                archive_stored_bytes,
+                manifest_stored_bytes,
+                total_stored_bytes = stats.total_stored_bytes,
                 elapsed_secs = stats.elapsed_secs,
                 "compress: done"
             );
@@ -350,7 +360,7 @@ impl Compressor for DefaultCompressor {
 
         // ── 8. On any error — mark image as Failed ────────────────────────────
         if let Err(ref e) = result {
-            warn!(image_id, error = %e, "compress: failed, marking as Failed");
+            error!(image_id, error = %e, "compress: failed, marking as Failed");
             let _ = self
                 .storage
                 .update_status(image_id, ImageStatus::Failed(e.to_string()))
@@ -494,7 +504,7 @@ impl Compressor for DefaultCompressor {
 
         // On any error — mark image as Failed
         if let Err(ref e) = result {
-            warn!(image_id, error = %e, "decompress: failed, marking as Failed");
+            error!(image_id, error = %e, "decompress: failed, marking as Failed");
             let _ = self
                 .storage
                 .update_status(image_id, ImageStatus::Failed(e.to_string()))
@@ -515,10 +525,15 @@ impl Compressor for DefaultCompressor {
 /// - `files_patched` : `old_path = Some, new_path = Some, patch = Some(Real)`
 ///
 /// `total_source_bytes` is the sum of `record.size` across all records.
-/// `total_stored_bytes` is currently `0` (requires storage instrumentation).
-fn stats_from_manifest(manifest: &Manifest, elapsed: std::time::Duration) -> CompressionStats {
+/// `total_stored_bytes` is the size of uploaded patches archive plus the manifest.
+fn stats_from_manifest(
+    manifest: &Manifest,
+    elapsed: std::time::Duration,
+    stored_bytes: u64,
+) -> CompressionStats {
     let mut stats = CompressionStats {
         elapsed_secs: elapsed.as_secs_f64(),
+        total_stored_bytes: stored_bytes,
         ..CompressionStats::default()
     };
     for pm in &manifest.partitions {

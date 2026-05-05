@@ -1029,7 +1029,7 @@ pub async fn pack_and_upload_archive(
     storage: &dyn Storage,
     image_id: &str,
     fs_type: &str,
-) -> Result<(PartitionContent, bool)> {
+) -> Result<(PartitionContent, bool, u64)> {
     // Build tar archive in memory.
     let tar_bytes = {
         let mut builder = tar::Builder::new(Vec::<u8>::new());
@@ -1052,6 +1052,7 @@ pub async fn pack_and_upload_archive(
 
     // Try gzip: use compressed version only if it is actually smaller.
     let (archive_bytes, compressed) = try_gzip(tar_bytes)?;
+    let archive_stored_bytes = archive_bytes.len() as u64;
 
     // Update manifest header flag on all records' PatchRefs (nothing to do —
     // `patches_compressed` lives in ManifestHeader and is set by the orchestrator).
@@ -1073,6 +1074,7 @@ pub async fn pack_and_upload_archive(
             records,
         },
         compressed,
+        archive_stored_bytes,
     ))
 }
 
@@ -1110,9 +1112,9 @@ fn try_gzip(bytes: Vec<u8>) -> Result<(Vec<u8>, bool)> {
 ///
 /// [`Manifest`]: crate::Manifest
 #[allow(clippy::too_many_arguments)]
-/// Returns `(PartitionManifest, patches_compressed)` where `patches_compressed`
-/// is `true` when the uploaded patches archive is gzip-compressed (i.e.
-/// compression reduced the archive size).
+/// Returns `(PartitionManifest, patches_compressed, archive_stored_bytes)` where
+/// `patches_compressed` is `true` when the patches archive is gzip-compressed and
+/// `archive_stored_bytes` is the size of the uploaded patches archive in bytes.
 pub async fn compress_fs_partition(
     base_root: &Path,
     target_root: &Path,
@@ -1123,7 +1125,7 @@ pub async fn compress_fs_partition(
     router: &RouterEncoder,
     fs_type: &str,
     workers: usize,
-) -> Result<(PartitionManifest, bool)> {
+) -> Result<(PartitionManifest, bool, u64)> {
     let tmp_dir = tempfile::TempDir::new()?;
 
     info!(
@@ -1222,13 +1224,14 @@ pub async fn compress_fs_partition(
         partition = descriptor.number,
         "stage 8/8: pack_and_upload_archive"
     );
-    let (content, patches_compressed) =
+    let (content, patches_compressed, archive_stored_bytes) =
         pack_and_upload_archive(draft, storage, image_id, fs_type).await?;
 
     info!(
         image_id,
         partition = descriptor.number,
         patches_compressed,
+        archive_stored_bytes,
         "pipeline complete"
     );
 
@@ -1238,6 +1241,7 @@ pub async fn compress_fs_partition(
             content,
         },
         patches_compressed,
+        archive_stored_bytes,
     ))
 }
 

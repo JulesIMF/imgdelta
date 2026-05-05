@@ -8,7 +8,7 @@ use clap::{Args, Subcommand};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use image_delta_core::manifest::{Manifest, PartitionContent, Record};
+use image_delta_core::manifest::{Data, Manifest, PartitionContent, Patch, Record};
 
 use crate::commands::compress::load_config;
 
@@ -29,6 +29,10 @@ pub struct InspectArgs {
     /// Output format.
     #[arg(long, default_value = "table", value_parser = ["table", "json"])]
     pub format: String,
+
+    /// Show per-file details for each Fs partition.
+    #[arg(long, short = 'f')]
+    pub files: bool,
 }
 
 #[derive(Args, Debug)]
@@ -80,10 +84,9 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
 
     for pm in &manifest.partitions {
         let desc = &pm.descriptor;
-        println!("  partition {} ({:?}):", desc.number, desc.kind);
         match &pm.content {
             PartitionContent::BiosBoot { size, .. } => {
-                println!("    kind=bios_boot  size={size}");
+                println!("  partition {}  kind=bios_boot  size={size}", desc.number);
             }
             PartitionContent::Raw { size, blob, patch } => {
                 let stored = if blob.is_some() {
@@ -93,18 +96,21 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
                 } else {
                     "empty"
                 };
-                println!("    kind=raw  size={size}  stored={stored}");
+                println!(
+                    "  partition {}  kind=raw  size={size}  stored={stored}",
+                    desc.number
+                );
             }
             PartitionContent::Fs { fs_type, records } => {
-                let added: Vec<_> = records
+                let n_added = records
                     .iter()
                     .filter(|r| r.old_path.is_none() && r.new_path.is_some())
-                    .collect();
-                let removed: Vec<_> = records
+                    .count();
+                let n_removed = records
                     .iter()
                     .filter(|r| r.new_path.is_none() && r.old_path.is_some())
-                    .collect();
-                let renamed: Vec<_> = records
+                    .count();
+                let n_renamed = records
                     .iter()
                     .filter(|r| {
                         r.old_path.is_some()
@@ -113,16 +119,16 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
                             && r.data.is_none()
                             && r.patch.is_none()
                     })
-                    .collect();
-                let patched: Vec<_> = records
+                    .count();
+                let n_patched = records
                     .iter()
                     .filter(|r| {
                         r.old_path.is_some()
                             && r.new_path.is_some()
                             && (r.data.is_some() || r.patch.is_some())
                     })
-                    .collect();
-                let meta_only: Vec<_> = records
+                    .count();
+                let n_meta_only = records
                     .iter()
                     .filter(|r| {
                         r.old_path.is_some()
@@ -132,24 +138,36 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
                             && r.old_path == r.new_path
                             && r.metadata.is_some()
                     })
-                    .collect();
+                    .count();
+
+                let total_source_bytes: u64 = records.iter().map(|r| r.size).sum();
 
                 println!(
-                    "    kind=fs  fs_type={fs_type}  records={}  \
-                     added={} removed={} patched={} renamed={} meta_only={}",
+                    "  partition {}  kind=fs  fs_type={fs_type}  records={}",
+                    desc.number,
                     records.len(),
-                    added.len(),
-                    removed.len(),
-                    patched.len(),
-                    renamed.len(),
-                    meta_only.len(),
                 );
+                println!(
+                    "    added={n_added}  removed={n_removed}  patched={n_patched}  \
+                     renamed={n_renamed}  meta_only={n_meta_only}"
+                );
+                println!("    source_bytes={total_source_bytes}");
 
-                // Show per-record detail for non-trivial manifests
-                if records.len() <= 50 {
-                    for r in records {
-                        println!("      {}", format_record(r));
+                if args.files || records.len() <= 50 {
+                    println!();
+                    println!("    {:<4}  {:<12}  {:<7}  path", "op", "size", "stored");
+                    println!("    {}", "-".repeat(60));
+                    let mut sorted: Vec<&Record> = records.iter().collect();
+                    sorted.sort_by_key(|r| {
+                        r.new_path
+                            .as_deref()
+                            .or(r.old_path.as_deref())
+                            .unwrap_or("")
+                    });
+                    for r in sorted {
+                        println!("    {}", format_record(r));
                     }
+                    println!();
                 }
             }
         }
@@ -268,20 +286,38 @@ async fn diff(args: DiffArgs, config_path: Option<&Path>) -> anyhow::Result<()> 
 }
 
 fn format_record(r: &Record) -> String {
-    let path = match (&r.old_path, &r.new_path) {
-        (None, Some(np)) => format!("+ {np}"),
-        (Some(op), None) => format!("- {op}"),
-        (Some(op), Some(np)) if op == np => {
-            if r.data.is_some() || r.patch.is_some() {
-                format!("M {np}")
-            } else {
-                format!("= {np}")
-            }
-        }
-        (Some(op), Some(np)) => format!("R {op} → {np}"),
-        (None, None) => "(empty record)".to_string(),
+    let (op, path) = match (&r.old_path, &r.new_path) {
+        (None, Some(np)) => ("+", np.as_str()),
+        (Some(op), None) => ("-", op.as_str()),
+        (Some(_op), Some(np)) if r.data.is_some() || r.patch.is_some() => ("M", np.as_str()),
+        (Some(op), Some(np)) if op == np => ("=", np.as_str()),
+        (Some(_op), Some(np)) => ("R", np.as_str()),
+        (None, None) => ("?", ""),
     };
-    format!("{path}  ({:?}, {}B)", r.entry_type, r.size)
+
+    let stored = match (&r.patch, &r.data) {
+        (Some(Patch::Real(_)), _) => "patch".to_string(),
+        (_, Some(Data::BlobRef(b))) => format!("blob({}B)", b.size),
+        (_, Some(Data::SoftlinkTo(_))) => "symlink".to_string(),
+        (_, Some(Data::HardlinkTo(_))) => "hardlink".to_string(),
+        (_, Some(Data::SpecialDevice(_))) => "special".to_string(),
+        _ => "-".to_string(),
+    };
+
+    format!(
+        "{op:<4}  {size:<12}  {stored:<14}  {path}",
+        size = r.size,
+        path = if matches!((&r.old_path, &r.new_path), (Some(op), Some(np)) if op != np && r.patch.is_none() && r.data.is_none())
+        {
+            format!(
+                "{} → {}",
+                r.old_path.as_deref().unwrap_or(""),
+                r.new_path.as_deref().unwrap_or("")
+            )
+        } else {
+            path.to_string()
+        }
+    )
 }
 
 // Need Arc for the fetch closure.
