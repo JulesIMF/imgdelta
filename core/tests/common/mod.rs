@@ -369,6 +369,7 @@ pub fn compress_opts_workers(
         base_image_id: base_image_id.map(|s| s.to_string()),
         workers,
         passthrough_threshold: 1.0,
+        overwrite: false,
     }
 }
 

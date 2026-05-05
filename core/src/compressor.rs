@@ -58,6 +58,10 @@ pub struct CompressOptions {
     pub base_image_id: Option<String>,
     pub workers: usize,
     pub passthrough_threshold: f64,
+    /// When `true`, a pre-existing image with the same `image_id` is silently
+    /// overwritten.  When `false` (the default), an error is returned if the
+    /// image already exists and is not in the `failed` state.
+    pub overwrite: bool,
 }
 
 pub struct DecompressOptions {
@@ -133,6 +137,19 @@ impl Compressor for DefaultCompressor {
         let base_image_id: Option<&str> = options.base_image_id.as_deref();
 
         info!(image_id, base_image_id, "compress: starting");
+
+        // ── 0. Uniqueness check ───────────────────────────────────────────────
+        if !options.overwrite {
+            if let Some(existing) = self.storage.get_image(image_id).await? {
+                if existing.status != "failed" {
+                    return Err(crate::Error::Other(format!(
+                        "image '{image_id}' already exists (status: {}). \
+                         Use --overwrite to replace it.",
+                        existing.status
+                    )));
+                }
+            }
+        }
 
         // ── 1. Register image and mark as compressing ─────────────────────────
         self.storage
@@ -297,8 +314,15 @@ impl Compressor for DefaultCompressor {
 
             let manifest_bytes = rmp_serde::to_vec_named(&manifest)
                 .map_err(|e| crate::Error::Manifest(e.to_string()))?;
+            let manifest_bytes_gz = gzip_manifest(&manifest_bytes)?;
+            info!(
+                image_id,
+                raw_bytes = manifest_bytes.len(),
+                gz_bytes = manifest_bytes_gz.len(),
+                "compress: uploading manifest (gzip)"
+            );
             self.storage
-                .upload_manifest(image_id, &manifest_bytes)
+                .upload_manifest(image_id, &manifest_bytes_gz)
                 .await?;
 
             // ── 6. Mark as compressed ─────────────────────────────────────────────
@@ -350,7 +374,8 @@ impl Compressor for DefaultCompressor {
 
         let result: Result<DecompressionStats> = async {
             // ── 1. Download and parse manifest ────────────────────────────────
-            let manifest_bytes = self.storage.download_manifest(image_id).await?;
+            let manifest_raw = self.storage.download_manifest(image_id).await?;
+            let manifest_bytes = maybe_gunzip_manifest(manifest_raw)?;
             let manifest = crate::manifest::Manifest::from_bytes(&manifest_bytes)?;
 
             if manifest.header.version != MANIFEST_VERSION {
@@ -518,4 +543,40 @@ fn stats_from_manifest(manifest: &Manifest, elapsed: std::time::Duration) -> Com
         }
     }
     stats
+}
+
+// ── Manifest gzip helpers ─────────────────────────────────────────────────────
+
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+/// Gzip-compress manifest bytes.
+fn gzip_manifest(bytes: &[u8]) -> Result<Vec<u8>> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(bytes)
+        .map_err(|e| crate::Error::Manifest(format!("gzip manifest write: {e}")))?;
+    enc.finish()
+        .map_err(|e| crate::Error::Manifest(format!("gzip manifest finish: {e}")))
+}
+
+/// Decompress manifest bytes if they start with gzip magic; otherwise return as-is.
+///
+/// The magic-bytes check makes this backward-compatible with manifests that
+/// were stored without compression before this change.
+fn maybe_gunzip_manifest(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    if bytes.starts_with(&GZIP_MAGIC) {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let mut dec = GzDecoder::new(bytes.as_slice());
+        let mut out = Vec::new();
+        dec.read_to_end(&mut out)
+            .map_err(|e| crate::Error::Manifest(format!("gunzip manifest: {e}")))?;
+        Ok(out)
+    } else {
+        Ok(bytes)
+    }
 }

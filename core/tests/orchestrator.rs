@@ -54,6 +54,7 @@ fn base_options(image_id: &str, base_image_id: Option<&str>) -> CompressOptions 
         base_image_id: base_image_id.map(str::to_string),
         workers: 1,
         passthrough_threshold: 1.0,
+        overwrite: false,
     }
 }
 
