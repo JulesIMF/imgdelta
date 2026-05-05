@@ -267,7 +267,10 @@ fn mount_block_device(candidates: &[String], mount_point: &Path) -> Result<()> {
     let mut last_err_str = String::from("no candidates provided");
     for dev in candidates {
         for fstype in &fstypes {
-            let data: Option<&str> = if *fstype == "xfs" {
+            // Both ext4 and XFS need `norecovery` when mounted read-only with a
+            // dirty journal: without it the kernel tries to replay the journal but
+            // cannot write, returning EROFS ("Read-only file system").
+            let data: Option<&str> = if *fstype == "ext4" || *fstype == "xfs" {
                 Some("norecovery")
             } else {
                 None
