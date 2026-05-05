@@ -1167,6 +1167,192 @@ impl Qcow2Image {
         // `_nbd` drops here → `qemu-nbd --disconnect`
         Ok(())
     }
+
+    /// Reconstruct a `.qcow2` image from a stored [`Manifest`].
+    ///
+    /// This is the inverse of compressing a `.qcow2` with
+    /// `Qcow2Image::open` + `compress_fs_partition`.
+    ///
+    /// # Arguments
+    ///
+    /// - `manifest`           — parsed manifest for the image to reconstruct.
+    /// - `archive_bytes`      — pre-fetched patches archive (pass `&[]` if empty).
+    /// - `storage`            — used only for blob downloads.
+    /// - `output`             — path to write the new `.qcow2` (must not exist).
+    /// - `base_path`          — base `.qcow2` for delta images; `None` for full
+    ///   (first-image) manifests.
+    /// - `workers`            — rayon worker count for patch decoding.
+    pub async fn decompress_to_qcow2(
+        &self,
+        manifest: &Manifest,
+        archive_bytes: &[u8],
+        storage: Arc<dyn Storage>,
+        output: &Path,
+        base_path: Option<&Path>,
+        workers: usize,
+    ) -> crate::Result<()> {
+        use std::collections::HashMap;
+
+        let layout = &manifest.disk_layout;
+
+        // 1. Create qcow2 container.
+        let image_size = calculate_image_size(layout);
+        run_command(
+            Command::new("qemu-img").args([
+                "create",
+                "-f",
+                "qcow2",
+                output
+                    .to_str()
+                    .ok_or_else(|| crate::Error::Format("non-UTF-8 output path".into()))?,
+                &image_size.to_string(),
+            ]),
+            "qemu-img create",
+        )?;
+
+        // 2. Connect output via NBD (writable).
+        let start_index: u32 = std::env::var("QCOW2_DEVICE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let out_nbd = {
+            let _guard = NBD_ALLOC
+                .lock()
+                .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
+            let dev = find_free_nbd(start_index)?;
+            nbd_connect_rw(&dev, output)?;
+            wait_for_nbd_connected(&dev);
+            dev
+        };
+        let _out_nbd = NbdConn(out_nbd.clone());
+
+        // 3. Write GPT and wait for partition nodes.
+        write_gpt(&out_nbd, layout)?;
+        let _ = wait_for_block_device(&out_nbd);
+
+        // 4. Open base qcow2 (if delta image) and index its Fs partitions.
+        let base_open: Option<Box<dyn OpenImage>> = base_path.map(|p| self.open(p)).transpose()?;
+
+        let base_fs_handles: HashMap<u32, FsHandle> = if let Some(ref b) = base_open {
+            b.partitions()?
+                .into_iter()
+                .filter_map(|ph| match ph {
+                    PartitionHandle::Fs(fh) => Some((fh.descriptor.number, fh)),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
+
+        // Default router for patch decoding.
+        let router = RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new()));
+        let image_id = &manifest.header.image_id;
+        let patches_compressed = manifest.header.patches_compressed;
+
+        // 5. Apply each partition to its output block device.
+        for pm in &manifest.partitions {
+            let part_dev = format!("{out_nbd}p{}", pm.descriptor.number);
+
+            // Resolve the base root: mount the matching base Fs partition, or
+            // use an empty temp directory for full (non-delta) images.
+            let base_holder = if let Some(fh) = base_fs_handles.get(&pm.descriptor.number) {
+                BaseRootHolder::Mounted(fh.mount()?)
+            } else {
+                BaseRootHolder::Empty(
+                    TempDir::new()
+                        .map_err(|e| crate::Error::Format(format!("TempDir::new: {e}")))?,
+                )
+            };
+
+            apply_partition_with_base(
+                pm,
+                &part_dev,
+                base_holder.path(),
+                image_id,
+                Arc::clone(&storage),
+                archive_bytes,
+                patches_compressed,
+                &router,
+                workers,
+            )
+            .await?;
+            // base_holder drops here → base partition unmounted
+        }
+
+        // `_out_nbd` drops here → output qcow2 NBD disconnected
+        Ok(())
+    }
+}
+
+// ── decompress_to_qcow2 helpers ───────────────────────────────────────────────
+
+/// Holds either a mounted partition or a temporary empty directory as the
+/// base root for `decompress_fs_partition`.
+enum BaseRootHolder {
+    Mounted(Box<dyn MountHandle>),
+    Empty(TempDir),
+}
+
+impl BaseRootHolder {
+    fn path(&self) -> &Path {
+        match self {
+            BaseRootHolder::Empty(d) => d.path(),
+            BaseRootHolder::Mounted(h) => h.root(),
+        }
+    }
+}
+
+/// Apply one [`PartitionManifest`] to its output block device using a
+/// pre-fetched patches archive and a known base root.
+///
+/// - `BiosBoot` / `Raw` → download blob → write raw bytes to device.
+/// - `Fs`               → `mkfs` → mount rw → [`decompress_fs_partition`].
+#[allow(clippy::too_many_arguments)]
+async fn apply_partition_with_base(
+    pm: &crate::manifest::PartitionManifest,
+    part_dev: &str,
+    base_root: &Path,
+    _image_id: &str,
+    storage: Arc<dyn Storage>,
+    archive_bytes: &[u8],
+    patches_compressed: bool,
+    router: &RouterEncoder,
+    workers: usize,
+) -> crate::Result<()> {
+    match &pm.content {
+        PartitionContent::BiosBoot { blob_id, .. } => {
+            write_blob_to_device(storage.as_ref(), *blob_id, part_dev).await
+        }
+        PartitionContent::Raw { blob, .. } => {
+            if let Some(b) = blob {
+                write_blob_to_device(storage.as_ref(), b.blob_id, part_dev).await?;
+            }
+            Ok(())
+        }
+        PartitionContent::Fs { fs_type, records } => {
+            mkfs_partition(part_dev, fs_type)?;
+
+            let mount_dir =
+                TempDir::new().map_err(|e| crate::Error::Format(format!("TempDir::new: {e}")))?;
+            mount_partition_rw_plain(part_dev, fs_type, mount_dir.path())?;
+
+            let result = decompress_fs_partition(
+                base_root,
+                mount_dir.path(),
+                records,
+                archive_bytes,
+                patches_compressed,
+                storage,
+                router,
+                workers,
+            )
+            .await;
+
+            let _ = umount2(mount_dir.path(), MntFlags::MNT_DETACH);
+            result.map(|_| ())
+        }
+    }
 }
 
 // ── pack_from_manifest helpers ────────────────────────────────────────────────

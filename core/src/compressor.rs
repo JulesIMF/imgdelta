@@ -397,8 +397,7 @@ impl Compressor for DefaultCompressor {
                 )));
             }
 
-            // ── 2. Chain detection — refuse to decompress if the base is itself
-            //        a delta (chained decompression is not supported). ──────────
+            // ── 2. Chain detection ────────────────────────────────────────────
             if let Some(ref base_id) = manifest.header.base_image_id {
                 if let Some(base_meta) = self.storage.get_image(base_id).await? {
                     if base_meta.base_image_id.is_some() {
@@ -413,11 +412,63 @@ impl Compressor for DefaultCompressor {
                 }
             }
 
-            // ── 3. Download patches archive (once for all Fs partitions) ──────
+            // ── 3. Download patches archive (once for all partitions) ─────────
             let archive_bytes = self.storage.download_patches(image_id).await?;
-            let patches_compressed = manifest.header.patches_compressed;
 
-            // ── 4. Process each partition ──────────────────────────────────────
+            // ── 4. Dispatch based on manifest format ──────────────────────────
+            if manifest.header.format == "qcow2" {
+                // Reconstruct as a qcow2 image.  `output_root` is the path to
+                // the new .qcow2 file; `base_root` is the base .qcow2 (or empty
+                // for full images).
+                #[cfg(all(target_os = "linux", feature = "qcow2"))]
+                {
+                    use crate::formats::qcow2::Qcow2Image;
+                    let base_path = if options.base_root.as_os_str().is_empty()
+                        || !options.base_root.exists()
+                    {
+                        None
+                    } else {
+                        Some(options.base_root.as_path())
+                    };
+                    Qcow2Image::new()
+                        .decompress_to_qcow2(
+                            &manifest,
+                            &archive_bytes,
+                            Arc::clone(&self.storage),
+                            output_root,
+                            base_path,
+                            options.workers,
+                        )
+                        .await?;
+                }
+                #[cfg(not(all(target_os = "linux", feature = "qcow2")))]
+                {
+                    return Err(crate::Error::Other(
+                        "qcow2 decompression requires Linux + qcow2 feature".into(),
+                    ));
+                }
+
+                self.storage
+                    .update_status(image_id, ImageStatus::Compressed)
+                    .await?;
+
+                let elapsed = started_at.elapsed();
+                let stats = DecompressionStats {
+                    total_files: 0,
+                    patches_verified: 0,
+                    total_bytes: 0,
+                    elapsed_secs: elapsed.as_secs_f64(),
+                };
+                info!(
+                    image_id,
+                    elapsed_secs = stats.elapsed_secs,
+                    "decompress: done (qcow2)"
+                );
+                return Ok(stats);
+            }
+
+            // ── 5. Directory-based decompress (legacy / directory format) ──────
+            let patches_compressed = manifest.header.patches_compressed;
             let mut total_files: usize = 0;
             let mut patches_verified: usize = 0;
             let mut total_bytes: u64 = 0;
@@ -480,7 +531,7 @@ impl Compressor for DefaultCompressor {
                 }
             }
 
-            // ── 5. Update status ───────────────────────────────────────────────
+            // ── 6. Update status ───────────────────────────────────────────────
             self.storage
                 .update_status(image_id, ImageStatus::Compressed)
                 .await?;
