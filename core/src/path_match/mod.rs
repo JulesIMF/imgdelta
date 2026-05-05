@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use rayon::prelude::*;
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// A scored correspondence between a path in the base image and a path in the
@@ -81,58 +83,65 @@ pub fn find_best_matches(
     let (ext_index, first_comp_index, length_index): (ExtIndex, ExtIndex, LengthIndex) =
         build_indexes(source_paths);
 
-    // Phase 1: collect all (target_idx, source_idx, score) above threshold.
-    let mut all_candidates: Vec<(usize, usize, f64)> = Vec::new();
-
-    for (t_idx, target_path) in target_paths.iter().enumerate() {
-        let candidate_base_indices = get_candidates(
-            target_path,
-            &ext_index,
-            &first_comp_index,
-            &length_index,
-            source_paths,
-        );
-
-        let max_edit_dist = target_path.len().max(200) as f64 * 0.3;
-        let t_first = target_path.split('/').next().unwrap_or("");
-        let t_ext = ext_of(target_path);
-
-        for b_idx in candidate_base_indices {
-            let base_path = &source_paths[b_idx];
-
-            // Fast pre-filter: skip if lengths are wildly different.
-            let len_ratio_ok = {
-                let tl = target_path.len() as f64;
-                let bl = base_path.len() as f64;
-                (tl - bl).abs() <= tl.max(bl) * 0.4
-            };
-            if !len_ratio_ok {
-                continue;
-            }
-
-            // Fast pre-filter: skip if both first component AND extension differ.
-            let b_first = base_path.split('/').next().unwrap_or("");
-            let b_ext = ext_of(base_path);
-            if t_first != b_first && t_ext != b_ext {
-                continue;
-            }
-
-            let score = path_similarity(
+    // Phase 1: score candidates for every target path in parallel.
+    // Each target path is independent — we collect per-target vecs and flatten.
+    // The indexes are read-only after construction and thus safe to share.
+    let all_candidates: Vec<(usize, usize, f64)> = target_paths
+        .par_iter()
+        .enumerate()
+        .flat_map(|(t_idx, target_path)| {
+            let candidate_base_indices = get_candidates(
                 target_path,
-                base_path,
-                config.digit_weight,
-                config.first_component_weight,
-                config.depth_penalty,
-                Some(max_edit_dist),
+                &ext_index,
+                &first_comp_index,
+                &length_index,
+                source_paths,
             );
 
-            if score >= config.min_score {
-                all_candidates.push((t_idx, b_idx, score));
+            let max_edit_dist = target_path.len().max(200) as f64 * 0.3;
+            let t_first = target_path.split('/').next().unwrap_or("");
+            let t_ext = ext_of(target_path);
+
+            let mut local: Vec<(usize, usize, f64)> = Vec::new();
+            for b_idx in candidate_base_indices {
+                let base_path = &source_paths[b_idx];
+
+                // Fast pre-filter: skip if lengths are wildly different.
+                let len_ratio_ok = {
+                    let tl = target_path.len() as f64;
+                    let bl = base_path.len() as f64;
+                    (tl - bl).abs() <= tl.max(bl) * 0.4
+                };
+                if !len_ratio_ok {
+                    continue;
+                }
+
+                // Fast pre-filter: skip if both first component AND extension differ.
+                let b_first = base_path.split('/').next().unwrap_or("");
+                let b_ext = ext_of(base_path);
+                if t_first != b_first && t_ext != b_ext {
+                    continue;
+                }
+
+                let score = path_similarity(
+                    target_path,
+                    base_path,
+                    config.digit_weight,
+                    config.first_component_weight,
+                    config.depth_penalty,
+                    Some(max_edit_dist),
+                );
+
+                if score >= config.min_score {
+                    local.push((t_idx, b_idx, score));
+                }
             }
-        }
-    }
+            local
+        })
+        .collect();
 
     // Phase 2: greedy bijective selection (best score first).
+    let mut all_candidates = all_candidates;
     all_candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut matched_target: HashSet<usize> = HashSet::new();
