@@ -16,8 +16,8 @@
 //! | # | Function                          | Pure? | Notes                               |
 //! |---|-----------------------------------|-------|-------------------------------------|
 //! | 1 | [`walkdir`]                       | yes   | Walk base + target, build records   |
-//! | 2 | [`s3_lookup`]                     | async | Match added files against S3 blobs  |
-//! | 3 | [`match_renamed`]                 | yes   | Detect renames via path matching    |
+//! | 2 | [`match_renamed`]                 | yes   | Detect renames via path matching    |
+//! | 3 | [`s3_lookup`]                     | async | Match remaining adds against S3 blobs |
 //! | 4 | [`cleanup`]                       | yes   | Finalise deletion records           |
 //! | 5 | [`upload_lazy_blobs`]             | async | Upload new file content to S3       |
 //! | 6 | [`download_blobs_for_patches`]    | async | Download delta-base blobs to disk   |
@@ -1143,34 +1143,43 @@ pub async fn compress_fs_partition(
         "stage 1/8: walkdir done"
     );
 
-    // Stage 2.
+    // Stage 2: match_renamed must run BEFORE s3_lookup so that version-bumped
+    // files (e.g. libssl3-v1 → libssl3-v2) are detected as renames first.
+    // s3_lookup only sees the remaining truly-new added files after this stage.
+    info!(
+        image_id,
+        partition = descriptor.number,
+        "stage 2/8: match_renamed"
+    );
+    draft = match_renamed(draft);
+    let n_renamed = draft
+        .records
+        .iter()
+        .filter(|r| r.old_path.is_some() && r.new_path.is_some() && r.old_path != r.new_path)
+        .count();
+    info!(
+        image_id,
+        partition = descriptor.number,
+        renamed = n_renamed,
+        "stage 2/8: match_renamed done"
+    );
+
+    // Stage 3.
     if let Some(base_id) = base_image_id {
         info!(
             image_id,
             base_image_id = base_id,
             partition = descriptor.number,
-            "stage 2/8: s3_lookup"
+            "stage 3/8: s3_lookup"
         );
         let pn = Some(descriptor.number as i32);
         draft = s3_lookup(draft, storage, base_id, pn).await?;
         info!(
             image_id,
             partition = descriptor.number,
-            "stage 2/8: s3_lookup done"
+            "stage 3/8: s3_lookup done"
         );
     }
-
-    info!(
-        image_id,
-        partition = descriptor.number,
-        "stage 3/8: match_renamed"
-    );
-    draft = match_renamed(draft);
-    info!(
-        image_id,
-        partition = descriptor.number,
-        "stage 3/8: match_renamed done"
-    );
 
     info!(
         image_id,

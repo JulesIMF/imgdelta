@@ -79,13 +79,14 @@ pub async fn run(args: CompressArgs, config_path: Option<&Path>) -> anyhow::Resu
 
     let base_label = &args.base_image_id;
     eprintln!(
-        "Compressed {} → {}\n  base={}, added={}, patched={}, removed={}, source_bytes={}, stored_bytes={}, elapsed={:.2}s",
+        "Compressed {} → {}\n  base={}, added={}, patched={}, removed={}, renamed={}, source_bytes={}, stored_bytes={}, elapsed={:.2}s",
         base_label,
         args.image_id,
         base_label,
         stats.files_added,
         stats.files_patched,
         stats.files_removed,
+        stats.files_renamed,
         stats.total_source_bytes,
         stats.total_stored_bytes,
         stats.elapsed_secs,

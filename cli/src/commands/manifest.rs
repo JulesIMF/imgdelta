@@ -113,11 +113,7 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
                 let n_renamed = records
                     .iter()
                     .filter(|r| {
-                        r.old_path.is_some()
-                            && r.new_path.is_some()
-                            && r.old_path != r.new_path
-                            && r.data.is_none()
-                            && r.patch.is_none()
+                        r.old_path.is_some() && r.new_path.is_some() && r.old_path != r.new_path
                     })
                     .count();
                 let n_patched = records
@@ -125,6 +121,7 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
                     .filter(|r| {
                         r.old_path.is_some()
                             && r.new_path.is_some()
+                            && r.old_path == r.new_path
                             && (r.data.is_some() || r.patch.is_some())
                     })
                     .count();
@@ -286,12 +283,15 @@ async fn diff(args: DiffArgs, config_path: Option<&Path>) -> anyhow::Result<()> 
 }
 
 fn format_record(r: &Record) -> String {
+    let is_rename = matches!((&r.old_path, &r.new_path), (Some(op), Some(np)) if op != np);
+
     let (op, path) = match (&r.old_path, &r.new_path) {
         (None, Some(np)) => ("+", np.as_str()),
         (Some(op), None) => ("-", op.as_str()),
+        (Some(_op), Some(np)) if is_rename => ("R", np.as_str()),
         (Some(_op), Some(np)) if r.data.is_some() || r.patch.is_some() => ("M", np.as_str()),
         (Some(op), Some(np)) if op == np => ("=", np.as_str()),
-        (Some(_op), Some(np)) => ("R", np.as_str()),
+        (Some(_op), Some(np)) => ("?", np.as_str()),
         (None, None) => ("?", ""),
     };
 
@@ -304,19 +304,19 @@ fn format_record(r: &Record) -> String {
         _ => "-".to_string(),
     };
 
+    let path_display = if is_rename {
+        format!(
+            "{} → {}",
+            r.old_path.as_deref().unwrap_or(""),
+            r.new_path.as_deref().unwrap_or("")
+        )
+    } else {
+        path.to_string()
+    };
+
     format!(
-        "{op:<4}  {size:<12}  {stored:<14}  {path}",
+        "{op:<4}  {size:<12}  {stored:<14}  {path_display}",
         size = r.size,
-        path = if matches!((&r.old_path, &r.new_path), (Some(op), Some(np)) if op != np && r.patch.is_none() && r.data.is_none())
-        {
-            format!(
-                "{} → {}",
-                r.old_path.as_deref().unwrap_or(""),
-                r.new_path.as_deref().unwrap_or("")
-            )
-        } else {
-            path.to_string()
-        }
     )
 }
 

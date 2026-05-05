@@ -29,6 +29,7 @@ pub struct CompressionStats {
     pub files_patched: usize,
     pub files_added: usize,
     pub files_removed: usize,
+    pub files_renamed: usize,
     pub total_source_bytes: u64,
     pub total_stored_bytes: u64,
     pub elapsed_secs: f64,
@@ -347,6 +348,7 @@ impl Compressor for DefaultCompressor {
                 added = stats.files_added,
                 patched = stats.files_patched,
                 removed = stats.files_removed,
+                renamed = stats.files_renamed,
                 archive_stored_bytes,
                 manifest_stored_bytes,
                 total_stored_bytes = stats.total_stored_bytes,
@@ -547,6 +549,7 @@ fn stats_from_manifest(
                 match (&r.old_path, &r.new_path) {
                     (None, Some(_)) => stats.files_added += 1,
                     (Some(_), None) => stats.files_removed += 1,
+                    (Some(old), Some(new)) if old != new => stats.files_renamed += 1,
                     (Some(_), Some(_)) => {
                         if matches!(r.patch, Some(crate::manifest::Patch::Real(_))) {
                             stats.files_patched += 1;
