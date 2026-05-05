@@ -29,10 +29,26 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Deserialize a manifest from the MessagePack bytes returned by
-    /// [`Storage::download_manifest`].
+    const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+    /// Deserialize a manifest from the bytes returned by [`Storage::download_manifest`].
+    ///
+    /// Transparently decompresses gzip-wrapped manifests (identified by the
+    /// `1f 8b` magic header) so both compressed and legacy uncompressed manifests
+    /// can be read with the same call.
     pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
-        rmp_serde::from_slice(bytes).map_err(|e| crate::Error::Manifest(e.to_string()))
+        let msgpack: std::borrow::Cow<[u8]> = if bytes.starts_with(&Self::GZIP_MAGIC) {
+            use flate2::read::GzDecoder;
+            use std::io::Read;
+            let mut dec = GzDecoder::new(bytes);
+            let mut out = Vec::new();
+            dec.read_to_end(&mut out)
+                .map_err(|e| crate::Error::Manifest(format!("gunzip manifest: {e}")))?;
+            std::borrow::Cow::Owned(out)
+        } else {
+            std::borrow::Cow::Borrowed(bytes)
+        };
+        rmp_serde::from_slice(&msgpack).map_err(|e| crate::Error::Manifest(e.to_string()))
     }
 }
 

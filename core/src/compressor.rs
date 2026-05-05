@@ -375,8 +375,7 @@ impl Compressor for DefaultCompressor {
         let result: Result<DecompressionStats> = async {
             // ── 1. Download and parse manifest ────────────────────────────────
             let manifest_raw = self.storage.download_manifest(image_id).await?;
-            let manifest_bytes = maybe_gunzip_manifest(manifest_raw)?;
-            let manifest = crate::manifest::Manifest::from_bytes(&manifest_bytes)?;
+            let manifest = crate::manifest::Manifest::from_bytes(&manifest_raw)?;
 
             if manifest.header.version != MANIFEST_VERSION {
                 return Err(crate::Error::Manifest(format!(
@@ -545,11 +544,9 @@ fn stats_from_manifest(manifest: &Manifest, elapsed: std::time::Duration) -> Com
     stats
 }
 
-// ── Manifest gzip helpers ─────────────────────────────────────────────────────
+// ── Manifest gzip helper ─────────────────────────────────────────────────────
 
-const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
-
-/// Gzip-compress manifest bytes.
+/// Gzip-compress manifest bytes for storage.
 fn gzip_manifest(bytes: &[u8]) -> Result<Vec<u8>> {
     use flate2::write::GzEncoder;
     use flate2::Compression;
@@ -560,23 +557,4 @@ fn gzip_manifest(bytes: &[u8]) -> Result<Vec<u8>> {
         .map_err(|e| crate::Error::Manifest(format!("gzip manifest write: {e}")))?;
     enc.finish()
         .map_err(|e| crate::Error::Manifest(format!("gzip manifest finish: {e}")))
-}
-
-/// Decompress manifest bytes if they start with gzip magic; otherwise return as-is.
-///
-/// The magic-bytes check makes this backward-compatible with manifests that
-/// were stored without compression before this change.
-fn maybe_gunzip_manifest(bytes: Vec<u8>) -> Result<Vec<u8>> {
-    if bytes.starts_with(&GZIP_MAGIC) {
-        use flate2::read::GzDecoder;
-        use std::io::Read;
-
-        let mut dec = GzDecoder::new(bytes.as_slice());
-        let mut out = Vec::new();
-        dec.read_to_end(&mut out)
-            .map_err(|e| crate::Error::Manifest(format!("gunzip manifest: {e}")))?;
-        Ok(out)
-    } else {
-        Ok(bytes)
-    }
 }
