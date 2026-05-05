@@ -890,7 +890,11 @@ pub async fn download_blobs_for_patches(
 ///
 /// Returns the first encoding error.  Other patches may have been computed when
 /// the error is propagated.
-pub fn compute_patches(mut draft: FsDraft, router: &RouterEncoder) -> Result<FsDraft> {
+pub fn compute_patches(
+    mut draft: FsDraft,
+    router: &RouterEncoder,
+    workers: usize,
+) -> Result<FsDraft> {
     let needs_patch: Vec<usize> = draft
         .records
         .iter()
@@ -905,68 +909,77 @@ pub fn compute_patches(mut draft: FsDraft, router: &RouterEncoder) -> Result<FsD
 
     let passthrough: Arc<dyn PatchEncoder> = Arc::new(PassthroughEncoder::new());
 
+    // Build a dedicated rayon pool sized to `workers` so that parallelism is
+    // bounded by the caller-supplied value rather than the global rayon pool.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .map_err(|e| crate::Error::Other(format!("failed to build rayon pool: {e}")))?;
+
     // Phase 1: compute patches in parallel (immutable borrow of records).
     type PatchResult = Result<(usize, PatchRef, Vec<u8>)>;
-    let results: Vec<PatchResult> = needs_patch
-        .par_iter()
-        .map(|&i| {
-            let record = &draft.records[i];
-            let (old_data, new_data) = match &record.patch {
-                Some(Patch::Lazy { old_data, new_data }) => (old_data, new_data),
-                _ => unreachable!(),
-            };
-
-            let old_bytes = read_entry_bytes(old_data, &record.entry_type)?;
-            let new_bytes = read_entry_bytes(new_data, &record.entry_type)?;
-
-            let new_path_str = record.new_path.as_deref().unwrap_or("");
-            let header_slice: &[u8] = &new_bytes[..new_bytes.len().min(16)];
-
-            let encoder: Arc<dyn PatchEncoder> =
-                if matches!(record.entry_type, EntryType::Symlink | EntryType::Hardlink) {
-                    Arc::clone(&passthrough)
-                } else {
-                    router.select(&FileInfo {
-                        path: new_path_str,
-                        size: new_bytes.len() as u64,
-                        header: header_slice,
-                    })
+    let results: Vec<PatchResult> = pool.install(|| {
+        needs_patch
+            .par_iter()
+            .map(|&i| {
+                let record = &draft.records[i];
+                let (old_data, new_data) = match &record.patch {
+                    Some(Patch::Lazy { old_data, new_data }) => (old_data, new_data),
+                    _ => unreachable!(),
                 };
 
-            let base_snap = FileSnapshot {
-                path: record.old_path.as_deref().unwrap_or(""),
-                size: old_bytes.len() as u64,
-                header: &old_bytes[..old_bytes.len().min(16)],
-                bytes: &old_bytes,
-            };
-            let target_snap = FileSnapshot {
-                path: new_path_str,
-                size: new_bytes.len() as u64,
-                header: header_slice,
-                bytes: &new_bytes,
-            };
+                let old_bytes = read_entry_bytes(old_data, &record.entry_type)?;
+                let new_bytes = read_entry_bytes(new_data, &record.entry_type)?;
 
-            let file_patch = encoder.encode(&base_snap, &target_snap)?;
+                let new_path_str = record.new_path.as_deref().unwrap_or("");
+                let header_slice: &[u8] = &new_bytes[..new_bytes.len().min(16)];
 
-            let sha256 = hex_sha256_bytes(&file_patch.bytes);
-            let archive_entry = format!("{:06}.patch", i);
-            let pref = PatchRef {
-                archive_entry: archive_entry.clone(),
-                sha256,
-                algorithm_code: file_patch.code,
-                algorithm_id: file_patch.algorithm_id.clone(),
-            };
+                let encoder: Arc<dyn PatchEncoder> =
+                    if matches!(record.entry_type, EntryType::Symlink | EntryType::Hardlink) {
+                        Arc::clone(&passthrough)
+                    } else {
+                        router.select(&FileInfo {
+                            path: new_path_str,
+                            size: new_bytes.len() as u64,
+                            header: header_slice,
+                        })
+                    };
 
-            debug!(
-                path = new_path_str,
-                algorithm = file_patch.algorithm_id.as_deref().unwrap_or("unknown"),
-                patch_bytes = file_patch.bytes.len(),
-                "patch computed"
-            );
+                let base_snap = FileSnapshot {
+                    path: record.old_path.as_deref().unwrap_or(""),
+                    size: old_bytes.len() as u64,
+                    header: &old_bytes[..old_bytes.len().min(16)],
+                    bytes: &old_bytes,
+                };
+                let target_snap = FileSnapshot {
+                    path: new_path_str,
+                    size: new_bytes.len() as u64,
+                    header: header_slice,
+                    bytes: &new_bytes,
+                };
 
-            Ok((i, pref, file_patch.bytes))
-        })
-        .collect();
+                let file_patch = encoder.encode(&base_snap, &target_snap)?;
+
+                let sha256 = hex_sha256_bytes(&file_patch.bytes);
+                let archive_entry = format!("{:06}.patch", i);
+                let pref = PatchRef {
+                    archive_entry: archive_entry.clone(),
+                    sha256,
+                    algorithm_code: file_patch.code,
+                    algorithm_id: file_patch.algorithm_id.clone(),
+                };
+
+                debug!(
+                    path = new_path_str,
+                    algorithm = file_patch.algorithm_id.as_deref().unwrap_or("unknown"),
+                    patch_bytes = file_patch.bytes.len(),
+                    "patch computed"
+                );
+
+                Ok((i, pref, file_patch.bytes))
+            })
+            .collect()
+    });
 
     // Phase 2: apply results sequentially (mutable borrow).
     for res in results {
@@ -1109,6 +1122,7 @@ pub async fn compress_fs_partition(
     base_image_id: Option<&str>,
     router: &RouterEncoder,
     fs_type: &str,
+    workers: usize,
 ) -> Result<(PartitionManifest, bool)> {
     let tmp_dir = tempfile::TempDir::new()?;
 
@@ -1195,7 +1209,7 @@ pub async fn compress_fs_partition(
         patches = n_patches,
         "stage 7/8: compute_patches"
     );
-    draft = compute_patches(draft, router)?;
+    draft = compute_patches(draft, router, workers)?;
 
     // Clean up downloaded tmp files now that patches are computed.
     for p in &draft.tmp_files {
@@ -1714,7 +1728,7 @@ mod tests {
         });
 
         let router = make_xdelta3_router();
-        let draft = compute_patches(draft, &router).unwrap();
+        let draft = compute_patches(draft, &router, 4).unwrap();
 
         let record = &draft.records[0];
         assert!(
@@ -1765,7 +1779,7 @@ mod tests {
         });
 
         let router = make_xdelta3_router();
-        let draft = compute_patches(draft, &router).unwrap();
+        let draft = compute_patches(draft, &router, 4).unwrap();
 
         let pref = match &draft.records[0].patch {
             Some(Patch::Real(p)) => p,
@@ -1797,7 +1811,7 @@ mod tests {
         });
 
         let router = make_xdelta3_router();
-        let result = compute_patches(draft, &router).unwrap();
+        let result = compute_patches(draft, &router, 1).unwrap();
 
         assert!(result.patch_bytes.is_empty());
     }

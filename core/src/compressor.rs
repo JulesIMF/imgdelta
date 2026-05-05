@@ -246,6 +246,7 @@ impl Compressor for DefaultCompressor {
                             base_image_id,
                             &self.router,
                             &fs_type,
+                            options.workers,
                         )
                         .await?;
 

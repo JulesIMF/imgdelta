@@ -510,6 +510,7 @@ mod tests {
                             None,
                             &router,
                             &fs_type,
+                            1,
                         ))
                         .expect("compress_fs_partition must succeed");
                     patches_compressed = compressed;

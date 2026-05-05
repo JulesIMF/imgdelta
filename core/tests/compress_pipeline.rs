@@ -403,7 +403,7 @@ async fn test_pack_upload_archive_produces_fs_content() {
     let mut draft = walkdir(base_dir.path(), target_dir.path()).unwrap();
     // Stage 5: no lazy blobs (changed file, no new additions).
     let router = xdelta3_router();
-    draft = compute_patches(draft, &router).unwrap();
+    draft = compute_patches(draft, &router, 1).unwrap();
 
     let (content, _compressed) = pack_and_upload_archive(draft, &storage, "img-001", "ext4")
         .await
@@ -496,6 +496,7 @@ async fn test_compress_fs_partition_golden() {
             Some("img-001"),
             &router,
             "ext4",
+            1,
         )
         .await
         .unwrap();
@@ -574,6 +575,7 @@ async fn test_compress_manifest_serialisation_roundtrip() {
             None,
             &router,
             "ext4",
+            1,
         )
         .await
         .unwrap();
@@ -921,7 +923,7 @@ fn test_compute_patches_rayon_stress_many_files() {
     );
 
     let router = xdelta3_router();
-    let draft = compute_patches(draft, &router).unwrap();
+    let draft = compute_patches(draft, &router, 1).unwrap();
 
     assert_eq!(
         draft.patch_bytes.len(),
@@ -1035,6 +1037,7 @@ async fn test_compress_fs_partition_first_compression_many_new_files() {
             None, // no base image — first compression
             &router,
             "ext4",
+            1,
         )
         .await
         .unwrap();

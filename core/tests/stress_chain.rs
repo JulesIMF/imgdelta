@@ -9,8 +9,8 @@ mod common;
 use std::collections::VecDeque;
 
 use common::{
-    compare_dirs, compress_opts, decompress_opts, make_compressor, save_root_meta_for_storage,
-    verify_manifest_records, CategoryMetrics, ManifestCheckResult,
+    compare_dirs, compress_opts_workers, decompress_opts_workers, make_compressor,
+    save_root_meta_for_storage, verify_manifest_records, CategoryMetrics, ManifestCheckResult,
 };
 use image_delta_core::Compressor;
 use image_delta_core::{Manifest, PartitionContent};
@@ -29,6 +29,9 @@ const N_ITERATIONS: usize = 20;
 
 /// Number of independent chain families per iteration.
 const N_CHAINS: usize = 3;
+
+/// Number of rayon workers used by each compress/decompress call in the parallel stress variant.
+const N_PAR_WORKERS: usize = 4;
 
 /// Length of each mutation chain (delta images after the base).
 const CHAIN_LENGTH: usize = 5;
@@ -101,8 +104,8 @@ async fn build_chain(
     iter: usize,
     chain: usize,
     cfg: StressConfig,
+    workers: usize,
     compressor: &image_delta_core::DefaultCompressor,
-    storage: &common::FakeStorage,
 ) -> ChainState {
     // Unique seed per (iter, chain), derived from the master seed.
     let seed = cfg.base_seed
@@ -117,9 +120,12 @@ async fn build_chain(
 
     // Compress base against empty dir.
     let empty = tempfile::tempdir().unwrap();
-    save_root_meta_for_storage(storage, &base_id).await;
     compressor
-        .compress(empty.path(), base_dir.path(), compress_opts(&base_id, None))
+        .compress(
+            empty.path(),
+            base_dir.path(),
+            compress_opts_workers(&base_id, None, workers),
+        )
         .await
         .unwrap();
 
@@ -210,14 +216,23 @@ fn format_total_summary(
 
 /// Run one full iteration: cfg.n_chains families, interleaved compression,
 /// manifest verification, and roundtrip decompression check.
+///
+/// `workers` controls the rayon thread-pool size passed to every
+/// `compress` / `decompress` call.  Use `1` for a fully sequential baseline
+/// and a larger value for the parallel stress variant.
+///
 /// Returns the per-chain manifest results for external accumulation.
-async fn run_iteration(iter: usize, cfg: StressConfig) -> Vec<Vec<ManifestCheckResult>> {
+async fn run_iteration(
+    iter: usize,
+    cfg: StressConfig,
+    workers: usize,
+) -> Vec<Vec<ManifestCheckResult>> {
     let (storage, compressor) = make_compressor();
 
     // ── Phase A: build all chains ─────────────────────────────────────────────
     let mut chains: Vec<ChainState> = Vec::with_capacity(cfg.n_chains);
     for chain in 0..cfg.n_chains {
-        chains.push(build_chain(iter, chain, cfg, &compressor, &storage).await);
+        chains.push(build_chain(iter, chain, cfg, workers, &compressor).await);
     }
 
     // ── Phase B: interleaved random compression ───────────────────────────────
@@ -258,7 +273,7 @@ async fn run_iteration(iter: usize, cfg: StressConfig) -> Vec<Vec<ManifestCheckR
             .compress(
                 prev_dir,
                 chains[c].gen_dirs[gen].path(),
-                compress_opts(&image_id, Some(&prev_id)),
+                compress_opts_workers(&image_id, Some(&prev_id), workers),
             )
             .await
             .unwrap();
@@ -290,7 +305,10 @@ async fn run_iteration(iter: usize, cfg: StressConfig) -> Vec<Vec<ManifestCheckR
 
             let out_dir = tempfile::tempdir().unwrap();
             compressor
-                .decompress(out_dir.path(), decompress_opts(image_id, &base_root))
+                .decompress(
+                    out_dir.path(),
+                    decompress_opts_workers(image_id, &base_root, workers),
+                )
                 .await
                 .unwrap();
 
@@ -331,7 +349,7 @@ async fn stress_chain_sequential() {
     let mut mdf = CategoryMetrics::default();
 
     for iter in 0..cfg.n_iterations {
-        let results = run_iteration(iter, cfg).await;
+        let results = run_iteration(iter, cfg, 1).await;
         for chain in &results {
             for res in chain {
                 add.correct += res.additions.correct;
@@ -355,5 +373,118 @@ async fn stress_chain_sequential() {
     }
 
     pb.finish_with_message("all iterations passed");
+    tty_println(&format_total_summary(add, del, ren, mdf));
+}
+
+// ── parallel stress test ──────────────────────────────────────────────────────
+
+/// Same as [`stress_chain_sequential`] but runs all iterations concurrently
+/// on the tokio thread pool.  Each iteration owns its own independent storage
+/// and compressor, so there is no shared mutable state between tasks.
+#[tokio::test(flavor = "multi_thread")]
+async fn stress_chain_parallel() {
+    let cfg = StressConfig::from_env();
+    tty_println(&format!(
+        "stress_chain_parallel: n_iterations={} n_chains={} chain_length={} base_seed={} (replay: STRESS_SEED={})",
+        cfg.n_iterations, cfg.n_chains, cfg.chain_length, cfg.base_seed, cfg.base_seed
+    ));
+
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc as StdArc,
+    };
+    use tokio::task::JoinSet;
+
+    let pb = ProgressBar::new(cfg.n_iterations as u64);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:50.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+
+    let pb = std::sync::Arc::new(pb);
+
+    // Atomics for accumulating per-category metrics across all tasks.
+    let add_correct = StdArc::new(AtomicUsize::new(0));
+    let add_fp = StdArc::new(AtomicUsize::new(0));
+    let add_miss = StdArc::new(AtomicUsize::new(0));
+    let del_correct = StdArc::new(AtomicUsize::new(0));
+    let del_fp = StdArc::new(AtomicUsize::new(0));
+    let del_miss = StdArc::new(AtomicUsize::new(0));
+    let ren_correct = StdArc::new(AtomicUsize::new(0));
+    let ren_fp = StdArc::new(AtomicUsize::new(0));
+    let ren_miss = StdArc::new(AtomicUsize::new(0));
+    let mdf_correct = StdArc::new(AtomicUsize::new(0));
+    let mdf_fp = StdArc::new(AtomicUsize::new(0));
+    let mdf_miss = StdArc::new(AtomicUsize::new(0));
+
+    let mut js: JoinSet<()> = JoinSet::new();
+
+    for iter in 0..cfg.n_iterations {
+        let pb = std::sync::Arc::clone(&pb);
+        let ac = StdArc::clone(&add_correct);
+        let af = StdArc::clone(&add_fp);
+        let am = StdArc::clone(&add_miss);
+        let dc = StdArc::clone(&del_correct);
+        let df = StdArc::clone(&del_fp);
+        let dm = StdArc::clone(&del_miss);
+        let rc = StdArc::clone(&ren_correct);
+        let rf = StdArc::clone(&ren_fp);
+        let rm = StdArc::clone(&ren_miss);
+        let mc = StdArc::clone(&mdf_correct);
+        let mf = StdArc::clone(&mdf_fp);
+        let mm = StdArc::clone(&mdf_miss);
+
+        js.spawn(async move {
+            let results = run_iteration(iter, cfg, N_PAR_WORKERS).await;
+            for chain in &results {
+                for res in chain {
+                    ac.fetch_add(res.additions.correct, Ordering::Relaxed);
+                    af.fetch_add(res.additions.false_positive, Ordering::Relaxed);
+                    am.fetch_add(res.additions.unrecognized, Ordering::Relaxed);
+                    dc.fetch_add(res.deletions.correct, Ordering::Relaxed);
+                    df.fetch_add(res.deletions.false_positive, Ordering::Relaxed);
+                    dm.fetch_add(res.deletions.unrecognized, Ordering::Relaxed);
+                    rc.fetch_add(res.renames.correct, Ordering::Relaxed);
+                    rf.fetch_add(res.renames.false_positive, Ordering::Relaxed);
+                    rm.fetch_add(res.renames.unrecognized, Ordering::Relaxed);
+                    mc.fetch_add(res.modifications.correct, Ordering::Relaxed);
+                    mf.fetch_add(res.modifications.false_positive, Ordering::Relaxed);
+                    mm.fetch_add(res.modifications.unrecognized, Ordering::Relaxed);
+                }
+            }
+            pb.inc(1);
+        });
+    }
+
+    // Wait for all iterations — any panic inside a task becomes a JoinError.
+    while let Some(res) = js.join_next().await {
+        res.expect("parallel stress iteration panicked");
+    }
+
+    pb.finish_with_message("all parallel iterations passed");
+
+    let add = CategoryMetrics {
+        correct: add_correct.load(Ordering::Relaxed),
+        false_positive: add_fp.load(Ordering::Relaxed),
+        unrecognized: add_miss.load(Ordering::Relaxed),
+    };
+    let del = CategoryMetrics {
+        correct: del_correct.load(Ordering::Relaxed),
+        false_positive: del_fp.load(Ordering::Relaxed),
+        unrecognized: del_miss.load(Ordering::Relaxed),
+    };
+    let ren = CategoryMetrics {
+        correct: ren_correct.load(Ordering::Relaxed),
+        false_positive: ren_fp.load(Ordering::Relaxed),
+        unrecognized: ren_miss.load(Ordering::Relaxed),
+    };
+    let mdf = CategoryMetrics {
+        correct: mdf_correct.load(Ordering::Relaxed),
+        false_positive: mdf_fp.load(Ordering::Relaxed),
+        unrecognized: mdf_miss.load(Ordering::Relaxed),
+    };
     tty_println(&format_total_summary(add, del, ren, mdf));
 }
