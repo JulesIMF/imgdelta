@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use crate::algorithm::FileSnapshot;
@@ -147,6 +148,7 @@ pub fn walkdir(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
     // Removed: present in base, absent in target.
     for (path, b) in &base_snap {
         if !target_snap.contains_key(path.as_str()) {
+            debug!(path, "removed");
             records.push(make_removed_record(path, b, base_root));
         }
     }
@@ -154,6 +156,7 @@ pub fn walkdir(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
     // Added: present in target, absent in base.
     for (path, t) in &target_snap {
         if !base_snap.contains_key(path.as_str()) {
+            debug!(path, "added");
             records.push(make_added_record(
                 path,
                 t,
@@ -166,14 +169,11 @@ pub fn walkdir(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
     // Changed: present in both.
     for (path, t) in &target_snap {
         if let Some(b) = base_snap.get(path.as_str()) {
-            records.extend(diff_entry(
-                path,
-                b,
-                t,
-                base_root,
-                target_root,
-                &hardlink_canonicals,
-            ));
+            let new_recs = diff_entry(path, b, t, base_root, target_root, &hardlink_canonicals);
+            if !new_recs.is_empty() {
+                debug!(path, "changed");
+            }
+            records.extend(new_recs);
         }
     }
 
@@ -486,8 +486,14 @@ pub async fn s3_lookup(
         .find_blob_candidates(base_image_id, partition_number)
         .await?;
     if candidates.is_empty() {
+        debug!("s3_lookup: no candidates in storage for base_image_id={base_image_id}");
         return Ok(draft);
     }
+    debug!(
+        base_image_id,
+        candidates = candidates.len(),
+        "s3_lookup: candidate blobs available"
+    );
 
     // Paths of added files that still have a LazyBlob.
     let target_paths: Vec<String> = draft
@@ -531,6 +537,11 @@ pub async fn s3_lookup(
                     blob_id,
                     size: record.size,
                 };
+                debug!(
+                    path = %new_path,
+                    blob_id = %blob_id,
+                    "s3_lookup: matched to base blob"
+                );
                 record.patch = Some(Patch::Lazy {
                     old_data: DataRef::BlobRef(blob_ref.clone()),
                     new_data: DataRef::FilePath(lazy_path),
@@ -699,8 +710,24 @@ pub async fn upload_lazy_blobs(
         // Check before uploading to avoid a redundant network PUT for
         // content that is already stored (SHA-256 dedup).
         let blob_id = match storage.blob_exists(&sha256_hex).await? {
-            Some(id) => id,
-            None => storage.upload_blob(&sha256_hex, &bytes).await?,
+            Some(id) => {
+                debug!(
+                    path = %lazy_path.display(),
+                    blob_id = %id,
+                    "blob already in storage (dedup)"
+                );
+                id
+            }
+            None => {
+                let id = storage.upload_blob(&sha256_hex, &bytes).await?;
+                debug!(
+                    path = %lazy_path.display(),
+                    blob_id = %id,
+                    bytes = bytes.len(),
+                    "uploaded blob"
+                );
+                id
+            }
         };
         storage
             .record_blob_origin(
@@ -848,8 +875,15 @@ pub fn compute_patches(mut draft: FsDraft, router: &RouterEncoder) -> Result<FsD
                 archive_entry: archive_entry.clone(),
                 sha256,
                 algorithm_code: file_patch.code,
-                algorithm_id: file_patch.algorithm_id,
+                algorithm_id: file_patch.algorithm_id.clone(),
             };
+
+            debug!(
+                path = new_path_str,
+                algorithm = file_patch.algorithm_id.as_deref().unwrap_or("unknown"),
+                patch_bytes = file_patch.bytes.len(),
+                "patch computed"
+            );
 
             Ok((i, pref, file_patch.bytes))
         })
@@ -999,22 +1033,62 @@ pub async fn compress_fs_partition(
 ) -> Result<(PartitionManifest, bool)> {
     let tmp_dir = tempfile::TempDir::new()?;
 
-    // Stage 1.
+    info!(
+        image_id,
+        base_image_id,
+        partition = descriptor.number,
+        "stage 1/8: walkdir"
+    );
     let mut draft = walkdir(base_root, target_root)?;
+    let n_records = draft.records.len();
+    info!(
+        image_id,
+        partition = descriptor.number,
+        records = n_records,
+        "stage 1/8: walkdir done"
+    );
 
     // Stage 2.
     if let Some(base_id) = base_image_id {
+        info!(
+            image_id,
+            base_image_id = base_id,
+            partition = descriptor.number,
+            "stage 2/8: s3_lookup"
+        );
         let pn = Some(descriptor.number as i32);
         draft = s3_lookup(draft, storage, base_id, pn).await?;
+        info!(
+            image_id,
+            partition = descriptor.number,
+            "stage 2/8: s3_lookup done"
+        );
     }
 
-    // Stage 3.
+    info!(
+        image_id,
+        partition = descriptor.number,
+        "stage 3/8: match_renamed"
+    );
     draft = match_renamed(draft);
+    info!(
+        image_id,
+        partition = descriptor.number,
+        "stage 3/8: match_renamed done"
+    );
 
-    // Stage 4.
+    info!(
+        image_id,
+        partition = descriptor.number,
+        "stage 4/8: cleanup"
+    );
     draft = cleanup(draft);
 
-    // Stage 5.
+    info!(
+        image_id,
+        partition = descriptor.number,
+        "stage 5/8: upload_lazy_blobs"
+    );
     draft = upload_lazy_blobs(
         draft,
         storage,
@@ -1024,10 +1098,24 @@ pub async fn compress_fs_partition(
     )
     .await?;
 
-    // Stage 6.
+    info!(
+        image_id,
+        partition = descriptor.number,
+        "stage 6/8: download_blobs_for_patches"
+    );
     draft = download_blobs_for_patches(draft, storage, tmp_dir.path()).await?;
 
-    // Stage 7.
+    let n_patches = draft
+        .records
+        .iter()
+        .filter(|r| matches!(r.patch, Some(crate::manifest::Patch::Lazy { .. })))
+        .count();
+    info!(
+        image_id,
+        partition = descriptor.number,
+        patches = n_patches,
+        "stage 7/8: compute_patches"
+    );
     draft = compute_patches(draft, router)?;
 
     // Clean up downloaded tmp files now that patches are computed.
@@ -1036,9 +1124,20 @@ pub async fn compress_fs_partition(
     }
     draft.tmp_files.clear();
 
-    // Stage 8.
+    info!(
+        image_id,
+        partition = descriptor.number,
+        "stage 8/8: pack_and_upload_archive"
+    );
     let (content, patches_compressed) =
         pack_and_upload_archive(draft, storage, image_id, fs_type).await?;
+
+    info!(
+        image_id,
+        partition = descriptor.number,
+        patches_compressed,
+        "pipeline complete"
+    );
 
     Ok((
         PartitionManifest {

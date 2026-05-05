@@ -31,6 +31,7 @@ use std::io::Read;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
+use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use crate::algorithm::FilePatch;
@@ -225,19 +226,42 @@ pub async fn decompress_fs_partition(
     router: &RouterEncoder,
 ) -> Result<PartitionDecompressStats> {
     // Step 1: Extract patch archive.
+    info!(
+        records = records.len(),
+        archive_bytes = archive_bytes.len(),
+        patches_compressed,
+        "decompress: step 1/4 extract archive"
+    );
     let patch_map = if archive_bytes.is_empty() {
         std::collections::HashMap::new()
     } else {
         extract_archive(archive_bytes, patches_compressed)?
     };
+    info!(
+        patches_in_archive = patch_map.len(),
+        "decompress: step 1/4 done"
+    );
 
     // Step 2: Collect affected base paths.
+    info!("decompress: step 2/4 collect affected base paths");
     let affected: HashSet<String> = records.iter().filter_map(|r| r.old_path.clone()).collect();
 
     // Step 3: Copy unchanged base files to output.
+    info!(
+        affected = affected.len(),
+        "decompress: step 3/4 copy unchanged"
+    );
     let mut stats = copy_unchanged_from_base(base_root, output_root, &affected)?;
+    info!(
+        files_copied = stats.files_written,
+        "decompress: step 3/4 done"
+    );
 
     // Step 4: Process each record.
+    info!(
+        records = records.len(),
+        "decompress: step 4/4 apply records"
+    );
     for record in records {
         apply_record(
             record,
@@ -250,6 +274,12 @@ pub async fn decompress_fs_partition(
         )
         .await?;
     }
+    info!(
+        files_written = stats.files_written,
+        bytes_written = stats.bytes_written,
+        patches_verified = stats.patches_verified,
+        "decompress: done"
+    );
 
     Ok(stats)
 }
@@ -267,8 +297,17 @@ async fn apply_record(
 ) -> Result<()> {
     let new_path = match &record.new_path {
         Some(p) => p,
-        None => return Ok(()), // deletion — nothing to write
+        None => {
+            debug!(old_path = ?record.old_path, "deletion — skipping");
+            return Ok(()); // deletion — nothing to write
+        }
     };
+
+    debug!(
+        new_path,
+        entry_type = ?record.entry_type,
+        "applying record"
+    );
 
     let dst = output_root.join(new_path);
 
@@ -510,6 +549,12 @@ async fn apply_file_record(
         stats.files_written += 1;
         stats.patches_verified += 1;
         stats.bytes_written += n;
+        debug!(
+            path = new_path,
+            bytes = n,
+            algorithm = pref.algorithm_id.as_deref().unwrap_or("unknown"),
+            "file reconstructed via patch"
+        );
         return Ok(());
     }
 
@@ -520,6 +565,7 @@ async fn apply_file_record(
         write_file(dst, &data)?;
         stats.files_written += 1;
         stats.bytes_written += n;
+        debug!(path = new_path, bytes = n, blob_id = %bref.blob_id, "file written from blob");
         return Ok(());
     }
 
@@ -532,11 +578,13 @@ async fn apply_file_record(
             write_file(dst, &data)?;
             stats.files_written += 1;
             stats.bytes_written += n;
+            debug!(new_path, old_path = %old, bytes = n, "file copied from base (metadata change)");
         }
         return Ok(());
     }
 
     // Case D: new file with no data (empty file)
+    debug!(new_path, "new empty file");
     write_file(dst, &[])?;
     stats.files_written += 1;
     Ok(())

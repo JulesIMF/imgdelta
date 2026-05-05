@@ -6,6 +6,7 @@
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use tracing_subscriber::{fmt, EnvFilter};
 
 mod commands;
 mod config;
@@ -58,7 +59,17 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // TODO Phase 6: initialise tracing + indicatif based on cli.log_level and config
+    // Initialise tracing subscriber based on --log-level flag or RUST_LOG env var.
+    // Default level is "warn" for quiet operation.  Use --log-level info/debug for
+    // pipeline stage messages and per-file details respectively.
+    let level = cli.log_level.as_deref().unwrap_or("warn");
+    fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level)),
+        )
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
 
     match cli.command {
         Commands::Compress(args) => commands::compress::run(args, cli.config.as_deref()).await,

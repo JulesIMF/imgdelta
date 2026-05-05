@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
+use tracing::{info, warn};
 
 use crate::compress_pipeline::compress_fs_partition;
 use crate::image::PartitionHandle;
@@ -131,6 +132,8 @@ impl Compressor for DefaultCompressor {
         let image_id = &options.image_id;
         let base_image_id: Option<&str> = options.base_image_id.as_deref();
 
+        info!(image_id, base_image_id, "compress: starting");
+
         // ── 1. Register image and mark as compressing ─────────────────────────
         self.storage
             .register_image(&ImageMeta {
@@ -183,6 +186,11 @@ impl Compressor for DefaultCompressor {
                 match target_ph {
                     PartitionHandle::Fs(fs_handle) => {
                         let descriptor = fs_handle.descriptor.clone();
+                        info!(
+                            image_id,
+                            partition = descriptor.number,
+                            "compress: processing Fs partition"
+                        );
 
                         // Mount target partition.
                         let target_mount = fs_handle.mount()?;
@@ -302,12 +310,22 @@ impl Compressor for DefaultCompressor {
             let elapsed = started_at.elapsed();
             let stats = stats_from_manifest(&manifest, elapsed);
 
+            info!(
+                image_id,
+                added = stats.files_added,
+                patched = stats.files_patched,
+                removed = stats.files_removed,
+                elapsed_secs = stats.elapsed_secs,
+                "compress: done"
+            );
+
             Ok(stats)
         }
         .await; // end of main pipeline
 
         // ── 8. On any error — mark image as Failed ────────────────────────────
         if let Err(ref e) = result {
+            warn!(image_id, error = %e, "compress: failed, marking as Failed");
             let _ = self
                 .storage
                 .update_status(image_id, ImageStatus::Failed(e.to_string()))
@@ -327,6 +345,8 @@ impl Compressor for DefaultCompressor {
 
         let started_at = Instant::now();
         let image_id = &options.image_id;
+
+        info!(image_id, "decompress: starting");
 
         let result: Result<DecompressionStats> = async {
             // ── 1. Download and parse manifest ────────────────────────────────
@@ -428,17 +448,27 @@ impl Compressor for DefaultCompressor {
                 .await?;
 
             let elapsed = started_at.elapsed();
-            Ok(DecompressionStats {
+            let decompression_stats = DecompressionStats {
                 total_files,
                 patches_verified,
                 total_bytes,
                 elapsed_secs: elapsed.as_secs_f64(),
-            })
+            };
+            info!(
+                image_id,
+                total_files,
+                patches_verified,
+                total_bytes,
+                elapsed_secs = decompression_stats.elapsed_secs,
+                "decompress: done"
+            );
+            Ok(decompression_stats)
         }
         .await;
 
         // On any error — mark image as Failed
         if let Err(ref e) = result {
+            warn!(image_id, error = %e, "decompress: failed, marking as Failed");
             let _ = self
                 .storage
                 .update_status(image_id, ImageStatus::Failed(e.to_string()))
