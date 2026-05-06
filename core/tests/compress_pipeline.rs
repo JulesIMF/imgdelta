@@ -447,7 +447,7 @@ async fn test_pack_upload_archive_produces_fs_content() {
 /// - lib/libz.so.2: renamed from libz.so.1 OR added
 #[tokio::test]
 async fn test_compress_fs_partition_golden() {
-    let storage = FakeStorage::new();
+    let storage = Arc::new(FakeStorage::new());
 
     let base_dir = TempDir::new().unwrap();
     let target_dir = TempDir::new().unwrap();
@@ -485,17 +485,17 @@ async fn test_compress_fs_partition_golden() {
     .unwrap();
 
     let descriptor = simple_descriptor();
-    let router = xdelta3_router();
+    let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
         image_delta_core::compress_pipeline::compress_fs_partition(
             base_dir.path(),
             target_dir.path(),
             &descriptor,
-            &storage,
+            Arc::clone(&storage) as Arc<dyn image_delta_core::Storage>,
             "img-002",
             Some("img-001"),
-            &router,
+            router,
             "ext4",
             1,
         )
@@ -564,17 +564,17 @@ async fn test_compress_manifest_serialisation_roundtrip() {
     write(target_dir.path(), "usr/bin/tool", b"tool v1.1");
 
     let descriptor = simple_descriptor();
-    let router = xdelta3_router();
+    let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
         image_delta_core::compress_pipeline::compress_fs_partition(
             base_dir.path(),
             target_dir.path(),
             &descriptor,
-            &storage,
+            Arc::new(storage) as Arc<dyn image_delta_core::Storage>,
             "img-rt",
             None,
-            &router,
+            router,
             "ext4",
             1,
         )
@@ -1010,7 +1010,7 @@ async fn test_pack_upload_archive_compressible_data_uses_gzip() {
 /// in the final manifest.
 #[tokio::test]
 async fn test_compress_fs_partition_first_compression_many_new_files() {
-    let storage = FakeStorage::new();
+    let storage = Arc::new(FakeStorage::new());
 
     let base_dir = TempDir::new().unwrap(); // empty — no base files
     let target_dir = TempDir::new().unwrap();
@@ -1026,17 +1026,17 @@ async fn test_compress_fs_partition_first_compression_many_new_files() {
     }
 
     let descriptor = simple_descriptor();
-    let router = xdelta3_router();
+    let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
         image_delta_core::compress_pipeline::compress_fs_partition(
             base_dir.path(),
             target_dir.path(),
             &descriptor,
-            &storage,
+            Arc::clone(&storage) as Arc<dyn image_delta_core::Storage>,
             "img-first",
             None, // no base image — first compression
-            &router,
+            router,
             "ext4",
             1,
         )

@@ -10,13 +10,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use sha2::{Digest, Sha256};
 use tracing::{error, info};
 
-use crate::compress::compress_fs_partition;
+use crate::compress::partition::{
+    BiosBootCompressor, FsPartitionCompressor, PartitionCompressor, RawPartitionCompressor,
+};
 use crate::image::PartitionHandle;
 use crate::manifest::{
-    BlobRef, Data, Manifest, ManifestHeader, PartitionContent, PartitionManifest, MANIFEST_VERSION,
+    Data, Manifest, ManifestHeader, PartitionContent, PartitionManifest, MANIFEST_VERSION,
 };
 use crate::partition::PartitionKind;
 use crate::storage::ImageStatus;
@@ -222,109 +223,53 @@ impl Compressor for DefaultCompressor {
             let mut _live_tmpdirs: Vec<tempfile::TempDir> = Vec::new();
 
             for target_ph in target_partitions {
-                match target_ph {
-                    PartitionHandle::Fs(fs_handle) => {
-                        let descriptor = fs_handle.descriptor.clone();
-                        info!(
-                            image_id,
-                            partition = descriptor.number,
-                            "compress: processing Fs partition"
-                        );
+                let descriptor = match &target_ph {
+                    PartitionHandle::Fs(h) => h.descriptor.clone(),
+                    PartitionHandle::BiosBoot(h) => h.descriptor.clone(),
+                    PartitionHandle::Raw(h) => h.descriptor.clone(),
+                };
+                info!(
+                    image_id,
+                    partition = descriptor.number,
+                    kind = ?std::mem::discriminant(&target_ph),
+                    "compress: processing partition"
+                );
 
-                        // Mount target partition.
-                        let target_mount = fs_handle.mount()?;
-                        let target_root_path: PathBuf = target_mount.root().to_path_buf();
-                        _live_mounts.push(target_mount);
+                let ctx = crate::compress::context::StageContext {
+                    storage: Arc::clone(&self.storage),
+                    router: Arc::clone(&self.router),
+                    image_id: Arc::from(image_id.as_str()),
+                    base_image_id: options.base_image_id.as_deref().map(Arc::from),
+                    partition_number: Some(descriptor.number as i32),
+                    workers: options.workers,
+                    tmp_dir: Arc::from(tempfile::TempDir::new()?.path()),
+                };
 
-                        // Find matching base Fs partition, or create empty temp dir.
-                        let base_root_path: PathBuf = match base_partitions.get(&descriptor.number)
-                        {
-                            Some(PartitionHandle::Fs(base_fs)) => {
-                                let base_mount = base_fs.mount()?;
-                                let p = base_mount.root().to_path_buf();
-                                _live_mounts.push(base_mount);
-                                p
-                            }
-                            _ => {
-                                // No matching base — first compression or type mismatch.
-                                let tmp = tempfile::TempDir::new()?;
-                                let p = tmp.path().to_path_buf();
-                                _live_tmpdirs.push(tmp);
-                                p
-                            }
-                        };
+                let fs_type = match &descriptor.kind {
+                    PartitionKind::Fs { fs_type } => fs_type.clone(),
+                    _ => "unknown".into(),
+                };
 
-                        let fs_type = match &descriptor.kind {
-                            PartitionKind::Fs { fs_type } => fs_type.clone(),
-                            _ => "unknown".into(),
-                        };
+                let compressor: Box<dyn PartitionCompressor> = match &target_ph {
+                    PartitionHandle::Fs(_) => Box::new(FsPartitionCompressor),
+                    PartitionHandle::BiosBoot(_) => Box::new(BiosBootCompressor),
+                    PartitionHandle::Raw(_) => Box::new(RawPartitionCompressor),
+                };
 
-                        let (pm, compressed, archive_bytes) = compress_fs_partition(
-                            &base_root_path,
-                            &target_root_path,
-                            &descriptor,
-                            self.storage.as_ref(),
-                            image_id,
-                            base_image_id,
-                            &self.router,
-                            &fs_type,
-                            options.workers,
-                        )
-                        .await?;
+                let (pm, compressed, archive_bytes) = compressor
+                    .compress(
+                        &ctx,
+                        target_ph,
+                        &fs_type,
+                        &base_partitions,
+                        &mut _live_mounts,
+                        &mut _live_tmpdirs,
+                    )
+                    .await?;
 
-                        patches_compressed = compressed;
-                        archive_stored_bytes += archive_bytes;
-                        partition_manifests.push(pm);
-                    }
-
-                    PartitionHandle::BiosBoot(bb_handle) => {
-                        let descriptor = bb_handle.descriptor.clone();
-                        info!(
-                            image_id,
-                            partition = descriptor.number,
-                            "compress: processing BiosBoot partition"
-                        );
-                        let bytes = bb_handle.read_raw()?;
-                        let sha256 = hex::encode(Sha256::digest(&bytes));
-                        let size = bytes.len() as u64;
-                        let blob_id = match self.storage.blob_exists(&sha256).await? {
-                            Some(id) => id,
-                            None => self.storage.upload_blob(&sha256, &bytes).await?,
-                        };
-                        partition_manifests.push(PartitionManifest {
-                            descriptor,
-                            content: PartitionContent::BiosBoot {
-                                blob_id,
-                                sha256,
-                                size,
-                            },
-                        });
-                    }
-
-                    PartitionHandle::Raw(raw_handle) => {
-                        let descriptor = raw_handle.descriptor.clone();
-                        info!(
-                            image_id,
-                            partition = descriptor.number,
-                            "compress: processing Raw partition"
-                        );
-                        let bytes = raw_handle.read_raw()?;
-                        let sha256 = hex::encode(Sha256::digest(&bytes));
-                        let size = bytes.len() as u64;
-                        let blob_id = match self.storage.blob_exists(&sha256).await? {
-                            Some(id) => id,
-                            None => self.storage.upload_blob(&sha256, &bytes).await?,
-                        };
-                        partition_manifests.push(PartitionManifest {
-                            descriptor,
-                            content: PartitionContent::Raw {
-                                size,
-                                blob: Some(BlobRef { blob_id, size }),
-                                patch: None,
-                            },
-                        });
-                    }
-                }
+                patches_compressed = compressed;
+                archive_stored_bytes += archive_bytes;
+                partition_manifests.push(pm);
             }
 
             // ── 5. Build and upload the manifest ──────────────────────────────────
@@ -516,7 +461,7 @@ impl Compressor for DefaultCompressor {
                             &archive_bytes,
                             patches_compressed,
                             Arc::clone(&self.storage),
-                            &self.router,
+                            Arc::clone(&self.router),
                             options.workers,
                         )
                         .await?;

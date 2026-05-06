@@ -1246,7 +1246,7 @@ impl Qcow2Image {
         };
 
         // Default router for patch decoding.
-        let router = RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new()));
+        let router = Arc::new(RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new())));
         let image_id = &manifest.header.image_id;
         let patches_compressed = manifest.header.patches_compressed;
 
@@ -1273,7 +1273,7 @@ impl Qcow2Image {
                 Arc::clone(&storage),
                 archive_bytes,
                 patches_compressed,
-                &router,
+                Arc::clone(&router),
                 workers,
             )
             .await?;
@@ -1317,7 +1317,7 @@ async fn apply_partition_with_base(
     storage: Arc<dyn Storage>,
     archive_bytes: &[u8],
     patches_compressed: bool,
-    router: &RouterEncoder,
+    router: Arc<RouterEncoder>,
     workers: usize,
 ) -> crate::Result<()> {
     match &pm.content {
@@ -1502,7 +1502,7 @@ async fn apply_partition(
             let archive_bytes = storage.download_patches(image_id).await.unwrap_or_default();
 
             // Build a default router (xdelta3 fallback, no glob rules).
-            let router = RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new()));
+            let router = Arc::new(RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new())));
 
             let result = decompress_fs_partition(
                 empty_base.path(),
@@ -1511,7 +1511,7 @@ async fn apply_partition(
                 &archive_bytes,
                 manifest.header.patches_compressed,
                 storage,
-                &router,
+                router,
                 1, // workers: qcow2 pack uses a single worker (no workers config here)
             )
             .await;

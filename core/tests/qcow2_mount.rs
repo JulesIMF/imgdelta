@@ -505,10 +505,10 @@ mod tests {
                             empty_base.path(),
                             mount.root(),
                             &desc,
-                            storage.as_ref(),
+                            Arc::clone(&storage) as Arc<dyn image_delta_core::Storage>,
                             image_id,
                             None,
-                            &router,
+                            Arc::clone(&router),
                             &fs_type,
                             1,
                         ))

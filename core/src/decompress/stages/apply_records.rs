@@ -22,6 +22,42 @@ use crate::storage::Storage;
 use crate::{Error, Result};
 
 use super::super::PartitionDecompressStats;
+use crate::decompress::context::DecompressContext;
+use crate::decompress::draft::DecompressDraft;
+use crate::decompress::stage::DecompressStage;
+
+// ── Stage struct ──────────────────────────────────────────────────────────────
+
+/// Stage 3: Download blobs and apply all manifest records to the output tree.
+pub struct ApplyRecords;
+
+#[async_trait::async_trait]
+impl DecompressStage for ApplyRecords {
+    fn name(&self) -> &'static str {
+        "apply_records"
+    }
+
+    async fn run(
+        &self,
+        ctx: &DecompressContext,
+        mut draft: DecompressDraft,
+    ) -> Result<DecompressDraft> {
+        let record_stats = apply_records_fn(
+            &ctx.records,
+            &ctx.base_root,
+            &ctx.output_root,
+            &draft.patch_map,
+            Arc::clone(&ctx.storage),
+            &ctx.router,
+            ctx.workers,
+        )
+        .await?;
+        draft.stats.files_written += record_stats.files_written;
+        draft.stats.patches_verified += record_stats.patches_verified;
+        draft.stats.bytes_written += record_stats.bytes_written;
+        Ok(draft)
+    }
+}
 
 #[cfg(unix)]
 use libc;

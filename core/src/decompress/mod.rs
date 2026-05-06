@@ -21,18 +21,17 @@ pub mod pipeline;
 pub mod stage;
 pub mod stages;
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-
-use tracing::info;
 
 use crate::manifest::Record;
 use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::Result;
 
-use stages::{apply_records_fn, copy_unchanged_fn, extract_archive_fn};
+use context::DecompressContext;
+use draft::DecompressDraft;
+use pipeline::DecompressPipeline;
 
 // ── Public stats type ─────────────────────────────────────────────────────────
 
@@ -57,66 +56,22 @@ pub async fn decompress_fs_partition(
     archive_bytes: &[u8],
     patches_compressed: bool,
     storage: Arc<dyn Storage>,
-    router: &RouterEncoder,
+    router: Arc<RouterEncoder>,
     workers: usize,
 ) -> Result<PartitionDecompressStats> {
-    // Stage 1: extract patch archive.
-    info!(
-        records = records.len(),
-        archive_bytes = archive_bytes.len(),
-        patches_compressed,
-        "decompress: stage 1/3 extract archive"
-    );
-    let patch_map = if archive_bytes.is_empty() {
-        std::collections::HashMap::new()
-    } else {
-        extract_archive_fn(archive_bytes, patches_compressed)?
-    };
-    info!(
-        patches_in_archive = patch_map.len(),
-        "decompress: stage 1/3 done"
-    );
-
-    // Stage 2: copy unchanged base files.
-    let affected: HashSet<String> = records.iter().filter_map(|r| r.old_path.clone()).collect();
-    info!(
-        affected = affected.len(),
-        "decompress: stage 2/3 copy unchanged"
-    );
-    let copy_stats = copy_unchanged_fn(base_root, output_root, &affected)?;
-    info!(
-        files_copied = copy_stats.files_written,
-        "decompress: stage 2/3 done"
-    );
-
-    // Stage 3: apply manifest records.
-    info!(
-        records = records.len(),
-        workers, "decompress: stage 3/3 apply records"
-    );
-    let record_stats = apply_records_fn(
-        records,
-        base_root,
-        output_root,
-        &patch_map,
+    let ctx = DecompressContext {
         storage,
         router,
         workers,
-    )
-    .await?;
-
-    let stats = PartitionDecompressStats {
-        files_written: copy_stats.files_written + record_stats.files_written,
-        patches_verified: record_stats.patches_verified,
-        bytes_written: copy_stats.bytes_written + record_stats.bytes_written,
+        base_root: Arc::from(base_root),
+        output_root: Arc::from(output_root),
+        records: Arc::from(records),
+        archive_bytes: Arc::from(archive_bytes),
+        patches_compressed,
     };
 
-    info!(
-        files_written = stats.files_written,
-        bytes_written = stats.bytes_written,
-        patches_verified = stats.patches_verified,
-        "decompress: all stages done"
-    );
+    let pipeline = DecompressPipeline::default_fs();
+    let draft = pipeline.run(&ctx, DecompressDraft::default()).await?;
 
-    Ok(stats)
+    Ok(draft.stats)
 }

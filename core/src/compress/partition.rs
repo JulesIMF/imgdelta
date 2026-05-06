@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -91,10 +92,10 @@ impl PartitionCompressor for FsPartitionCompressor {
             &base_root_path,
             &target_root_path,
             &descriptor,
-            ctx.storage.as_ref(),
+            Arc::clone(&ctx.storage),
             &ctx.image_id,
             ctx.base_image_id.as_deref(),
-            &ctx.router,
+            Arc::clone(&ctx.router),
             &partition_fs_type,
             ctx.workers,
         )

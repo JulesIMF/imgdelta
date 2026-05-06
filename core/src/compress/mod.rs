@@ -19,21 +19,17 @@ pub mod stages;
 pub use draft::FsDraft;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::manifest::PartitionManifest;
 use crate::partition::PartitionDescriptor;
 use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::Result;
-use tracing::info;
 
-use stages::cleanup::cleanup_fn;
-use stages::compute_patches::compute_patches_fn;
-use stages::download_blobs::download_blobs_for_patches_fn;
-use stages::match_renamed::match_renamed_fn;
+use context::StageContext;
+use pipeline::CompressPipeline;
 use stages::pack_archive::pack_and_upload_archive_fn;
-use stages::s3_lookup::s3_lookup_fn;
-use stages::upload_blobs::upload_lazy_blobs_fn;
 use stages::walkdir::walkdir_fn;
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -46,128 +42,35 @@ pub async fn compress_fs_partition(
     base_root: &Path,
     target_root: &Path,
     descriptor: &PartitionDescriptor,
-    storage: &dyn Storage,
+    storage: Arc<dyn Storage>,
     image_id: &str,
     base_image_id: Option<&str>,
-    router: &RouterEncoder,
+    router: Arc<RouterEncoder>,
     fs_type: &str,
     workers: usize,
 ) -> Result<(PartitionManifest, bool, u64)> {
     let tmp_dir = tempfile::TempDir::new()?;
 
-    info!(
-        image_id,
-        base_image_id,
-        partition = descriptor.number,
-        "stage 1/8: walkdir"
-    );
+    // Stage 1: walkdir (needs filesystem paths, called outside the pipeline).
     let draft = walkdir_fn(base_root, target_root)?;
-    let n_records = draft.records.len();
-    info!(
-        image_id,
-        partition = descriptor.number,
-        records = n_records,
-        "stage 1/8: walkdir done"
-    );
 
-    let draft = if let Some(base_id) = base_image_id {
-        info!(
-            image_id,
-            base_image_id = base_id,
-            partition = descriptor.number,
-            "stage 2/8: s3_lookup"
-        );
-        let d = s3_lookup_fn(draft, storage, base_id, Some(descriptor.number as i32)).await?;
-        info!(
-            image_id,
-            partition = descriptor.number,
-            "stage 2/8: s3_lookup done"
-        );
-        d
-    } else {
-        draft
+    // Stages 2–7 via the pipeline runner.
+    let ctx = StageContext {
+        storage: Arc::clone(&storage),
+        router,
+        image_id: Arc::from(image_id),
+        base_image_id: base_image_id.map(Arc::from),
+        partition_number: Some(descriptor.number as i32),
+        workers,
+        tmp_dir: Arc::from(tmp_dir.path()),
     };
 
-    info!(
-        image_id,
-        partition = descriptor.number,
-        "stage 3/8: match_renamed"
-    );
-    let draft = match_renamed_fn(draft, 0.85);
-    let n_renamed = draft
-        .records
-        .iter()
-        .filter(|r| r.old_path.is_some() && r.new_path.is_some() && r.old_path != r.new_path)
-        .count();
-    info!(
-        image_id,
-        partition = descriptor.number,
-        renamed = n_renamed,
-        "stage 3/8: match_renamed done"
-    );
+    let pipeline = CompressPipeline::default_fs();
+    let draft = pipeline.run(&ctx, draft, None).await?;
 
-    info!(
-        image_id,
-        partition = descriptor.number,
-        "stage 4/8: cleanup"
-    );
-    let draft = cleanup_fn(draft);
-
-    info!(
-        image_id,
-        partition = descriptor.number,
-        "stage 5/8: upload_blobs"
-    );
-    let draft = upload_lazy_blobs_fn(
-        draft,
-        storage,
-        image_id,
-        base_image_id,
-        Some(descriptor.number as i32),
-    )
-    .await?;
-
-    info!(
-        image_id,
-        partition = descriptor.number,
-        "stage 6/8: download_blobs"
-    );
-    let draft = download_blobs_for_patches_fn(draft, storage, tmp_dir.path()).await?;
-
-    let n_patches = draft
-        .records
-        .iter()
-        .filter(|r| matches!(r.patch, Some(crate::manifest::Patch::Lazy { .. })))
-        .count();
-    info!(
-        image_id,
-        partition = descriptor.number,
-        patches = n_patches,
-        "stage 7/8: compute_patches"
-    );
-    let draft = compute_patches_fn(draft, router, workers)?;
-
-    for p in &draft.tmp_files {
-        let _ = std::fs::remove_file(p);
-    }
-    let mut draft = draft;
-    draft.tmp_files.clear();
-
-    info!(
-        image_id,
-        partition = descriptor.number,
-        "stage 8/8: pack_archive"
-    );
+    // Stage 8: pack and upload archive.
     let (content, patches_compressed, archive_stored_bytes) =
-        pack_and_upload_archive_fn(draft, storage, image_id, fs_type).await?;
-
-    info!(
-        image_id,
-        partition = descriptor.number,
-        patches_compressed,
-        archive_stored_bytes,
-        "pipeline complete"
-    );
+        pack_and_upload_archive_fn(draft, storage.as_ref(), image_id, fs_type).await?;
 
     Ok((
         PartitionManifest {
