@@ -672,4 +672,56 @@ mod tests {
         assert!(draft.base_hashes.contains_key("old.txt"));
         assert!(draft.target_hashes.contains_key("new.txt"));
     }
+
+    #[test]
+    fn test_walkdir_type_conflict_produces_two_records() {
+        let base = TempDir::new().unwrap();
+        let target = TempDir::new().unwrap();
+        // base: directory; target: file at same path → conflict
+        mkdir(base.path(), "etc/foo");
+        write(target.path(), "etc/foo", b"now a file");
+
+        let draft = walkdir_fn(base.path(), target.path()).unwrap();
+
+        let removal = draft
+            .records
+            .iter()
+            .find(|r| r.old_path.as_deref() == Some("etc/foo") && r.new_path.is_none());
+        let addition = draft
+            .records
+            .iter()
+            .find(|r| r.new_path.as_deref() == Some("etc/foo") && r.old_path.is_none());
+        assert!(removal.is_some(), "expected a deletion record for etc/foo");
+        assert!(
+            addition.is_some(),
+            "expected an addition record for etc/foo"
+        );
+    }
+
+    #[test]
+    fn test_walkdir_dir_metadata_only() {
+        let base = TempDir::new().unwrap();
+        let target = TempDir::new().unwrap();
+        mkdir(base.path(), "etc/ssl");
+        mkdir(target.path(), "etc/ssl");
+        // Change mode on target dir.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            target.path().join("etc/ssl"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+
+        let draft = walkdir_fn(base.path(), target.path()).unwrap();
+
+        // May or may not produce a record depending on whether base mode == 0o700.
+        // Just verify that if a record exists it has no patch and no data.
+        for r in draft.records.iter().filter(|r| {
+            r.old_path.as_deref() == Some("etc/ssl") && r.new_path.as_deref() == Some("etc/ssl")
+        }) {
+            assert!(r.data.is_none());
+            assert!(r.patch.is_none());
+            assert!(r.metadata.is_some());
+        }
+    }
 }

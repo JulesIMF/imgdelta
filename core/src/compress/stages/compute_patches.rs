@@ -162,3 +162,139 @@ pub(crate) fn read_entry_bytes(data: &DataRef, entry_type: &EntryType) -> Result
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+
+    use super::*;
+    use crate::manifest::{EntryType, Patch, Record};
+    use crate::routing::RouterEncoder;
+    use crate::{AlgorithmCode, Xdelta3Encoder};
+
+    fn write(dir: &std::path::Path, rel: &str, content: &[u8]) {
+        let full = dir.join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(full, content).unwrap();
+    }
+
+    fn make_xdelta3_router() -> RouterEncoder {
+        RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new()))
+    }
+
+    #[test]
+    fn test_compute_patches_xdelta3() {
+        let base_dir = tempfile::TempDir::new().unwrap();
+        let target_dir = tempfile::TempDir::new().unwrap();
+        write(base_dir.path(), "lib/libz.so.1", b"base content of libz");
+        write(
+            target_dir.path(),
+            "lib/libz.so.1",
+            b"updated content of libz v2",
+        );
+
+        let mut draft = FsDraft::default();
+        draft.records.push(Record {
+            old_path: Some("lib/libz.so.1".into()),
+            new_path: Some("lib/libz.so.1".into()),
+            entry_type: EntryType::File,
+            size: 26,
+            data: None,
+            patch: Some(Patch::Lazy {
+                old_data: DataRef::FilePath(base_dir.path().join("lib/libz.so.1")),
+                new_data: DataRef::FilePath(target_dir.path().join("lib/libz.so.1")),
+            }),
+            metadata: None,
+        });
+
+        let router = make_xdelta3_router();
+        let draft = compute_patches_fn(draft, &router, 4).unwrap();
+
+        let record = &draft.records[0];
+        assert!(
+            matches!(record.patch, Some(Patch::Real(_))),
+            "Lazy patch should become Real after compute_patches"
+        );
+        let pref = match &record.patch {
+            Some(Patch::Real(p)) => p,
+            _ => unreachable!(),
+        };
+        assert_eq!(pref.algorithm_code, AlgorithmCode::Xdelta3);
+        assert!(!pref.sha256.is_empty());
+        assert!(
+            draft.patch_bytes.contains_key(&pref.archive_entry),
+            "patch bytes must be stored"
+        );
+    }
+
+    #[test]
+    fn test_compute_patches_passthrough_symlink() {
+        let base_dir = tempfile::TempDir::new().unwrap();
+        let target_dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(base_dir.path().join("usr/bin")).unwrap();
+        std::fs::create_dir_all(target_dir.path().join("usr/bin")).unwrap();
+        symlink(
+            "/usr/bin/python3.10",
+            base_dir.path().join("usr/bin/python"),
+        )
+        .unwrap();
+        symlink(
+            "/usr/bin/python3.11",
+            target_dir.path().join("usr/bin/python"),
+        )
+        .unwrap();
+
+        let mut draft = FsDraft::default();
+        draft.records.push(Record {
+            old_path: Some("usr/bin/python".into()),
+            new_path: Some("usr/bin/python".into()),
+            entry_type: EntryType::Symlink,
+            size: 0,
+            data: None,
+            patch: Some(Patch::Lazy {
+                old_data: DataRef::FilePath(base_dir.path().join("usr/bin/python")),
+                new_data: DataRef::FilePath(target_dir.path().join("usr/bin/python")),
+            }),
+            metadata: None,
+        });
+
+        let router = make_xdelta3_router();
+        let draft = compute_patches_fn(draft, &router, 4).unwrap();
+
+        let pref = match &draft.records[0].patch {
+            Some(Patch::Real(p)) => p,
+            _ => panic!("expected Patch::Real"),
+        };
+        assert_eq!(
+            pref.algorithm_code,
+            AlgorithmCode::Passthrough,
+            "symlink patch must use passthrough encoder"
+        );
+
+        // Verify: decoded patch = new link target bytes.
+        let patch_bytes = &draft.patch_bytes[&pref.archive_entry];
+        let decoded = String::from_utf8(patch_bytes.clone()).unwrap();
+        assert_eq!(decoded, "/usr/bin/python3.11");
+    }
+
+    #[test]
+    fn test_compute_patches_no_lazy_patches_is_noop() {
+        let mut draft = FsDraft::default();
+        draft.records.push(Record {
+            old_path: Some("etc/removed".into()),
+            new_path: None,
+            entry_type: EntryType::File,
+            size: 0,
+            data: None,
+            patch: None,
+            metadata: None,
+        });
+
+        let router = make_xdelta3_router();
+        let result = compute_patches_fn(draft, &router, 1).unwrap();
+
+        assert!(result.patch_bytes.is_empty());
+    }
+}

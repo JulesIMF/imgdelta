@@ -261,3 +261,150 @@ fn build_rename_patch(records: &[Record], rem_idx: usize, add_idx: usize) -> Opt
         new_data: DataRef::FilePath(new_local),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn lazy_blob_record(old: Option<&str>, new: Option<&str>, path: &str) -> Record {
+        Record {
+            old_path: old.map(|s| s.to_string()),
+            new_path: new.map(|s| s.to_string()),
+            entry_type: EntryType::File,
+            size: 100,
+            data: if new.is_some() {
+                Some(Data::LazyBlob(PathBuf::from(format!("/mnt/target/{path}"))))
+            } else {
+                Some(Data::OriginalFile(PathBuf::from(format!(
+                    "/mnt/base/{path}"
+                ))))
+            },
+            patch: None,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn test_match_renamed_basic() {
+        let mut draft = FsDraft::default();
+        // Removed: lib/libfoo.so.1
+        draft.records.push(lazy_blob_record(
+            Some("lib/libfoo.so.1"),
+            None,
+            "lib/libfoo.so.1",
+        ));
+        // Added: lib/libfoo.so.2 (same dir, different version)
+        draft.records.push(lazy_blob_record(
+            None,
+            Some("lib/libfoo.so.2"),
+            "lib/libfoo.so.2",
+        ));
+        // Simulate a pure path rename (content unchanged): same sha256 → Pass 1.
+        draft
+            .base_hashes
+            .insert("lib/libfoo.so.1".into(), [1u8; 32]);
+        draft
+            .target_hashes
+            .insert("lib/libfoo.so.2".into(), [1u8; 32]);
+
+        let draft = match_renamed_fn(draft, 0.85);
+
+        // After matching: one renamed record, no orphan added/removed.
+        let renamed = draft.records.iter().find(|r| {
+            r.old_path.as_deref() == Some("lib/libfoo.so.1")
+                && r.new_path.as_deref() == Some("lib/libfoo.so.2")
+        });
+        assert!(renamed.is_some(), "expected a renamed record");
+        assert!(
+            matches!(renamed.unwrap().patch, Some(Patch::Lazy { .. })),
+            "renamed record should have a Lazy patch"
+        );
+        // Original add/remove records should be gone.
+        assert!(
+            !draft
+                .records
+                .iter()
+                .any(|r| r.old_path.as_deref() == Some("lib/libfoo.so.1") && r.new_path.is_none()),
+            "orphan remove record should be consumed"
+        );
+    }
+
+    #[test]
+    fn test_match_renamed_pass2_high_path_score() {
+        // Pass 2: sha256 mismatch, but path similarity ≥ 0.85 (version bump in
+        // same directory with deep enough path).
+        let mut draft = FsDraft::default();
+        draft.records.push(lazy_blob_record(
+            Some("usr/lib/x86_64-linux-gnu/libfoo.so.1"),
+            None,
+            "usr/lib/x86_64-linux-gnu/libfoo.so.1",
+        ));
+        draft.records.push(lazy_blob_record(
+            None,
+            Some("usr/lib/x86_64-linux-gnu/libfoo.so.2"),
+            "usr/lib/x86_64-linux-gnu/libfoo.so.2",
+        ));
+        // Different sha256 → Pass 1 skips them; Path similarity ≈ 0.88 → Pass 2 accepts.
+        draft
+            .base_hashes
+            .insert("usr/lib/x86_64-linux-gnu/libfoo.so.1".into(), [1u8; 32]);
+        draft
+            .target_hashes
+            .insert("usr/lib/x86_64-linux-gnu/libfoo.so.2".into(), [2u8; 32]);
+
+        let draft = match_renamed_fn(draft, 0.85);
+
+        let renamed = draft.records.iter().find(|r| {
+            r.old_path.as_deref() == Some("usr/lib/x86_64-linux-gnu/libfoo.so.1")
+                && r.new_path.as_deref() == Some("usr/lib/x86_64-linux-gnu/libfoo.so.2")
+        });
+        assert!(renamed.is_some(), "Pass 2 should match version-bump rename");
+    }
+
+    #[test]
+    fn test_match_renamed_pass2_rejects_cross_package() {
+        // Pass 2 must NOT match files from different packages that share a
+        // generic filename (copyright, changelog.gz, etc.).
+        // Score for libssl3/copyright → libcurl4/copyright ≈ 0.84 < 0.85.
+        let mut draft = FsDraft::default();
+        draft.records.push(lazy_blob_record(
+            Some("usr/share/doc/libssl3/copyright"),
+            None,
+            "usr/share/doc/libssl3/copyright",
+        ));
+        draft.records.push(lazy_blob_record(
+            None,
+            Some("usr/share/doc/libcurl4/copyright"),
+            "usr/share/doc/libcurl4/copyright",
+        ));
+        // Different sha256 and different packages → should NOT be matched.
+        draft
+            .base_hashes
+            .insert("usr/share/doc/libssl3/copyright".into(), [1u8; 32]);
+        draft
+            .target_hashes
+            .insert("usr/share/doc/libcurl4/copyright".into(), [2u8; 32]);
+
+        let before = draft.records.len();
+        let draft = match_renamed_fn(draft, 0.85);
+        assert_eq!(
+            draft.records.len(),
+            before,
+            "cross-package copyright must not be matched as rename"
+        );
+    }
+
+    #[test]
+    fn test_match_renamed_no_candidates_is_noop() {
+        let mut draft = FsDraft::default();
+        draft
+            .records
+            .push(lazy_blob_record(Some("etc/old.conf"), None, "etc/old.conf"));
+        // No added files → nothing to match.
+        let before_count = draft.records.len();
+        let draft = match_renamed_fn(draft, 0.85);
+        assert_eq!(draft.records.len(), before_count);
+    }
+}
