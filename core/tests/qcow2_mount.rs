@@ -511,6 +511,7 @@ mod tests {
                             Arc::clone(&router),
                             &fs_type,
                             1,
+                            None,
                         ))
                         .expect("compress_fs_partition must succeed");
                     patches_compressed = compressed;

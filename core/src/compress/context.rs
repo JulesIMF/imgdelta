@@ -36,4 +36,7 @@ pub struct StageContext {
     /// The directory is owned by the caller (`TempDir` in `compress_fs_partition`)
     /// and is guaranteed to outlive all stages.
     pub tmp_dir: Arc<Path>,
+    /// Optional directory to dump per-stage debug snapshots into.
+    /// When `Some`, each stage writes a `<NN>_<name>.json` file after running.
+    pub debug_dir: Option<Arc<Path>>,
 }

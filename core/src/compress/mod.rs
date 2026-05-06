@@ -58,6 +58,7 @@ pub async fn compress_fs_partition(
     router: Arc<RouterEncoder>,
     fs_type: &str,
     workers: usize,
+    debug_dir: Option<&Path>,
 ) -> Result<(PartitionManifest, bool, u64)> {
     let tmp_dir = tempfile::TempDir::new()?;
 
@@ -73,10 +74,11 @@ pub async fn compress_fs_partition(
         partition_number: Some(descriptor.number as i32),
         workers,
         tmp_dir: Arc::from(tmp_dir.path()),
+        debug_dir: debug_dir.map(Arc::from),
     };
 
     let pipeline = CompressPipeline::default_fs();
-    let draft = pipeline.run(&ctx, draft, None).await?;
+    let draft = pipeline.run(&ctx, draft, debug_dir).await?;
 
     // Stage 8: pack and upload archive.
     let (content, patches_compressed, archive_stored_bytes) =

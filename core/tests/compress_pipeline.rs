@@ -498,6 +498,7 @@ async fn test_compress_fs_partition_golden() {
             router,
             "ext4",
             1,
+            None,
         )
         .await
         .unwrap();
@@ -577,6 +578,7 @@ async fn test_compress_manifest_serialisation_roundtrip() {
             router,
             "ext4",
             1,
+            None,
         )
         .await
         .unwrap();
@@ -1039,6 +1041,7 @@ async fn test_compress_fs_partition_first_compression_many_new_files() {
             router,
             "ext4",
             1,
+            None,
         )
         .await
         .unwrap();

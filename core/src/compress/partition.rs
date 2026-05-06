@@ -98,6 +98,7 @@ impl PartitionCompressor for FsPartitionCompressor {
             Arc::clone(&ctx.router),
             &partition_fs_type,
             ctx.workers,
+            ctx.debug_dir.as_deref(),
         )
         .await
     }

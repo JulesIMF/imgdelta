@@ -72,6 +72,9 @@ pub struct CompressOptions {
     /// overwritten.  When `false` (the default), an error is returned if the
     /// image already exists and is not in the `failed` state.
     pub overwrite: bool,
+    /// If set, each compress stage dumps a JSON snapshot of the draft into
+    /// this directory as `<NN>_<stage>.json`.
+    pub debug_dir: Option<std::path::PathBuf>,
 }
 
 pub struct DecompressOptions {
@@ -243,6 +246,7 @@ impl Compressor for DefaultCompressor {
                     partition_number: Some(descriptor.number as i32),
                     workers: options.workers,
                     tmp_dir: Arc::from(tempfile::TempDir::new()?.path()),
+                    debug_dir: options.debug_dir.as_deref().map(Arc::from),
                 };
 
                 let fs_type = match &descriptor.kind {
