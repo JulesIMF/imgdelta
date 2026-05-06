@@ -259,6 +259,11 @@ impl Compressor for DefaultCompressor {
 
                     PartitionHandle::BiosBoot(bb_handle) => {
                         let descriptor = bb_handle.descriptor.clone();
+                        info!(
+                            image_id,
+                            partition = descriptor.number,
+                            "compress: processing BiosBoot partition"
+                        );
                         let bytes = bb_handle.read_raw()?;
                         let sha256 = hex::encode(Sha256::digest(&bytes));
                         let size = bytes.len() as u64;
@@ -278,6 +283,11 @@ impl Compressor for DefaultCompressor {
 
                     PartitionHandle::Raw(raw_handle) => {
                         let descriptor = raw_handle.descriptor.clone();
+                        info!(
+                            image_id,
+                            partition = descriptor.number,
+                            "compress: processing Raw partition"
+                        );
                         let bytes = raw_handle.read_raw()?;
                         let sha256 = hex::encode(Sha256::digest(&bytes));
                         let size = bytes.len() as u64;

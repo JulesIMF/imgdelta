@@ -27,7 +27,7 @@
 //! The orchestrator [`compress_fs_partition`] chains all stages and returns a
 //! [`PartitionManifest`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -68,6 +68,17 @@ pub struct FsDraft {
     /// - Stage 6: `DataRef::BlobRef` in patches → `DataRef::FilePath`
     /// - Stage 7: `Patch::Lazy` → `Patch::Real`
     pub records: Vec<Record>,
+
+    /// SHA-256 hashes for **base-image** regular files, keyed by relative path
+    /// (same key space as `old_path` on removed records).
+    ///
+    /// Used by `match_renamed` (Pass 1) to identify pure-path renames — files
+    /// where the content is identical but the path changed.
+    pub base_hashes: HashMap<String, [u8; 32]>,
+
+    /// SHA-256 hashes for **target-image** regular files, keyed by relative
+    /// path (same key space as `new_path` on added records).
+    pub target_hashes: HashMap<String, [u8; 32]>,
 
     /// Temporary files downloaded from S3 for patch computation.
     ///
@@ -188,8 +199,20 @@ pub fn walkdir(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
         }
     }
 
+    // Populate sha256 side-maps for match_renamed (Pass 1).
+    let base_hashes: HashMap<String, [u8; 32]> = base_snap
+        .iter()
+        .filter_map(|(path, snap)| snap.sha256.map(|h| (path.clone(), h)))
+        .collect();
+    let target_hashes: HashMap<String, [u8; 32]> = target_snap
+        .iter()
+        .filter_map(|(path, snap)| snap.sha256.map(|h| (path.clone(), h)))
+        .collect();
+
     Ok(FsDraft {
         records,
+        base_hashes,
+        target_hashes,
         ..Default::default()
     })
 }
@@ -632,16 +655,28 @@ pub async fn s3_lookup(
 // Stage 3 — match_renamed
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Detect file renames by matching removed files against added `LazyBlob` files.
+/// Detect file renames by matching removed files against added files.
 ///
-/// Files already matched by [`s3_lookup`] (i.e. with `data = BlobRef`) are not
-/// considered as rename targets to avoid breaking an already-optimal delta base.
+/// Two-pass algorithm:
 ///
-/// A matched pair is collapsed into a single renamed record with:
-/// `old_path = removed`, `new_path = added`,
-/// `patch = Lazy { old: FilePath(base/old), new: FilePath(target/new) }`.
+/// **Pass 1 — SHA-256 exact match.**  Files whose SHA-256 is identical on both
+/// sides are pure path-renames (content did not change).  Within each
+/// same-hash group a bijective path-similarity match decides the pairing when
+/// there are multiple candidates (e.g. many packages sharing the same GPL-2
+/// `copyright` text).
+///
+/// **Pass 2 — high-confidence path match.**  For files not claimed by Pass 1,
+/// a path-similarity score ≥ 0.85 is required.  This threshold is calibrated
+/// to accept version-bump renames (`libssl3.so.3.0.5 → libssl3.so.3.0.7`,
+/// score ≈ 0.88) while rejecting cross-package false positives
+/// (`libssl3/copyright → libcurl4/copyright`, score ≈ 0.84).
+///
+/// Files already matched by [`s3_lookup`] (`data = BlobRef + Lazy patch`) are
+/// also eligible: the rename annotation is folded in while keeping the
+/// existing delta-base relationship from s3_lookup.
 pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
-    // Collect candidate (index, path) pairs.
+    // ── Candidate pools ───────────────────────────────────────────────────────
+
     let removed: Vec<(usize, String)> = draft
         .records
         .iter()
@@ -652,11 +687,8 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
 
     // A file is a rename target if it is either:
     //  a) a LazyBlob (not yet seen by s3_lookup), or
-    //  b) a BlobRef with a Lazy patch already set by s3_lookup.
-    //     In case (b) the file was matched to a base blob by path similarity,
-    //     which is exactly what makes it a version-bump rename
-    //     (e.g. libssl3-2.31 → libssl3-2.35).  We fold the rename information
-    //     in and keep the existing delta-base relationship.
+    //  b) a BlobRef + Lazy patch from s3_lookup (version-bump rename whose
+    //     delta-base was already established; we just add the rename annotation).
     let added: Vec<(usize, String)> = draft
         .records
         .iter()
@@ -675,92 +707,210 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
         return draft;
     }
 
-    let removed_paths: Vec<String> = removed.iter().map(|(_, p)| p.clone()).collect();
-    let added_paths: Vec<String> = added.iter().map(|(_, p)| p.clone()).collect();
+    // ── SHA-256 index ─────────────────────────────────────────────────────────
 
-    // For rename detection we must not penalise cross-directory matches: a
-    // directory rename legitimately moves every file to a new first component.
-    // first_component_weight is kept at 0.0 here (the default 5.0 is designed
-    // for the delta-base lookup stage, where same-directory matches are
-    // preferred; here it would cause all directory-rename pairs to fall below
-    // the min_score threshold).
-    let rename_match_config = PathMatchConfig {
+    // sha256 → Vec<(record_idx, path)>
+    let mut rem_by_hash: HashMap<[u8; 32], Vec<(usize, String)>> = HashMap::new();
+    for (rec_idx, path) in &removed {
+        if let Some(&h) = draft.base_hashes.get(path.as_str()) {
+            rem_by_hash
+                .entry(h)
+                .or_default()
+                .push((*rec_idx, path.clone()));
+        }
+    }
+    let mut add_by_hash: HashMap<[u8; 32], Vec<(usize, String)>> = HashMap::new();
+    for (rec_idx, path) in &added {
+        if let Some(&h) = draft.target_hashes.get(path.as_str()) {
+            add_by_hash
+                .entry(h)
+                .or_default()
+                .push((*rec_idx, path.clone()));
+        }
+    }
+
+    let mut matched_rem: HashSet<usize> = HashSet::new();
+    let mut matched_add: HashSet<usize> = HashSet::new();
+    let mut new_records: Vec<Record> = Vec::new();
+    let mut remove_indices: Vec<usize> = Vec::new();
+
+    // ── Pass 1: SHA-256 exact matches ─────────────────────────────────────────
+    //
+    // Within each same-hash group, use path similarity to pair files (bijection).
+    // min_score = 0.0: any pairing is acceptable since content is identical;
+    // path similarity only breaks ties.
+    let sha256_config = PathMatchConfig {
+        min_score: 0.0,
         first_component_weight: 0.0,
         ..PathMatchConfig::default()
     };
-    let matches = match find_best_matches(&removed_paths, &added_paths, &rename_match_config) {
-        Ok(m) => m,
-        Err(_) => return draft,
-    };
-
-    let mut remove_indices: Vec<usize> = Vec::new();
-    let mut new_records: Vec<Record> = Vec::new();
-
-    for m in &matches {
-        let Some((rem_idx, old_path)) = removed.iter().find(|(_, p)| *p == m.source_path) else {
+    for (hash, rem_group) in &rem_by_hash {
+        let Some(add_group) = add_by_hash.get(hash) else {
             continue;
         };
-        let Some((add_idx, new_path)) = added.iter().find(|(_, p)| *p == m.target_path) else {
+        let sub_rem: Vec<String> = rem_group
+            .iter()
+            .filter(|(ri, _)| !matched_rem.contains(ri))
+            .map(|(_, p)| p.clone())
+            .collect();
+        let sub_add: Vec<String> = add_group
+            .iter()
+            .filter(|(ai, _)| !matched_add.contains(ai))
+            .map(|(_, p)| p.clone())
+            .collect();
+        if sub_rem.is_empty() || sub_add.is_empty() {
             continue;
+        }
+        let sub_matches = match find_best_matches(&sub_rem, &sub_add, &sha256_config) {
+            Ok(m) => m,
+            Err(_) => continue,
         };
-
-        // Build the patch for this rename.
-        //
-        // Case A — added is still a LazyBlob (s3_lookup did not run yet or did
-        //           not match this file): create a new Lazy patch using the
-        //           local base-image file as the old side.
-        // Case B — added has a BlobRef + Lazy patch from s3_lookup: the patch
-        //           already points to the correct delta base (the old S3 blob).
-        //           Reuse it verbatim and just attach the rename paths.
-        let patch = match &draft.records[*add_idx] {
-            Record {
-                data: Some(Data::LazyBlob(new_local)),
-                ..
-            } => {
-                let old_data_path = match &draft.records[*rem_idx].data {
-                    Some(Data::OriginalFile(p)) => DataRef::FilePath(p.clone()),
-                    _ => continue,
-                };
-                Patch::Lazy {
-                    old_data: old_data_path,
-                    new_data: DataRef::FilePath(new_local.clone()),
-                }
-            }
-            Record {
-                data: Some(Data::BlobRef(_)),
-                patch: Some(existing_patch),
-                ..
-            } => existing_patch.clone(),
-            _ => continue,
-        };
-
-        let size = draft.records[*add_idx].size;
-        // Carry the target-file metadata from the "added" record so the
-        // decompressor restores mode/mtime/uid/gid on the renamed file.
-        let metadata = draft.records[*add_idx].metadata.clone();
-        new_records.push(Record {
-            old_path: Some(old_path.clone()),
-            new_path: Some(new_path.clone()),
-            entry_type: EntryType::File,
-            size,
-            data: None,
-            patch: Some(patch),
-            metadata,
-        });
-
-        remove_indices.push(*rem_idx);
-        remove_indices.push(*add_idx);
+        for m in &sub_matches {
+            let Some((rem_rec_idx, old_path)) = rem_group
+                .iter()
+                .find(|(ri, p)| *p == m.source_path && !matched_rem.contains(ri))
+            else {
+                continue;
+            };
+            let Some((add_rec_idx, new_path)) = add_group
+                .iter()
+                .find(|(ai, p)| *p == m.target_path && !matched_add.contains(ai))
+            else {
+                continue;
+            };
+            let Some(patch) = build_rename_patch(&draft.records, *rem_rec_idx, *add_rec_idx) else {
+                continue;
+            };
+            let size = draft.records[*add_rec_idx].size;
+            let metadata = draft.records[*add_rec_idx].metadata.clone();
+            new_records.push(Record {
+                old_path: Some(old_path.clone()),
+                new_path: Some(new_path.clone()),
+                entry_type: EntryType::File,
+                size,
+                data: None,
+                patch: Some(patch),
+                metadata,
+            });
+            matched_rem.insert(*rem_rec_idx);
+            matched_add.insert(*add_rec_idx);
+            remove_indices.push(*rem_rec_idx);
+            remove_indices.push(*add_rec_idx);
+        }
     }
 
-    // Remove matched records (reverse order to preserve lower indices).
+    // ── Pass 2: high-confidence path match (SHA-256 mismatch) ─────────────────
+    //
+    // Only match when path similarity ≥ 0.85.  This threshold:
+    //   • accepts version-bump renames in the same directory
+    //     (e.g. libssl3.so.3.0.5 → libssl3.so.3.0.7, score ≈ 0.88)
+    //   • rejects cross-package generic-filename false positives
+    //     (e.g. libssl3/copyright → libcurl4/copyright, score ≈ 0.84)
+    let remaining_rem: Vec<(usize, String)> = removed
+        .iter()
+        .filter(|(ri, _)| !matched_rem.contains(ri))
+        .cloned()
+        .collect();
+    let remaining_add: Vec<(usize, String)> = added
+        .iter()
+        .filter(|(ai, _)| !matched_add.contains(ai))
+        .cloned()
+        .collect();
+
+    if !remaining_rem.is_empty() && !remaining_add.is_empty() {
+        let rem_paths: Vec<String> = remaining_rem.iter().map(|(_, p)| p.clone()).collect();
+        let add_paths: Vec<String> = remaining_add.iter().map(|(_, p)| p.clone()).collect();
+        let rename_config = PathMatchConfig {
+            min_score: 0.85,
+            first_component_weight: 0.0,
+            ..PathMatchConfig::default()
+        };
+        let path_matches =
+            find_best_matches(&rem_paths, &add_paths, &rename_config).unwrap_or_default();
+        for m in &path_matches {
+            let Some((rem_rec_idx, old_path)) =
+                remaining_rem.iter().find(|(_, p)| *p == m.source_path)
+            else {
+                continue;
+            };
+            let Some((add_rec_idx, new_path)) =
+                remaining_add.iter().find(|(_, p)| *p == m.target_path)
+            else {
+                continue;
+            };
+
+            // Pass 2 is for version-bump renames where the filename itself
+            // changed (e.g. libssl3.so.3.0.5 → libssl3.so.3.0.7).
+            // When basenames are IDENTICAL (e.g. "copyright"), the pair is
+            // either a pure-path rename (handled by Pass 1 via SHA-256 match)
+            // or a cross-package false positive (libssl3/copyright vs
+            // libcurl4/copyright, which share a basename but are unrelated).
+            // Reject identical-basename pairs here to avoid the latter.
+            let old_base = old_path.rsplit('/').next().unwrap_or(old_path.as_str());
+            let new_base = new_path.rsplit('/').next().unwrap_or(new_path.as_str());
+            if old_base == new_base {
+                continue;
+            }
+            let Some(patch) = build_rename_patch(&draft.records, *rem_rec_idx, *add_rec_idx) else {
+                continue;
+            };
+            let size = draft.records[*add_rec_idx].size;
+            let metadata = draft.records[*add_rec_idx].metadata.clone();
+            new_records.push(Record {
+                old_path: Some(old_path.clone()),
+                new_path: Some(new_path.clone()),
+                entry_type: EntryType::File,
+                size,
+                data: None,
+                patch: Some(patch),
+                metadata,
+            });
+            remove_indices.push(*rem_rec_idx);
+            remove_indices.push(*add_rec_idx);
+        }
+    }
+
+    // ── Merge results ─────────────────────────────────────────────────────────
     remove_indices.sort_unstable();
     remove_indices.dedup();
     for &i in remove_indices.iter().rev() {
         draft.records.swap_remove(i);
     }
     draft.records.extend(new_records);
-
     draft
+}
+
+/// Build the [`Patch`] for a rename record.
+///
+/// Case A — target file is still a `LazyBlob`: compute delta against the
+///           local base file (old_data = `OriginalFile` from the removed record).
+/// Case B — target file already has a `BlobRef + Lazy` patch from s3_lookup:
+///           reuse the patch as-is; only the rename annotation (`old_path`)
+///           needs to be added.
+///
+/// Returns `None` if the records are in an unexpected state.
+fn build_rename_patch(records: &[Record], rem_idx: usize, add_idx: usize) -> Option<Patch> {
+    match &records[add_idx] {
+        Record {
+            data: Some(Data::LazyBlob(new_local)),
+            ..
+        } => {
+            let old_data = match &records[rem_idx].data {
+                Some(Data::OriginalFile(p)) => DataRef::FilePath(p.clone()),
+                _ => return None,
+            };
+            Some(Patch::Lazy {
+                old_data,
+                new_data: DataRef::FilePath(new_local.clone()),
+            })
+        }
+        Record {
+            data: Some(Data::BlobRef(_)),
+            patch: Some(existing_patch),
+            ..
+        } => Some(existing_patch.clone()),
+        _ => None,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1609,12 +1759,19 @@ mod tests {
             None,
             "lib/libfoo.so.1",
         ));
-        // Added: lib/libfoo.so.2 (same dir, different version → high score)
+        // Added: lib/libfoo.so.2 (same dir, different version)
         draft.records.push(lazy_blob_record(
             None,
             Some("lib/libfoo.so.2"),
             "lib/libfoo.so.2",
         ));
+        // Simulate a pure path rename (content unchanged): same sha256 → Pass 1.
+        draft
+            .base_hashes
+            .insert("lib/libfoo.so.1".into(), [1u8; 32]);
+        draft
+            .target_hashes
+            .insert("lib/libfoo.so.2".into(), [1u8; 32]);
 
         let draft = match_renamed(draft);
 
@@ -1635,6 +1792,71 @@ mod tests {
                 .iter()
                 .any(|r| r.old_path.as_deref() == Some("lib/libfoo.so.1") && r.new_path.is_none()),
             "orphan remove record should be consumed"
+        );
+    }
+
+    #[test]
+    fn test_match_renamed_pass2_high_path_score() {
+        // Pass 2: sha256 mismatch, but path similarity ≥ 0.85 (version bump in
+        // same directory with deep enough path).
+        let mut draft = FsDraft::default();
+        draft.records.push(lazy_blob_record(
+            Some("usr/lib/x86_64-linux-gnu/libfoo.so.1"),
+            None,
+            "usr/lib/x86_64-linux-gnu/libfoo.so.1",
+        ));
+        draft.records.push(lazy_blob_record(
+            None,
+            Some("usr/lib/x86_64-linux-gnu/libfoo.so.2"),
+            "usr/lib/x86_64-linux-gnu/libfoo.so.2",
+        ));
+        // Different sha256 → Pass 1 skips them; Path similarity ≈ 0.88 → Pass 2 accepts.
+        draft
+            .base_hashes
+            .insert("usr/lib/x86_64-linux-gnu/libfoo.so.1".into(), [1u8; 32]);
+        draft
+            .target_hashes
+            .insert("usr/lib/x86_64-linux-gnu/libfoo.so.2".into(), [2u8; 32]);
+
+        let draft = match_renamed(draft);
+
+        let renamed = draft.records.iter().find(|r| {
+            r.old_path.as_deref() == Some("usr/lib/x86_64-linux-gnu/libfoo.so.1")
+                && r.new_path.as_deref() == Some("usr/lib/x86_64-linux-gnu/libfoo.so.2")
+        });
+        assert!(renamed.is_some(), "Pass 2 should match version-bump rename");
+    }
+
+    #[test]
+    fn test_match_renamed_pass2_rejects_cross_package() {
+        // Pass 2 must NOT match files from different packages that share a
+        // generic filename (copyright, changelog.gz, etc.).
+        // Score for libssl3/copyright → libcurl4/copyright ≈ 0.84 < 0.85.
+        let mut draft = FsDraft::default();
+        draft.records.push(lazy_blob_record(
+            Some("usr/share/doc/libssl3/copyright"),
+            None,
+            "usr/share/doc/libssl3/copyright",
+        ));
+        draft.records.push(lazy_blob_record(
+            None,
+            Some("usr/share/doc/libcurl4/copyright"),
+            "usr/share/doc/libcurl4/copyright",
+        ));
+        // Different sha256 and different packages → should NOT be matched.
+        draft
+            .base_hashes
+            .insert("usr/share/doc/libssl3/copyright".into(), [1u8; 32]);
+        draft
+            .target_hashes
+            .insert("usr/share/doc/libcurl4/copyright".into(), [2u8; 32]);
+
+        let before = draft.records.len();
+        let draft = match_renamed(draft);
+        assert_eq!(
+            draft.records.len(),
+            before,
+            "cross-package copyright must not be matched as rename"
         );
     }
 
@@ -1669,6 +1891,13 @@ mod tests {
             patch: Some(existing_patch.clone()),
             metadata: None,
         });
+        // Same sha256 → Pass 1 matches them.
+        draft
+            .base_hashes
+            .insert("lib/libfoo.so.1".into(), [0u8; 32]);
+        draft
+            .target_hashes
+            .insert("lib/libfoo.so.2".into(), [0u8; 32]);
 
         let draft = match_renamed(draft);
 
