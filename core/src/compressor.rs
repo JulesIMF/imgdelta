@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tracing::{error, info};
 
-use crate::compress_pipeline::compress_fs_partition;
+use crate::compress::compress_fs_partition;
 use crate::image::PartitionHandle;
 use crate::manifest::{
     BlobRef, Data, Manifest, ManifestHeader, PartitionContent, PartitionManifest, MANIFEST_VERSION,
@@ -407,7 +407,7 @@ impl Compressor for DefaultCompressor {
         output_root: &Path,
         options: DecompressOptions,
     ) -> Result<DecompressionStats> {
-        use crate::decompress_pipeline::decompress_fs_partition;
+        use crate::decompress::decompress_fs_partition;
         use crate::manifest::MANIFEST_VERSION;
 
         let started_at = Instant::now();
