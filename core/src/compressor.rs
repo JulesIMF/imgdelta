@@ -576,7 +576,7 @@ impl Compressor for DefaultCompressor {
 
         // 3. Collect blob IDs referenced by THIS image.
         let manifest_bytes = self.storage.download_manifest(image_id).await?;
-        let this_manifest: Manifest = rmp_serde::from_slice(&manifest_bytes)
+        let this_manifest = Manifest::from_bytes(&manifest_bytes)
             .map_err(|e| crate::Error::Other(format!("manifest decode: {e}")))?;
         let this_blobs = collect_manifest_blob_ids(&this_manifest);
 
@@ -588,7 +588,7 @@ impl Compressor for DefaultCompressor {
             }
             match self.storage.download_manifest(&other.image_id).await {
                 Ok(bytes) => {
-                    if let Ok(m) = rmp_serde::from_slice::<Manifest>(&bytes) {
+                    if let Ok(m) = Manifest::from_bytes(&bytes) {
                         in_use_blobs.extend(collect_manifest_blob_ids(&m));
                     }
                 }
