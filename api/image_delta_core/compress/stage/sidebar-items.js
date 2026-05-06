@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"trait":["CompressStage"]};
+window.SIDEBAR_ITEMS = {"fn":["dump_records_json"],"trait":["CompressStage"]};
