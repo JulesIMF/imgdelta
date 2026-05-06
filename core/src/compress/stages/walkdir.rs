@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use rayon::prelude::*;
@@ -84,24 +84,18 @@ pub fn walkdir_fn(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
     );
 
     // ── Phase 2: parallel SHA-256 of ALL regular files in both trees ──────────
-    let base_file_paths: Vec<&str> = base_snap
-        .iter()
-        .filter_map(|(p, e)| e.is_file.then_some(p.as_str()))
-        .collect();
-    let target_file_paths: Vec<&str> = target_snap
-        .iter()
-        .filter_map(|(p, e)| e.is_file.then_some(p.as_str()))
-        .collect();
+    let base_file_count = base_snap.values().filter(|e| e.is_file).count();
+    let target_file_count = target_snap.values().filter(|e| e.is_file).count();
 
     info!(
-        base_files = base_file_paths.len(),
-        target_files = target_file_paths.len(),
+        base_files = base_file_count,
+        target_files = target_file_count,
         "walkdir: hashing files in parallel"
     );
 
     let (base_hashes_result, target_hashes_result) = rayon::join(
-        || hash_files_par(&base_file_paths, base_root),
-        || hash_files_par(&target_file_paths, target_root),
+        || hash_files_par(&base_snap),
+        || hash_files_par(&target_snap),
     );
     let base_computed: HashMap<String, [u8; 32]> = base_hashes_result?;
     let target_computed: HashMap<String, [u8; 32]> = target_hashes_result?;
@@ -222,6 +216,9 @@ pub(crate) struct EntrySnapshot {
     pub nlink: u64,
     /// Raw device number (`st_rdev`) — set only for special files.
     pub rdev: u64,
+    /// Absolute path on the host filesystem — avoids lossy UTF-8 round-trips
+    /// for files with non-UTF-8 names.
+    pub abs_path: PathBuf,
 }
 
 /// Walk `root` and collect metadata only — no file content is read.
@@ -281,6 +278,7 @@ pub(crate) fn snapshot_fast(root: &Path) -> Result<HashMap<String, EntrySnapshot
                 dev_ino: (meta.dev(), meta.ino()),
                 nlink: meta.nlink(),
                 rdev,
+                abs_path: entry.path().to_owned(),
             },
         );
         count += 1;
@@ -292,13 +290,14 @@ pub(crate) fn snapshot_fast(root: &Path) -> Result<HashMap<String, EntrySnapshot
     Ok(map)
 }
 
-/// Hash all files in `paths` (relative to `root`) in parallel using rayon.
-fn hash_files_par(paths: &[&str], root: &Path) -> Result<HashMap<String, [u8; 32]>> {
-    paths
-        .par_iter()
-        .map(|rel| -> Result<(String, [u8; 32])> {
-            let hash = sha256_of_file(&root.join(*rel))?;
-            Ok(((*rel).to_string(), hash))
+/// Hash all regular files in `snap` in parallel using rayon.
+/// Uses `abs_path` from each entry to avoid lossy UTF-8 path reconstruction.
+fn hash_files_par(snap: &HashMap<String, EntrySnapshot>) -> Result<HashMap<String, [u8; 32]>> {
+    snap.par_iter()
+        .filter(|(_, e)| e.is_file)
+        .map(|(rel, e)| -> Result<(String, [u8; 32])> {
+            let hash = sha256_of_file(&e.abs_path)?;
+            Ok((rel.clone(), hash))
         })
         .collect()
 }
