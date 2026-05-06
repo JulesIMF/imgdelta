@@ -9,7 +9,7 @@ mod common;
 use std::path::PathBuf;
 
 use common::FakeStorage;
-use image_delta_core::compress_pipeline::{
+use image_delta_core::compress::{
     compute_patches, download_blobs_for_patches, pack_and_upload_archive, s3_lookup,
     upload_lazy_blobs, walkdir, FsDraft,
 };
@@ -488,7 +488,7 @@ async fn test_compress_fs_partition_golden() {
     let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
-        image_delta_core::compress_pipeline::compress_fs_partition(
+        image_delta_core::compress::compress_fs_partition(
             base_dir.path(),
             target_dir.path(),
             &descriptor,
@@ -567,7 +567,7 @@ async fn test_compress_manifest_serialisation_roundtrip() {
     let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
-        image_delta_core::compress_pipeline::compress_fs_partition(
+        image_delta_core::compress::compress_fs_partition(
             base_dir.path(),
             target_dir.path(),
             &descriptor,
@@ -1029,7 +1029,7 @@ async fn test_compress_fs_partition_first_compression_many_new_files() {
     let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
-        image_delta_core::compress_pipeline::compress_fs_partition(
+        image_delta_core::compress::compress_fs_partition(
             base_dir.path(),
             target_dir.path(),
             &descriptor,

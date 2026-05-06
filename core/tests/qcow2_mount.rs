@@ -444,7 +444,7 @@ mod tests {
     #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH + sgdisk + mkfs.*"]
     fn test_qcow2_pack_from_manifest() {
         use crate::common::fake_storage::FakeStorage;
-        use image_delta_core::compress_pipeline::compress_fs_partition;
+        use image_delta_core::compress::compress_fs_partition;
         use image_delta_core::image::PartitionHandle;
         use image_delta_core::manifest::{
             BlobRef, Manifest, ManifestHeader, PartitionContent, PartitionManifest,

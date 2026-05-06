@@ -19,7 +19,7 @@ use tempfile::TempDir;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-use crate::decompress_pipeline::decompress_fs_partition;
+use crate::decompress::decompress_fs_partition;
 use crate::encoders::Xdelta3Encoder;
 use crate::image::{BiosBootHandle, FsHandle, OpenImage, PartitionHandle, RawHandle};
 use crate::manifest::{Manifest, PartitionContent};

@@ -18,6 +18,16 @@ pub mod stages;
 
 pub use draft::FsDraft;
 
+// Stage functions re-exported under their short names for direct use.
+pub use stages::cleanup::cleanup_fn as cleanup;
+pub use stages::compute_patches::compute_patches_fn as compute_patches;
+pub use stages::download_blobs::download_blobs_for_patches_fn as download_blobs_for_patches;
+pub use stages::match_renamed::match_renamed_fn as match_renamed;
+pub use stages::pack_archive::pack_and_upload_archive_fn as pack_and_upload_archive;
+pub use stages::s3_lookup::s3_lookup_fn as s3_lookup;
+pub use stages::upload_blobs::upload_lazy_blobs_fn as upload_lazy_blobs;
+pub use stages::walkdir::walkdir_fn as walkdir;
+
 use std::path::Path;
 use std::sync::Arc;
 
