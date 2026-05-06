@@ -48,7 +48,7 @@ pub use algorithm::{AlgorithmCode, FilePatch, FileSnapshot};
 pub use compress_pipeline::FsDraft;
 pub use compressor::{
     CompressOptions, CompressionStats, Compressor, DecompressOptions, DecompressionStats,
-    DefaultCompressor,
+    DefaultCompressor, DeleteOptions, DeleteStats,
 };
 pub use encoder::PatchEncoder;
 pub use encoders::{PassthroughEncoder, TextDiffEncoder, Xdelta3Encoder};

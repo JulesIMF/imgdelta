@@ -157,4 +157,22 @@ pub trait Storage: Send + Sync {
         partition_number: Option<i32>,
         file_path: &str,
     ) -> crate::Result<()>;
+
+    // ── Delete ────────────────────────────────────────────────────────────────
+
+    /// Delete the manifest object for `image_id`.
+    async fn delete_manifest(&self, image_id: &str) -> crate::Result<()>;
+
+    /// Delete the patches archive for `image_id`.
+    async fn delete_patches(&self, image_id: &str) -> crate::Result<()>;
+
+    /// Delete a single blob by UUID.  Called only when ref-counting confirms the
+    /// blob is not referenced by any other image.
+    async fn delete_blob(&self, blob_id: Uuid) -> crate::Result<()>;
+
+    /// Remove all `blob_origins` rows where `orig_image_id = image_id`.
+    async fn delete_blob_origins(&self, image_id: &str) -> crate::Result<()>;
+
+    /// Remove the image metadata record (images table / meta.json).
+    async fn delete_image_meta(&self, image_id: &str) -> crate::Result<()>;
 }

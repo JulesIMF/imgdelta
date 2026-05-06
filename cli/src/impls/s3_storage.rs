@@ -361,6 +361,66 @@ impl Storage for S3Storage {
         .map_err(|e| Error::Storage(format!("record_blob_origin: {e}")))?;
         Ok(())
     }
+
+    async fn delete_manifest(&self, image_id: &str) -> Result<()> {
+        self.s3
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(manifest_key(image_id))
+            .send()
+            .await
+            .map_err(|e| Error::Storage(format!("delete_manifest({image_id}): {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_patches(&self, image_id: &str) -> Result<()> {
+        self.s3
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(patches_key(image_id))
+            .send()
+            .await
+            .map_err(|e| Error::Storage(format!("delete_patches({image_id}): {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_blob(&self, blob_id: Uuid) -> Result<()> {
+        // Remove from S3.
+        self.s3
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(blob_key(blob_id))
+            .send()
+            .await
+            .map_err(|e| Error::Storage(format!("delete_blob({blob_id}): {e}")))?;
+
+        // Remove from blob_index so sha256 dedup no longer returns this id.
+        sqlx::query("DELETE FROM blob_index WHERE blob_id = $1")
+            .bind(blob_id)
+            .execute(&self.pg)
+            .await
+            .map_err(|e| Error::Storage(format!("delete_blob index({blob_id}): {e}")))?;
+
+        Ok(())
+    }
+
+    async fn delete_blob_origins(&self, image_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM blob_origins WHERE orig_image_id = $1")
+            .bind(image_id)
+            .execute(&self.pg)
+            .await
+            .map_err(|e| Error::Storage(format!("delete_blob_origins({image_id}): {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_image_meta(&self, image_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM images WHERE image_id = $1")
+            .bind(image_id)
+            .execute(&self.pg)
+            .await
+            .map_err(|e| Error::Storage(format!("delete_image_meta({image_id}): {e}")))?;
+        Ok(())
+    }
 }
 
 // ── Integration tests ─────────────────────────────────────────────────────────

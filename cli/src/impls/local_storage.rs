@@ -330,4 +330,45 @@ impl Storage for LocalStorage {
         });
         Self::save_blob_origins(&self.base_dir, &inner.blob_origins).map_err(Self::io_err)
     }
+
+    async fn delete_manifest(&self, image_id: &str) -> Result<()> {
+        let path = self.manifest_path(image_id);
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(Self::io_err)?;
+        }
+        Ok(())
+    }
+
+    async fn delete_patches(&self, image_id: &str) -> Result<()> {
+        let path = self.patches_path(image_id);
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(Self::io_err)?;
+        }
+        Ok(())
+    }
+
+    async fn delete_blob(&self, blob_id: Uuid) -> Result<()> {
+        let path = self.blob_path(blob_id);
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(Self::io_err)?;
+        }
+        // Remove from sha256_index.
+        let mut inner = self.inner.lock().unwrap();
+        inner.sha256_index.retain(|_, &mut v| v != blob_id);
+        Self::save_sha256_index(&self.base_dir, &inner.sha256_index).map_err(Self::io_err)
+    }
+
+    async fn delete_blob_origins(&self, image_id: &str) -> Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.blob_origins.retain(|r| r.orig_image_id != image_id);
+        Self::save_blob_origins(&self.base_dir, &inner.blob_origins).map_err(Self::io_err)
+    }
+
+    async fn delete_image_meta(&self, image_id: &str) -> Result<()> {
+        let dir = self.image_dir(image_id);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(Self::io_err)?;
+        }
+        Ok(())
+    }
 }

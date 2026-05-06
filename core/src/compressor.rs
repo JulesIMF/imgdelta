@@ -16,7 +16,7 @@ use tracing::{error, info};
 use crate::compress_pipeline::compress_fs_partition;
 use crate::image::PartitionHandle;
 use crate::manifest::{
-    BlobRef, Manifest, ManifestHeader, PartitionContent, PartitionManifest, MANIFEST_VERSION,
+    BlobRef, Data, Manifest, ManifestHeader, PartitionContent, PartitionManifest, MANIFEST_VERSION,
 };
 use crate::partition::PartitionKind;
 use crate::storage::ImageStatus;
@@ -52,6 +52,14 @@ pub struct DecompressionStats {
     pub elapsed_secs: f64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DeleteStats {
+    /// Number of blob objects removed from storage.
+    pub blobs_deleted: usize,
+    /// Number of blobs skipped because they are still referenced by another image.
+    pub blobs_kept: usize,
+}
+
 // ── Options ───────────────────────────────────────────────────────────────────
 
 pub struct CompressOptions {
@@ -71,6 +79,12 @@ pub struct DecompressOptions {
     pub workers: usize,
 }
 
+pub struct DeleteOptions {
+    pub image_id: String,
+    /// When `true`, print a plan but do not actually delete anything.
+    pub dry_run: bool,
+}
+
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
 #[async_trait]
@@ -87,6 +101,12 @@ pub trait Compressor: Send + Sync {
         output_root: &Path,
         options: DecompressOptions,
     ) -> Result<DecompressionStats>;
+
+    /// Delete a stored image and all data exclusively owned by it.
+    ///
+    /// Shared blobs (referenced by other images) are left intact.
+    /// Safe ordering: blob_origins → patches → manifest → image_meta.
+    async fn delete_image(&self, options: DeleteOptions) -> Result<DeleteStats>;
 }
 
 // ── DefaultCompressor ─────────────────────────────────────────────────────────
@@ -576,9 +596,124 @@ impl Compressor for DefaultCompressor {
 
         result
     }
+
+    async fn delete_image(&self, options: DeleteOptions) -> Result<DeleteStats> {
+        let image_id = &options.image_id;
+
+        // 1. Verify image exists.
+        self.storage
+            .get_image(image_id)
+            .await?
+            .ok_or_else(|| crate::Error::Other(format!("image not found: {image_id}")))?;
+
+        // 2. Refuse to delete if any other image uses this one as a base.
+        let all_images = self.storage.list_images().await?;
+        let children: Vec<_> = all_images
+            .iter()
+            .filter(|m| m.base_image_id.as_deref() == Some(image_id))
+            .collect();
+        if !children.is_empty() {
+            let names: Vec<_> = children.iter().map(|m| m.image_id.as_str()).collect();
+            return Err(crate::Error::Other(format!(
+                "cannot delete {image_id}: it is the base for [{}]",
+                names.join(", ")
+            )));
+        }
+
+        // 3. Collect blob IDs referenced by THIS image.
+        let manifest_bytes = self.storage.download_manifest(image_id).await?;
+        let this_manifest: Manifest = rmp_serde::from_slice(&manifest_bytes)
+            .map_err(|e| crate::Error::Other(format!("manifest decode: {e}")))?;
+        let this_blobs = collect_manifest_blob_ids(&this_manifest);
+
+        // 4. Collect blob IDs referenced by ALL OTHER images.
+        let mut in_use_blobs = std::collections::HashSet::<uuid::Uuid>::new();
+        for other in &all_images {
+            if other.image_id == *image_id {
+                continue;
+            }
+            match self.storage.download_manifest(&other.image_id).await {
+                Ok(bytes) => {
+                    if let Ok(m) = rmp_serde::from_slice::<Manifest>(&bytes) {
+                        in_use_blobs.extend(collect_manifest_blob_ids(&m));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        image_id = other.image_id.as_str(),
+                        error = %e,
+                        "delete_image: could not read manifest for sibling image, skipping"
+                    );
+                }
+            }
+        }
+
+        // 5. Delete blobs that are exclusively owned by this image.
+        let mut stats = DeleteStats::default();
+        for blob_id in &this_blobs {
+            if in_use_blobs.contains(blob_id) {
+                tracing::debug!(%blob_id, "delete_image: blob still in use, keeping");
+                stats.blobs_kept += 1;
+            } else if options.dry_run {
+                tracing::info!(%blob_id, "delete_image: dry-run, would delete blob");
+                stats.blobs_deleted += 1;
+            } else {
+                self.storage.delete_blob(*blob_id).await?;
+                tracing::debug!(%blob_id, "delete_image: blob deleted");
+                stats.blobs_deleted += 1;
+            }
+        }
+
+        if !options.dry_run {
+            // 6. Remove blob_origins rows for this image.
+            self.storage.delete_blob_origins(image_id).await?;
+            // 7. Remove patches archive.
+            self.storage.delete_patches(image_id).await?;
+            // 8. Remove manifest.
+            self.storage.delete_manifest(image_id).await?;
+            // 9. Remove image metadata record.
+            self.storage.delete_image_meta(image_id).await?;
+        }
+
+        info!(
+            image_id,
+            blobs_deleted = stats.blobs_deleted,
+            blobs_kept = stats.blobs_kept,
+            dry_run = options.dry_run,
+            "delete_image: done"
+        );
+        Ok(stats)
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Collect all blob UUIDs referenced anywhere in `manifest`.
+fn collect_manifest_blob_ids(manifest: &Manifest) -> std::collections::HashSet<uuid::Uuid> {
+    let mut ids = std::collections::HashSet::new();
+    for pm in &manifest.partitions {
+        match &pm.content {
+            PartitionContent::BiosBoot { blob_id, .. } => {
+                ids.insert(*blob_id);
+            }
+            PartitionContent::Raw { blob, .. } => {
+                if let Some(b) = blob {
+                    ids.insert(b.blob_id);
+                }
+            }
+            PartitionContent::Fs { records, .. } => {
+                for r in records {
+                    if let Some(Data::BlobRef(b)) = &r.data {
+                        ids.insert(b.blob_id);
+                    }
+                    // Patch::Real entries are stored inside the patches archive,
+                    // not as individual blob objects — nothing to collect here.
+                }
+            }
+        }
+    }
+    ids
+}
 
 /// Derive `CompressionStats` from the final manifest and wall-clock elapsed time.
 ///

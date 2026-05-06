@@ -267,4 +267,31 @@ impl Storage for FakeStorage {
             .push((blob_uuid, file_path.to_string()));
         Ok(())
     }
+
+    async fn delete_manifest(&self, image_id: &str) -> Result<()> {
+        self.inner.lock().unwrap().manifests.remove(image_id);
+        Ok(())
+    }
+
+    async fn delete_patches(&self, image_id: &str) -> Result<()> {
+        self.inner.lock().unwrap().patches.remove(image_id);
+        Ok(())
+    }
+
+    async fn delete_blob(&self, blob_id: Uuid) -> Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.blobs.remove(&blob_id);
+        inner.sha256_index.retain(|_, &mut v| v != blob_id);
+        Ok(())
+    }
+
+    async fn delete_blob_origins(&self, image_id: &str) -> Result<()> {
+        self.inner.lock().unwrap().blob_origins.remove(image_id);
+        Ok(())
+    }
+
+    async fn delete_image_meta(&self, image_id: &str) -> Result<()> {
+        self.inner.lock().unwrap().images.remove(image_id);
+        Ok(())
+    }
 }
