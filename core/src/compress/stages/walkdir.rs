@@ -10,8 +10,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use async_trait::async_trait;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use tracing::debug;
+use tracing::info;
 use walkdir::WalkDir;
 
 use crate::compress::context::StageContext;
@@ -69,14 +70,55 @@ impl CompressStage for Walkdir {
 /// this function so that it can also be called directly from the pipeline
 /// entry-point with explicit paths.
 pub fn walkdir_fn(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
-    debug!(base_root = %base_root.display(), target_root = %target_root.display(), "walkdir: scanning paths");
-    let base_snap = snapshot(base_root)?;
-    let target_snap = snapshot(target_root)?;
-    debug!(
-        base_entries = base_snap.len(),
-        target_entries = target_snap.len(),
-        "walkdir: snapshot sizes"
+    // ── Phase 1: parallel metadata-only scan (no file reads) ─────────────────
+    info!(base = %base_root.display(), target = %target_root.display(), "walkdir: scanning directory trees");
+    let (base_result, target_result) =
+        rayon::join(|| snapshot_fast(base_root), || snapshot_fast(target_root));
+    let mut base_snap = base_result?;
+    let mut target_snap = target_result?;
+
+    info!(
+        base = base_snap.len(),
+        target = target_snap.len(),
+        "walkdir: metadata scan done — hashing all regular files"
     );
+
+    // ── Phase 2: parallel SHA-256 of ALL regular files in both trees ──────────
+    let base_file_paths: Vec<&str> = base_snap
+        .iter()
+        .filter_map(|(p, e)| e.is_file.then_some(p.as_str()))
+        .collect();
+    let target_file_paths: Vec<&str> = target_snap
+        .iter()
+        .filter_map(|(p, e)| e.is_file.then_some(p.as_str()))
+        .collect();
+
+    info!(
+        base_files = base_file_paths.len(),
+        target_files = target_file_paths.len(),
+        "walkdir: hashing files in parallel"
+    );
+
+    let (base_hashes_result, target_hashes_result) = rayon::join(
+        || hash_files_par(&base_file_paths, base_root),
+        || hash_files_par(&target_file_paths, target_root),
+    );
+    let base_computed: HashMap<String, [u8; 32]> = base_hashes_result?;
+    let target_computed: HashMap<String, [u8; 32]> = target_hashes_result?;
+
+    // Inject hashes back into snapshots for diff_entry.
+    for (path, hash) in &base_computed {
+        if let Some(e) = base_snap.get_mut(path.as_str()) {
+            e.sha256 = Some(*hash);
+        }
+    }
+    for (path, hash) in &target_computed {
+        if let Some(e) = target_snap.get_mut(path.as_str()) {
+            e.sha256 = Some(*hash);
+        }
+    }
+
+    info!("walkdir: hashing done — building records");
 
     // Detect hardlink groups in target: (dev, ino) → canonical path (first alphabetically).
     let hardlink_canonicals: HashMap<(u64, u64), String> = {
@@ -104,7 +146,6 @@ pub fn walkdir_fn(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
     // Removed: present in base, absent in target.
     for (path, b) in &base_snap {
         if !target_snap.contains_key(path.as_str()) {
-            debug!(path, "removed");
             records.push(make_removed_record(path, b, base_root));
         }
     }
@@ -112,7 +153,6 @@ pub fn walkdir_fn(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
     // Added: present in target, absent in base.
     for (path, t) in &target_snap {
         if !base_snap.contains_key(path.as_str()) {
-            debug!(path, "added");
             records.push(make_added_record(
                 path,
                 t,
@@ -125,23 +165,33 @@ pub fn walkdir_fn(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
     // Changed: present in both.
     for (path, t) in &target_snap {
         if let Some(b) = base_snap.get(path.as_str()) {
-            let new_recs = diff_entry(path, b, t, base_root, target_root, &hardlink_canonicals);
-            if !new_recs.is_empty() {
-                debug!(path, "changed");
-            }
-            records.extend(new_recs);
+            records.extend(diff_entry(
+                path,
+                b,
+                t,
+                base_root,
+                target_root,
+                &hardlink_canonicals,
+            ));
         }
     }
 
-    // Populate sha256 side-maps for match_renamed (Pass 1).
-    let base_hashes: HashMap<String, [u8; 32]> = base_snap
-        .iter()
-        .filter_map(|(path, snap)| snap.sha256.map(|h| (path.clone(), h)))
+    // sha256 side-maps for rename matching: only files *unique* to each tree.
+    let base_hashes: HashMap<String, [u8; 32]> = base_computed
+        .into_iter()
+        .filter(|(p, _)| !target_snap.contains_key(p.as_str()))
         .collect();
-    let target_hashes: HashMap<String, [u8; 32]> = target_snap
-        .iter()
-        .filter_map(|(path, snap)| snap.sha256.map(|h| (path.clone(), h)))
+    let target_hashes: HashMap<String, [u8; 32]> = target_computed
+        .into_iter()
+        .filter(|(p, _)| !base_snap.contains_key(p.as_str()))
         .collect();
+
+    info!(
+        records = records.len(),
+        base_rename_candidates = base_hashes.len(),
+        target_rename_candidates = target_hashes.len(),
+        "walkdir: complete"
+    );
 
     Ok(FsDraft {
         records,
@@ -162,7 +212,7 @@ pub(crate) struct EntrySnapshot {
     pub uid: u32,
     pub gid: u32,
     pub mtime_secs: i64,
-    /// SHA-256 of content — `Some` only for regular files.
+    /// SHA-256 of content — `Some` after hash pass for regular files.
     pub sha256: Option<[u8; 32]>,
     /// Symlink target string — `Some` only for symlinks.
     pub link_target: Option<String>,
@@ -174,8 +224,11 @@ pub(crate) struct EntrySnapshot {
     pub rdev: u64,
 }
 
-pub(crate) fn snapshot(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
+/// Walk `root` and collect metadata only — no file content is read.
+pub(crate) fn snapshot_fast(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
     let mut map = HashMap::new();
+    let mut count = 0usize;
+    info!(root = %root.display(), "snapshot: scanning filesystem");
     for entry_result in WalkDir::new(root).follow_links(false) {
         let entry = entry_result.map_err(|e| std::io::Error::other(format!("walkdir: {e}")))?;
         if entry.path() == root {
@@ -196,11 +249,7 @@ pub(crate) fn snapshot(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
         let is_file = ft.is_file();
         let is_dir = ft.is_dir();
 
-        let sha256 = if is_file {
-            Some(sha256_of_file(entry.path())?)
-        } else {
-            None
-        };
+        // sha256 is populated later by hash_files_par.
         let link_target = if is_symlink {
             Some(
                 std::fs::read_link(entry.path())?
@@ -226,7 +275,7 @@ pub(crate) fn snapshot(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
                 uid: meta.uid(),
                 gid: meta.gid(),
                 mtime_secs: meta.mtime(),
-                sha256,
+                sha256: None,
                 link_target,
                 size: if is_file { meta.size() } else { 0 },
                 dev_ino: (meta.dev(), meta.ino()),
@@ -234,8 +283,24 @@ pub(crate) fn snapshot(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
                 rdev,
             },
         );
+        count += 1;
+        if count.is_multiple_of(10_000) {
+            info!(count, root = %root.display(), "snapshot: scanning…");
+        }
     }
+    info!(entries = map.len(), root = %root.display(), "snapshot: done");
     Ok(map)
+}
+
+/// Hash all files in `paths` (relative to `root`) in parallel using rayon.
+fn hash_files_par(paths: &[&str], root: &Path) -> Result<HashMap<String, [u8; 32]>> {
+    paths
+        .par_iter()
+        .map(|rel| -> Result<(String, [u8; 32])> {
+            let hash = sha256_of_file(&root.join(*rel))?;
+            Ok(((*rel).to_string(), hash))
+        })
+        .collect()
 }
 
 pub(crate) fn sha256_of_file(path: &Path) -> std::io::Result<[u8; 32]> {
@@ -480,8 +545,10 @@ pub(crate) fn diff_entry(
     }
 
     debug_assert!(t.is_file);
+    // Both trees are fully hashed — None/None means size+mtime match and hash was skipped.
     let content_changed = match (b.sha256, t.sha256) {
         (Some(bh), Some(th)) => bh != th,
+        (None, None) => false,
         _ => true,
     };
     let meta = metadata_diff(b, t);
