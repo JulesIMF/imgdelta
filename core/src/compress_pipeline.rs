@@ -16,8 +16,8 @@
 //! | # | Function                          | Pure? | Notes                               |
 //! |---|-----------------------------------|-------|-------------------------------------|
 //! | 1 | [`walkdir`]                       | yes   | Walk base + target, build records   |
-//! | 2 | [`match_renamed`]                 | yes   | Detect renames via path matching    |
-//! | 3 | [`s3_lookup`]                     | async | Match remaining adds against S3 blobs |
+//! | 2 | [`s3_lookup`]                     | async | Match added files against S3 blobs (sets delta-base) |
+//! | 3 | [`match_renamed`]                 | yes   | Detect renames via path similarity  |
 //! | 4 | [`cleanup`]                       | yes   | Finalise deletion records           |
 //! | 5 | [`upload_lazy_blobs`]             | async | Upload new file content to S3       |
 //! | 6 | [`download_blobs_for_patches`]    | async | Download delta-base blobs to disk   |
@@ -650,6 +650,13 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
         .map(|(i, r)| (i, r.old_path.clone().unwrap()))
         .collect();
 
+    // A file is a rename target if it is either:
+    //  a) a LazyBlob (not yet seen by s3_lookup), or
+    //  b) a BlobRef with a Lazy patch already set by s3_lookup.
+    //     In case (b) the file was matched to a base blob by path similarity,
+    //     which is exactly what makes it a version-bump rename
+    //     (e.g. libssl3-2.31 → libssl3-2.35).  We fold the rename information
+    //     in and keep the existing delta-base relationship.
     let added: Vec<(usize, String)> = draft
         .records
         .iter()
@@ -657,7 +664,9 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
         .filter(|(_, r)| {
             r.old_path.is_none()
                 && r.entry_type == EntryType::File
-                && matches!(r.data, Some(Data::LazyBlob(_)))
+                && (matches!(r.data, Some(Data::LazyBlob(_)))
+                    || (matches!(r.data, Some(Data::BlobRef(_)))
+                        && matches!(r.patch, Some(Patch::Lazy { .. }))))
         })
         .map(|(i, r)| (i, r.new_path.clone().unwrap()))
         .collect();
@@ -695,12 +704,33 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
             continue;
         };
 
-        let new_data_path = match &draft.records[*add_idx].data {
-            Some(Data::LazyBlob(p)) => DataRef::FilePath(p.clone()),
-            _ => continue,
-        };
-        let old_data_path = match &draft.records[*rem_idx].data {
-            Some(Data::OriginalFile(p)) => DataRef::FilePath(p.clone()),
+        // Build the patch for this rename.
+        //
+        // Case A — added is still a LazyBlob (s3_lookup did not run yet or did
+        //           not match this file): create a new Lazy patch using the
+        //           local base-image file as the old side.
+        // Case B — added has a BlobRef + Lazy patch from s3_lookup: the patch
+        //           already points to the correct delta base (the old S3 blob).
+        //           Reuse it verbatim and just attach the rename paths.
+        let patch = match &draft.records[*add_idx] {
+            Record {
+                data: Some(Data::LazyBlob(new_local)),
+                ..
+            } => {
+                let old_data_path = match &draft.records[*rem_idx].data {
+                    Some(Data::OriginalFile(p)) => DataRef::FilePath(p.clone()),
+                    _ => continue,
+                };
+                Patch::Lazy {
+                    old_data: old_data_path,
+                    new_data: DataRef::FilePath(new_local.clone()),
+                }
+            }
+            Record {
+                data: Some(Data::BlobRef(_)),
+                patch: Some(existing_patch),
+                ..
+            } => existing_patch.clone(),
             _ => continue,
         };
 
@@ -714,10 +744,7 @@ pub fn match_renamed(mut draft: FsDraft) -> FsDraft {
             entry_type: EntryType::File,
             size,
             data: None,
-            patch: Some(Patch::Lazy {
-                old_data: old_data_path,
-                new_data: new_data_path,
-            }),
+            patch: Some(patch),
             metadata,
         });
 
@@ -1143,13 +1170,35 @@ pub async fn compress_fs_partition(
         "stage 1/8: walkdir done"
     );
 
-    // Stage 2: match_renamed must run BEFORE s3_lookup so that version-bumped
-    // files (e.g. libssl3-v1 → libssl3-v2) are detected as renames first.
-    // s3_lookup only sees the remaining truly-new added files after this stage.
+    // Stage 2: s3_lookup — find existing blobs in S3 for added files, assign
+    // delta-base relationships.  This runs before match_renamed so that when
+    // match_renamed sees an added file that was path-matched to a base blob it
+    // can reuse the already-established delta patch and just annotate the rename.
+    if let Some(base_id) = base_image_id {
+        info!(
+            image_id,
+            base_image_id = base_id,
+            partition = descriptor.number,
+            "stage 2/8: s3_lookup"
+        );
+        let pn = Some(descriptor.number as i32);
+        draft = s3_lookup(draft, storage, base_id, pn).await?;
+        info!(
+            image_id,
+            partition = descriptor.number,
+            "stage 2/8: s3_lookup done"
+        );
+    }
+
+    // Stage 3: match_renamed — detect file renames by path similarity.
+    // Handles both LazyBlob files (not matched by s3_lookup) and BlobRef files
+    // whose path differs from the base blob path (version-bump renames like
+    // libssl3-2.31 → libssl3-2.35).  In the BlobRef case the existing delta
+    // patch from s3_lookup is preserved; we only add the rename annotation.
     info!(
         image_id,
         partition = descriptor.number,
-        "stage 2/8: match_renamed"
+        "stage 3/8: match_renamed"
     );
     draft = match_renamed(draft);
     let n_renamed = draft
@@ -1161,25 +1210,8 @@ pub async fn compress_fs_partition(
         image_id,
         partition = descriptor.number,
         renamed = n_renamed,
-        "stage 2/8: match_renamed done"
+        "stage 3/8: match_renamed done"
     );
-
-    // Stage 3.
-    if let Some(base_id) = base_image_id {
-        info!(
-            image_id,
-            base_image_id = base_id,
-            partition = descriptor.number,
-            "stage 3/8: s3_lookup"
-        );
-        let pn = Some(descriptor.number as i32);
-        draft = s3_lookup(draft, storage, base_id, pn).await?;
-        info!(
-            image_id,
-            partition = descriptor.number,
-            "stage 3/8: s3_lookup done"
-        );
-    }
 
     info!(
         image_id,
@@ -1607,7 +1639,7 @@ mod tests {
     }
 
     #[test]
-    fn test_match_renamed_s3_matched_not_considered() {
+    fn test_match_renamed_s3_matched_is_merged() {
         let mut draft = FsDraft::default();
         // Removed file
         draft.records.push(lazy_blob_record(
@@ -1615,7 +1647,16 @@ mod tests {
             None,
             "lib/libfoo.so.1",
         ));
-        // Added file that was ALREADY matched by s3_lookup (BlobRef, not LazyBlob).
+        // Added file that was ALREADY matched by s3_lookup (BlobRef + Lazy patch).
+        // match_renamed should fold this into a rename record, keeping the
+        // existing delta-base patch from s3_lookup.
+        let existing_patch = Patch::Lazy {
+            old_data: DataRef::BlobRef(BlobRef {
+                blob_id: uuid::Uuid::nil(),
+                size: 100,
+            }),
+            new_data: DataRef::FilePath("/mnt/target/lib/libfoo.so.2".into()),
+        };
         draft.records.push(Record {
             old_path: None,
             new_path: Some("lib/libfoo.so.2".into()),
@@ -1625,24 +1666,26 @@ mod tests {
                 blob_id: uuid::Uuid::nil(),
                 size: 100,
             })),
-            patch: Some(Patch::Lazy {
-                old_data: DataRef::BlobRef(BlobRef {
-                    blob_id: uuid::Uuid::nil(),
-                    size: 100,
-                }),
-                new_data: DataRef::FilePath("/mnt/target/lib/libfoo.so.2".into()),
-            }),
+            patch: Some(existing_patch.clone()),
             metadata: None,
         });
 
-        let before_count = draft.records.len();
         let draft = match_renamed(draft);
 
-        // S3-matched record should NOT be consumed by rename matching.
+        // Two records (removed + added with s3 patch) → one renamed record.
         assert_eq!(
             draft.records.len(),
-            before_count,
-            "s3-matched record must not be consumed by rename matching"
+            1,
+            "s3-matched rename must be folded into one record"
+        );
+        let r = &draft.records[0];
+        assert_eq!(r.old_path.as_deref(), Some("lib/libfoo.so.1"));
+        assert_eq!(r.new_path.as_deref(), Some("lib/libfoo.so.2"));
+        assert!(r.data.is_none(), "renamed record must have data=None");
+        assert_eq!(
+            r.patch,
+            Some(existing_patch),
+            "s3_lookup patch must be preserved"
         );
     }
 
