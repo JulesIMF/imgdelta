@@ -19,7 +19,7 @@ use tempfile::TempDir;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-use crate::decompress_pipeline::decompress_fs_partition;
+use crate::decompress::decompress_fs_partition;
 use crate::encoders::Xdelta3Encoder;
 use crate::image::{BiosBootHandle, FsHandle, OpenImage, PartitionHandle, RawHandle};
 use crate::manifest::{Manifest, PartitionContent};
@@ -1190,7 +1190,7 @@ impl Qcow2Image {
         output: &Path,
         base_path: Option<&Path>,
         workers: usize,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<(usize, u64, usize)> {
         use std::collections::HashMap;
 
         let layout = &manifest.disk_layout;
@@ -1246,9 +1246,13 @@ impl Qcow2Image {
         };
 
         // Default router for patch decoding.
-        let router = RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new()));
+        let router = Arc::new(RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new())));
         let image_id = &manifest.header.image_id;
         let patches_compressed = manifest.header.patches_compressed;
+
+        let mut total_files: usize = 0;
+        let mut total_bytes: u64 = 0;
+        let mut patches_verified: usize = 0;
 
         // 5. Apply each partition to its output block device.
         for pm in &manifest.partitions {
@@ -1265,7 +1269,7 @@ impl Qcow2Image {
                 )
             };
 
-            apply_partition_with_base(
+            let part_stats = apply_partition_with_base(
                 pm,
                 &part_dev,
                 base_holder.path(),
@@ -1273,15 +1277,18 @@ impl Qcow2Image {
                 Arc::clone(&storage),
                 archive_bytes,
                 patches_compressed,
-                &router,
+                Arc::clone(&router),
                 workers,
             )
             .await?;
+            total_files += part_stats.files_written;
+            total_bytes += part_stats.bytes_written;
+            patches_verified += part_stats.patches_verified;
             // base_holder drops here → base partition unmounted
         }
 
         // `_out_nbd` drops here → output qcow2 NBD disconnected
-        Ok(())
+        Ok((total_files, total_bytes, patches_verified))
     }
 }
 
@@ -1317,18 +1324,28 @@ async fn apply_partition_with_base(
     storage: Arc<dyn Storage>,
     archive_bytes: &[u8],
     patches_compressed: bool,
-    router: &RouterEncoder,
+    router: Arc<RouterEncoder>,
     workers: usize,
-) -> crate::Result<()> {
+) -> crate::Result<crate::decompress::PartitionDecompressStats> {
+    use crate::decompress::PartitionDecompressStats;
     match &pm.content {
         PartitionContent::BiosBoot { blob_id, .. } => {
-            write_blob_to_device(storage.as_ref(), *blob_id, part_dev).await
+            write_blob_to_device(storage.as_ref(), *blob_id, part_dev).await?;
+            Ok(PartitionDecompressStats {
+                files_written: 1,
+                ..Default::default()
+            })
         }
         PartitionContent::Raw { blob, .. } => {
             if let Some(b) = blob {
                 write_blob_to_device(storage.as_ref(), b.blob_id, part_dev).await?;
+                Ok(PartitionDecompressStats {
+                    files_written: 1,
+                    ..Default::default()
+                })
+            } else {
+                Ok(PartitionDecompressStats::default())
             }
-            Ok(())
         }
         PartitionContent::Fs { fs_type, records } => {
             mkfs_partition(part_dev, fs_type)?;
@@ -1350,7 +1367,7 @@ async fn apply_partition_with_base(
             .await;
 
             let _ = umount2(mount_dir.path(), MntFlags::MNT_DETACH);
-            result.map(|_| ())
+            result
         }
     }
 }
@@ -1502,7 +1519,7 @@ async fn apply_partition(
             let archive_bytes = storage.download_patches(image_id).await.unwrap_or_default();
 
             // Build a default router (xdelta3 fallback, no glob rules).
-            let router = RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new()));
+            let router = Arc::new(RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new())));
 
             let result = decompress_fs_partition(
                 empty_base.path(),
@@ -1511,7 +1528,7 @@ async fn apply_partition(
                 &archive_bytes,
                 manifest.header.patches_compressed,
                 storage,
-                &router,
+                router,
                 1, // workers: qcow2 pack uses a single worker (no workers config here)
             )
             .await;

@@ -8,8 +8,10 @@ mod common;
 
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use common::FakeStorage;
-use image_delta_core::compress_pipeline::{
+use image_delta_core::compress::{
     compute_patches, download_blobs_for_patches, pack_and_upload_archive, s3_lookup,
     upload_lazy_blobs, walkdir, FsDraft,
 };
@@ -19,7 +21,6 @@ use image_delta_core::manifest::{
 use image_delta_core::partition::{PartitionDescriptor, PartitionKind};
 use image_delta_core::{Storage, Xdelta3Encoder};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -176,7 +177,7 @@ async fn test_s3_lookup_only_matches_added_files() {
 
 #[tokio::test]
 async fn test_upload_lazy_blobs_new_file() {
-    let storage = FakeStorage::new();
+    let storage = Arc::new(FakeStorage::new());
     let target_dir = TempDir::new().unwrap();
     write(
         target_dir.path(),
@@ -195,9 +196,16 @@ async fn test_upload_lazy_blobs_new_file() {
         metadata: None,
     });
 
-    let draft = upload_lazy_blobs(draft, &storage, "img-001", None, None)
-        .await
-        .unwrap();
+    let draft = upload_lazy_blobs(
+        draft,
+        Arc::clone(&storage) as Arc<dyn Storage>,
+        "img-001",
+        None,
+        None,
+        4,
+    )
+    .await
+    .unwrap();
 
     assert!(
         matches!(draft.records[0].data, Some(Data::BlobRef(_))),
@@ -207,7 +215,7 @@ async fn test_upload_lazy_blobs_new_file() {
 
 #[tokio::test]
 async fn test_upload_lazy_blobs_sha256_dedup() {
-    let storage = FakeStorage::new();
+    let storage = Arc::new(FakeStorage::new());
     let target_dir = TempDir::new().unwrap();
 
     let content = b"shared content for both files";
@@ -230,9 +238,16 @@ async fn test_upload_lazy_blobs_sha256_dedup() {
         });
     }
 
-    let draft = upload_lazy_blobs(draft, &storage, "img-001", None, None)
-        .await
-        .unwrap();
+    let draft = upload_lazy_blobs(
+        draft,
+        Arc::clone(&storage) as Arc<dyn Storage>,
+        "img-001",
+        None,
+        None,
+        4,
+    )
+    .await
+    .unwrap();
 
     // Both files should have the same blob_id (SHA-256 dedup).
     let ids: Vec<Uuid> = draft
@@ -250,7 +265,7 @@ async fn test_upload_lazy_blobs_sha256_dedup() {
 
 #[tokio::test]
 async fn test_upload_lazy_blobs_skips_non_lazy() {
-    let storage = FakeStorage::new();
+    let storage = Arc::new(FakeStorage::new());
 
     let mut draft = FsDraft::default();
     // A BlobRef record (already uploaded) — must not be touched.
@@ -268,9 +283,16 @@ async fn test_upload_lazy_blobs_skips_non_lazy() {
     });
 
     let before = draft.records[0].data.clone();
-    let draft = upload_lazy_blobs(draft, &storage, "img-001", None, None)
-        .await
-        .unwrap();
+    let draft = upload_lazy_blobs(
+        draft,
+        Arc::clone(&storage) as Arc<dyn Storage>,
+        "img-001",
+        None,
+        None,
+        4,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         draft.records[0].data, before,
@@ -447,7 +469,7 @@ async fn test_pack_upload_archive_produces_fs_content() {
 /// - lib/libz.so.2: renamed from libz.so.1 OR added
 #[tokio::test]
 async fn test_compress_fs_partition_golden() {
-    let storage = FakeStorage::new();
+    let storage = Arc::new(FakeStorage::new());
 
     let base_dir = TempDir::new().unwrap();
     let target_dir = TempDir::new().unwrap();
@@ -485,19 +507,20 @@ async fn test_compress_fs_partition_golden() {
     .unwrap();
 
     let descriptor = simple_descriptor();
-    let router = xdelta3_router();
+    let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
-        image_delta_core::compress_pipeline::compress_fs_partition(
+        image_delta_core::compress::compress_fs_partition(
             base_dir.path(),
             target_dir.path(),
             &descriptor,
-            &storage,
+            Arc::clone(&storage) as Arc<dyn image_delta_core::Storage>,
             "img-002",
             Some("img-001"),
-            &router,
+            router,
             "ext4",
             1,
+            None,
         )
         .await
         .unwrap();
@@ -564,19 +587,20 @@ async fn test_compress_manifest_serialisation_roundtrip() {
     write(target_dir.path(), "usr/bin/tool", b"tool v1.1");
 
     let descriptor = simple_descriptor();
-    let router = xdelta3_router();
+    let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
-        image_delta_core::compress_pipeline::compress_fs_partition(
+        image_delta_core::compress::compress_fs_partition(
             base_dir.path(),
             target_dir.path(),
             &descriptor,
-            &storage,
+            Arc::new(storage) as Arc<dyn image_delta_core::Storage>,
             "img-rt",
             None,
-            &router,
+            router,
             "ext4",
             1,
+            None,
         )
         .await
         .unwrap();
@@ -611,7 +635,7 @@ async fn test_compress_manifest_serialisation_roundtrip() {
 /// the SHA-256 dedup check in `upload_lazy_blobs`).
 #[tokio::test]
 async fn test_upload_lazy_blobs_dedup_skips_upload() {
-    let storage = FakeStorage::new();
+    let storage = Arc::new(FakeStorage::new());
     let target_dir = TempDir::new().unwrap();
 
     let content = b"identical content in both files";
@@ -631,9 +655,16 @@ async fn test_upload_lazy_blobs_dedup_skips_upload() {
         });
     }
 
-    let _draft = upload_lazy_blobs(draft, &storage, "img-dedup", None, None)
-        .await
-        .unwrap();
+    let _draft = upload_lazy_blobs(
+        draft,
+        Arc::clone(&storage) as Arc<dyn Storage>,
+        "img-dedup",
+        None,
+        None,
+        4,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         storage.blob_exists_call_count(),
@@ -721,12 +752,48 @@ async fn test_upload_lazy_blobs_concurrent_batches() {
         draft
     };
 
+    let storage = Arc::new(storage);
     let (r0, r1, r2, r3, r4) = tokio::join!(
-        upload_lazy_blobs(make_draft(0), &storage, "img-conc", None, None),
-        upload_lazy_blobs(make_draft(10), &storage, "img-conc", None, None),
-        upload_lazy_blobs(make_draft(20), &storage, "img-conc", None, None),
-        upload_lazy_blobs(make_draft(30), &storage, "img-conc", None, None),
-        upload_lazy_blobs(make_draft(40), &storage, "img-conc", None, None),
+        upload_lazy_blobs(
+            make_draft(0),
+            Arc::clone(&storage) as Arc<dyn Storage>,
+            "img-conc",
+            None,
+            None,
+            4
+        ),
+        upload_lazy_blobs(
+            make_draft(10),
+            Arc::clone(&storage) as Arc<dyn Storage>,
+            "img-conc",
+            None,
+            None,
+            4
+        ),
+        upload_lazy_blobs(
+            make_draft(20),
+            Arc::clone(&storage) as Arc<dyn Storage>,
+            "img-conc",
+            None,
+            None,
+            4
+        ),
+        upload_lazy_blobs(
+            make_draft(30),
+            Arc::clone(&storage) as Arc<dyn Storage>,
+            "img-conc",
+            None,
+            None,
+            4
+        ),
+        upload_lazy_blobs(
+            make_draft(40),
+            Arc::clone(&storage) as Arc<dyn Storage>,
+            "img-conc",
+            None,
+            None,
+            4
+        ),
     );
 
     for (batch_idx, draft) in [r0, r1, r2, r3, r4].into_iter().enumerate() {
@@ -1010,7 +1077,7 @@ async fn test_pack_upload_archive_compressible_data_uses_gzip() {
 /// in the final manifest.
 #[tokio::test]
 async fn test_compress_fs_partition_first_compression_many_new_files() {
-    let storage = FakeStorage::new();
+    let storage = Arc::new(FakeStorage::new());
 
     let base_dir = TempDir::new().unwrap(); // empty — no base files
     let target_dir = TempDir::new().unwrap();
@@ -1026,19 +1093,20 @@ async fn test_compress_fs_partition_first_compression_many_new_files() {
     }
 
     let descriptor = simple_descriptor();
-    let router = xdelta3_router();
+    let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
-        image_delta_core::compress_pipeline::compress_fs_partition(
+        image_delta_core::compress::compress_fs_partition(
             base_dir.path(),
             target_dir.path(),
             &descriptor,
-            &storage,
+            Arc::clone(&storage) as Arc<dyn image_delta_core::Storage>,
             "img-first",
             None, // no base image — first compression
-            &router,
+            router,
             "ext4",
             1,
+            None,
         )
         .await
         .unwrap();

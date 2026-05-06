@@ -370,6 +370,7 @@ pub fn compress_opts_workers(
         workers,
         passthrough_threshold: 1.0,
         overwrite: false,
+        debug_dir: None,
     }
 }
 

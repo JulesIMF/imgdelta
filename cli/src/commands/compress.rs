@@ -38,6 +38,11 @@ pub struct CompressArgs {
     #[arg(long, value_name = "N")]
     pub workers: Option<usize>,
 
+    /// If set, each pipeline stage dumps a JSON snapshot of the draft into
+    /// this directory as `<NN>_<stage>.json` (for debugging rename matching).
+    #[arg(long, value_name = "DIR")]
+    pub debug_dir: Option<PathBuf>,
+
     /// Overwrite an existing image with the same image-id instead of returning
     /// an error.
     #[arg(long, default_value_t = false)]
@@ -73,6 +78,7 @@ pub async fn run(args: CompressArgs, config_path: Option<&Path>) -> anyhow::Resu
         workers: args.workers.unwrap_or(config.compressor.workers),
         passthrough_threshold: config.compressor.passthrough_threshold,
         overwrite: args.overwrite,
+        debug_dir: args.debug_dir.clone(),
     };
 
     let stats = compressor.compress(base_root, &args.image, opts).await?;

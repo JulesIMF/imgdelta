@@ -7,3 +7,9 @@
 [workspace]
 members = ["core", "cli", "synthetic-fs"]
 resolver = "2"
+
+# Optimize dependencies (crypto, compression) even in debug builds.
+# This makes sha2 / xdelta3 / flate2 run at near-release speed while
+# keeping your own code unoptimized and debuggable.
+[profile.dev.package."*"]
+opt-level = 2
