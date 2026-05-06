@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["match_renamed_fn"],"struct":["MatchRenamed"]};

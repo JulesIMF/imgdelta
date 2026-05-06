@@ -124,26 +124,56 @@
 <a href=#124 id=124 data-nosnippet>124</a>
 <a href=#125 id=125 data-nosnippet>125</a>    </span><span class="doccomment">/// Return blobs from `base_image_id` that are candidates for delta encoding
 <a href=#126 id=126 data-nosnippet>126</a>    /// against files in the new image.
-<a href=#127 id=127 data-nosnippet>127</a>    </span><span class="kw">async fn </span>find_blob_candidates(<span class="kw-2">&amp;</span><span class="self">self</span>, base_image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;BlobCandidate&gt;&gt;;
-<a href=#128 id=128 data-nosnippet>128</a>
-<a href=#129 id=129 data-nosnippet>129</a>    <span class="doccomment">/// Record that `blob_uuid` originated from `file_path` in `orig_image_id`.
-<a href=#130 id=130 data-nosnippet>130</a>    ///
-<a href=#131 id=131 data-nosnippet>131</a>    /// `base_image_id` is the delta-source image that was used during the
-<a href=#132 id=132 data-nosnippet>132</a>    /// compress run that produced this blob (i.e. `options.base_image_id`).
-<a href=#133 id=133 data-nosnippet>133</a>    /// It is `None` for root (no-base) compress runs.
-<a href=#134 id=134 data-nosnippet>134</a>    ///
-<a href=#135 id=135 data-nosnippet>135</a>    /// Called by [`DefaultCompressor`] after each `upload_blob` so that future
-<a href=#136 id=136 data-nosnippet>136</a>    /// compress operations can use this blob as a delta base via
-<a href=#137 id=137 data-nosnippet>137</a>    /// [`find_blob_candidates`].
+<a href=#127 id=127 data-nosnippet>127</a>    ///
+<a href=#128 id=128 data-nosnippet>128</a>    /// When `partition_number` is `Some(n)`, only blobs recorded for partition
+<a href=#129 id=129 data-nosnippet>129</a>    /// `n` are returned (i.e. same-partition candidates for multi-partition
+<a href=#130 id=130 data-nosnippet>130</a>    /// images).  Pass `None` to return blobs from all partitions.
+<a href=#131 id=131 data-nosnippet>131</a>    </span><span class="kw">async fn </span>find_blob_candidates(
+<a href=#132 id=132 data-nosnippet>132</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#133 id=133 data-nosnippet>133</a>        base_image_id: <span class="kw-2">&amp;</span>str,
+<a href=#134 id=134 data-nosnippet>134</a>        partition_number: <span class="prelude-ty">Option</span>&lt;i32&gt;,
+<a href=#135 id=135 data-nosnippet>135</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;Vec&lt;BlobCandidate&gt;&gt;;
+<a href=#136 id=136 data-nosnippet>136</a>
+<a href=#137 id=137 data-nosnippet>137</a>    <span class="doccomment">/// Record that `blob_uuid` originated from `file_path` in `orig_image_id`.
 <a href=#138 id=138 data-nosnippet>138</a>    ///
-<a href=#139 id=139 data-nosnippet>139</a>    /// [`DefaultCompressor`]: crate::DefaultCompressor
-<a href=#140 id=140 data-nosnippet>140</a>    /// [`find_blob_candidates`]: Storage::find_blob_candidates
-<a href=#141 id=141 data-nosnippet>141</a>    </span><span class="kw">async fn </span>record_blob_origin(
-<a href=#142 id=142 data-nosnippet>142</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#143 id=143 data-nosnippet>143</a>        blob_uuid: Uuid,
-<a href=#144 id=144 data-nosnippet>144</a>        orig_image_id: <span class="kw-2">&amp;</span>str,
-<a href=#145 id=145 data-nosnippet>145</a>        base_image_id: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;,
-<a href=#146 id=146 data-nosnippet>146</a>        file_path: <span class="kw-2">&amp;</span>str,
-<a href=#147 id=147 data-nosnippet>147</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
-<a href=#148 id=148 data-nosnippet>148</a>}
+<a href=#139 id=139 data-nosnippet>139</a>    /// `base_image_id` is the delta-source image that was used during the
+<a href=#140 id=140 data-nosnippet>140</a>    /// compress run that produced this blob (i.e. `options.base_image_id`).
+<a href=#141 id=141 data-nosnippet>141</a>    /// It is `None` for root (no-base) compress runs.
+<a href=#142 id=142 data-nosnippet>142</a>    ///
+<a href=#143 id=143 data-nosnippet>143</a>    /// `partition_number` is the 1-based partition number in the source image.
+<a href=#144 id=144 data-nosnippet>144</a>    /// `None` for single-partition (`DirectoryImage`) images.
+<a href=#145 id=145 data-nosnippet>145</a>    ///
+<a href=#146 id=146 data-nosnippet>146</a>    /// Called by [`DefaultCompressor`] after each `upload_blob` so that future
+<a href=#147 id=147 data-nosnippet>147</a>    /// compress operations can use this blob as a delta base via
+<a href=#148 id=148 data-nosnippet>148</a>    /// [`find_blob_candidates`].
+<a href=#149 id=149 data-nosnippet>149</a>    ///
+<a href=#150 id=150 data-nosnippet>150</a>    /// [`DefaultCompressor`]: crate::DefaultCompressor
+<a href=#151 id=151 data-nosnippet>151</a>    /// [`find_blob_candidates`]: Storage::find_blob_candidates
+<a href=#152 id=152 data-nosnippet>152</a>    </span><span class="kw">async fn </span>record_blob_origin(
+<a href=#153 id=153 data-nosnippet>153</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#154 id=154 data-nosnippet>154</a>        blob_uuid: Uuid,
+<a href=#155 id=155 data-nosnippet>155</a>        orig_image_id: <span class="kw-2">&amp;</span>str,
+<a href=#156 id=156 data-nosnippet>156</a>        base_image_id: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;,
+<a href=#157 id=157 data-nosnippet>157</a>        partition_number: <span class="prelude-ty">Option</span>&lt;i32&gt;,
+<a href=#158 id=158 data-nosnippet>158</a>        file_path: <span class="kw-2">&amp;</span>str,
+<a href=#159 id=159 data-nosnippet>159</a>    ) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#160 id=160 data-nosnippet>160</a>
+<a href=#161 id=161 data-nosnippet>161</a>    <span class="comment">// ── Delete ────────────────────────────────────────────────────────────────
+<a href=#162 id=162 data-nosnippet>162</a>
+<a href=#163 id=163 data-nosnippet>163</a>    </span><span class="doccomment">/// Delete the manifest object for `image_id`.
+<a href=#164 id=164 data-nosnippet>164</a>    </span><span class="kw">async fn </span>delete_manifest(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#165 id=165 data-nosnippet>165</a>
+<a href=#166 id=166 data-nosnippet>166</a>    <span class="doccomment">/// Delete the patches archive for `image_id`.
+<a href=#167 id=167 data-nosnippet>167</a>    </span><span class="kw">async fn </span>delete_patches(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#168 id=168 data-nosnippet>168</a>
+<a href=#169 id=169 data-nosnippet>169</a>    <span class="doccomment">/// Delete a single blob by UUID.  Called only when ref-counting confirms the
+<a href=#170 id=170 data-nosnippet>170</a>    /// blob is not referenced by any other image.
+<a href=#171 id=171 data-nosnippet>171</a>    </span><span class="kw">async fn </span>delete_blob(<span class="kw-2">&amp;</span><span class="self">self</span>, blob_id: Uuid) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#172 id=172 data-nosnippet>172</a>
+<a href=#173 id=173 data-nosnippet>173</a>    <span class="doccomment">/// Remove all `blob_origins` rows where `orig_image_id = image_id`.
+<a href=#174 id=174 data-nosnippet>174</a>    </span><span class="kw">async fn </span>delete_blob_origins(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#175 id=175 data-nosnippet>175</a>
+<a href=#176 id=176 data-nosnippet>176</a>    <span class="doccomment">/// Remove the image metadata record (images table / meta.json).
+<a href=#177 id=177 data-nosnippet>177</a>    </span><span class="kw">async fn </span>delete_image_meta(<span class="kw-2">&amp;</span><span class="self">self</span>, image_id: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw">crate</span>::Result&lt;()&gt;;
+<a href=#178 id=178 data-nosnippet>178</a>}
 </code></pre></div></section></main></body></html>

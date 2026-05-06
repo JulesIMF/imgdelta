@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["MANIFEST_VERSION"],"enum":["Data","DataRef","EntryType","PartitionContent","Patch"],"struct":["BlobRef","Manifest","ManifestHeader","Metadata","PartitionManifest","PatchRef","Record"]};
+window.SIDEBAR_ITEMS = {"constant":["MANIFEST_VERSION"],"enum":["Data","DataRef","EntryType","PartitionContent","Patch"],"struct":["BlobRef","DeviceInfo","Manifest","ManifestHeader","Metadata","PartitionManifest","PatchRef","Record"]};

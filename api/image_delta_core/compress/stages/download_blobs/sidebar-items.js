@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["download_blobs_for_patches_fn"],"struct":["DownloadBlobsForPatches"]};
