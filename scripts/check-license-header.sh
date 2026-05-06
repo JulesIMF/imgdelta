@@ -23,10 +23,10 @@ comment_prefix() {
     ext="${file##*.}"
     if [[ "$basename" == .env* ]]; then echo "#"; return; fi
     case "$ext" in
-        rs)          echo "//" ;;
-        toml|sh|env) echo "#"  ;;
-        sql)         echo "--" ;;
-        *)           echo ""   ;;
+        rs)             echo "//" ;;
+        toml|sh|py|env) echo "#"  ;;
+        sql)            echo "--" ;;
+        *)              echo ""   ;;
     esac
 }
 
@@ -41,10 +41,10 @@ validate_header() {
     local -a lines
     mapfile -t lines < <(head -n 12 "$file" 2>/dev/null)
 
-    # Optional shebang for .sh files
+    # Optional shebang for .sh and .py files
     local offset=0
     local ext="${file##*.}"
-    if [[ "$ext" == "sh" && "${lines[0]:-}" == "#!"* ]]; then
+    if [[ ( "$ext" == "sh" || "$ext" == "py" ) && "${lines[0]:-}" == "#!"* ]]; then
         offset=1
     fi
 
@@ -157,8 +157,8 @@ if [[ $FAILED -gt 0 ]]; then
     // <non-empty description of this file>
     <blank line>
 
-  Prefix by file type:  .rs → //   .toml/.sh/.env → #   .sql → --
-  For .sh the header may be preceded by a shebang line.
+  Prefix by file type:  .rs → //   .toml/.sh/.py/.env → #   .sql → --
+  For .sh and .py the header may be preceded by a shebang line.
   Year must be between ${MIN_YEAR} and ${CURRENT_YEAR} (inclusive).
 
   Run: python3 scripts/add-license-headers.py  to auto-add missing headers.

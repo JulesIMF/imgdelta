@@ -30,7 +30,7 @@ pre-commit:
       run: cargo clippy --all-targets -- -D warnings
 
     license-header:
-      glob: "*.{rs,toml,sh,sql,env}"
+      glob: "*.{rs,toml,sh,py,sql,env}"
       run: bash scripts/check-license-header.sh {staged_files}
 
 commit-msg:
