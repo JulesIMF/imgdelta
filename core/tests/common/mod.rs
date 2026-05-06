@@ -628,18 +628,18 @@ pub fn verify_manifest_records(
                 }
             }
             // ── Modification: old_path = new_path ─────────────────────────────
-            (Some(old), Some(new)) if old == new => {
-                if matches!(rec.entry_type, EntryType::File)
-                    && (rec.patch.is_some() || rec.data.is_some())
+            (Some(old), Some(new))
+                if old == new
+                    && matches!(rec.entry_type, EntryType::File)
+                    && (rec.patch.is_some() || rec.data.is_some()) =>
+            {
+                if actual_modified.contains(old.as_str())
+                    && !matched_modified.contains(old.as_str())
                 {
-                    if actual_modified.contains(old.as_str())
-                        && !matched_modified.contains(old.as_str())
-                    {
-                        result.modifications.correct += 1;
-                        matched_modified.insert(old.clone());
-                    } else {
-                        result.modifications.false_positive += 1;
-                    }
+                    result.modifications.correct += 1;
+                    matched_modified.insert(old.clone());
+                } else {
+                    result.modifications.false_positive += 1;
                 }
             }
             _ => {}
