@@ -56,7 +56,7 @@ pub use formats::DirectoryImage;
 #[cfg(all(target_os = "linux", feature = "qcow2"))]
 pub use formats::Qcow2Image;
 pub use image::{
-    BiosBootHandle, FsHandle, Image, MountHandle, OpenImage, PartitionHandle, RawHandle,
+    BiosBootHandle, FsHandle, Image, MbrHandle, MountHandle, OpenImage, PartitionHandle, RawHandle,
     SimpleMountHandle,
 };
 pub use manifest::{

@@ -123,14 +123,49 @@ impl RawHandle {
     }
 }
 
+/// Handle to the MBR boot-code area (bytes 0–439 of the raw disk).
+///
+/// This region precedes the partition table at offset 446 and contains
+/// the GRUB stage-1 jump stub (or any other bootloader stage-1 code).
+/// It is not a real partition-table entry; it is represented as a
+/// synthetic partition with number 0 and kind [`PartitionKind::MbrBootCode`].
+///
+/// [`PartitionKind::MbrBootCode`]: crate::partition::PartitionKind::MbrBootCode
+pub struct MbrHandle {
+    /// Synthetic descriptor (number = 0, kind = MbrBootCode).
+    pub descriptor: PartitionDescriptor,
+    read_fn: Box<dyn Fn() -> crate::Result<Vec<u8>> + Send + Sync>,
+}
+
+impl MbrHandle {
+    /// Create a new [`MbrHandle`].
+    pub fn new(
+        descriptor: PartitionDescriptor,
+        read_fn: impl Fn() -> crate::Result<Vec<u8>> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            descriptor,
+            read_fn: Box::new(read_fn),
+        }
+    }
+
+    /// Read the 440 bytes of the MBR boot-code area.
+    pub fn read_raw(&self) -> crate::Result<Vec<u8>> {
+        (self.read_fn)()
+    }
+}
+
 /// A partition accessible through an open image, in one of three forms.
 pub enum PartitionHandle {
-    /// BIOS-boot (raw bytes, e.g. GRUB stage 1).
+    /// BIOS-boot (raw bytes, e.g. GRUB stage 1.5).
     BiosBoot(BiosBootHandle),
     /// Formatted filesystem partition.
     Fs(FsHandle),
     /// Unformatted raw partition.
     Raw(RawHandle),
+    /// MBR boot-code area (bytes 0–439, before partition table at offset 446).
+    /// Synthetic partition number 0; not a real partition-table entry.
+    Mbr(MbrHandle),
 }
 
 impl PartitionHandle {
@@ -140,6 +175,7 @@ impl PartitionHandle {
             Self::BiosBoot(h) => &h.descriptor,
             Self::Fs(h) => &h.descriptor,
             Self::Raw(h) => &h.descriptor,
+            Self::Mbr(h) => &h.descriptor,
         }
     }
 }
@@ -159,6 +195,10 @@ pub trait OpenImage: Send + Sync {
     ///
     /// For [`DiskScheme::SingleFs`] images (plain directories) this returns a
     /// single [`PartitionHandle::Fs`].
+    ///
+    /// For qcow2 images the list is prepended with a [`PartitionHandle::Mbr`]
+    /// (synthetic number 0) whenever the raw disk could be read at open time,
+    /// so that the MBR boot-code area is compressed alongside the real partitions.
     fn partitions(&self) -> crate::Result<Vec<PartitionHandle>>;
 }
 

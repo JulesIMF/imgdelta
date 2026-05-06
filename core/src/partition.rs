@@ -47,6 +47,13 @@ pub enum PartitionKind {
     /// Unrecognised or opaque partition — treated as a raw binary blob.
     /// Compressed via xdelta3 on the whole partition as a single "file".
     Raw,
+    /// Synthetic region representing the MBR boot-code area (bytes 0–439
+    /// of the raw disk, before the partition table at offset 446).
+    ///
+    /// Not a real partition-table entry; represented as partition number 0.
+    /// Captures the GRUB stage-1 jump stub so it can be restored after
+    /// `sgdisk --clear` rewrites LBA 0 during decompression.
+    MbrBootCode,
 }
 
 // ── PartitionDescriptor ───────────────────────────────────────────────────────
@@ -105,6 +112,8 @@ pub struct DiskLayout {
     pub disk_guid: Option<Uuid>,
 
     /// Ordered list of partitions, sorted by `number`.
+    /// Does not include the synthetic MBR boot-code entry (number 0),
+    /// which lives in [`Manifest::partitions`] as [`PartitionKind::MbrBootCode`].
     pub partitions: Vec<PartitionDescriptor>,
 }
 
@@ -189,6 +198,7 @@ mod tests {
                 fs_type: "vfat".into(),
             },
             PartitionKind::Raw,
+            PartitionKind::MbrBootCode,
         ];
         for kind in kinds {
             let json = serde_json::to_string(&kind).unwrap();

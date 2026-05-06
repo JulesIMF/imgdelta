@@ -88,6 +88,12 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
             PartitionContent::BiosBoot { size, .. } => {
                 println!("  partition {}  kind=bios_boot  size={size}", desc.number);
             }
+            PartitionContent::MbrBootCode { size, .. } => {
+                println!(
+                    "  partition {}  kind=mbr_boot_code  size={size}",
+                    desc.number
+                );
+            }
             PartitionContent::Raw { size, blob, patch } => {
                 let stored = if blob.is_some() {
                     "blob"

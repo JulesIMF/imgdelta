@@ -533,6 +533,22 @@ mod tests {
                         },
                     });
                 }
+                PartitionHandle::Mbr(mh) => {
+                    let raw = mh.read_raw().expect("Mbr read_raw must succeed");
+                    let sha256 = hex::encode(Sha256::digest(&raw));
+                    let blob_id = rt
+                        .block_on(storage.upload_blob(&sha256, &raw))
+                        .expect("upload Mbr blob");
+                    let size = raw.len() as u64;
+                    partition_manifests.push(PartitionManifest {
+                        descriptor: mh.descriptor.clone(),
+                        content: PartitionContent::MbrBootCode {
+                            blob_id,
+                            sha256,
+                            size,
+                        },
+                    });
+                }
             }
         }
 

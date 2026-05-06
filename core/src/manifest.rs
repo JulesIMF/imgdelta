@@ -17,7 +17,7 @@ use crate::AlgorithmCode;
 ///
 /// Increment this constant on every breaking schema change so that older
 /// decompressors can refuse to process manifests they don't understand.
-pub const MANIFEST_VERSION: u32 = 3;
+pub const MANIFEST_VERSION: u32 = 4;
 
 /// Top-level manifest produced by a compress operation.
 /// Serialised as MessagePack for storage; JSON for debugging.
@@ -269,6 +269,17 @@ pub enum PartitionContent {
         /// Filesystem type, e.g. `"ext4"`, `"vfat"`.
         fs_type: String,
         records: Vec<Record>,
+    },
+    /// MBR boot-code area (bytes 0–439 of the raw disk).
+    ///
+    /// Stored as a single verbatim blob (SHA-256 dedup), exactly like
+    /// [`BiosBoot`][PartitionContent::BiosBoot].  Corresponds to the
+    /// synthetic [`PartitionKind::MbrBootCode`][crate::partition::PartitionKind::MbrBootCode]
+    /// partition (number 0) produced by [`PartitionHandle::Mbr`][crate::image::PartitionHandle::Mbr].
+    MbrBootCode {
+        blob_id: Uuid,
+        sha256: String,
+        size: u64,
     },
 }
 

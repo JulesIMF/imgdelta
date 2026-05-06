@@ -13,7 +13,8 @@ use async_trait::async_trait;
 use tracing::{error, info};
 
 use crate::compress::partition::{
-    BiosBootCompressor, FsPartitionCompressor, PartitionCompressor, RawPartitionCompressor,
+    BiosBootCompressor, FsPartitionCompressor, MbrCompressor, PartitionCompressor,
+    RawPartitionCompressor,
 };
 use crate::image::PartitionHandle;
 use crate::manifest::{
@@ -226,11 +227,7 @@ impl Compressor for DefaultCompressor {
             let mut _live_tmpdirs: Vec<tempfile::TempDir> = Vec::new();
 
             for target_ph in target_partitions {
-                let descriptor = match &target_ph {
-                    PartitionHandle::Fs(h) => h.descriptor.clone(),
-                    PartitionHandle::BiosBoot(h) => h.descriptor.clone(),
-                    PartitionHandle::Raw(h) => h.descriptor.clone(),
-                };
+                let descriptor = target_ph.descriptor().clone();
                 info!(
                     image_id,
                     partition = descriptor.number,
@@ -263,6 +260,7 @@ impl Compressor for DefaultCompressor {
                     PartitionHandle::Fs(_) => Box::new(FsPartitionCompressor),
                     PartitionHandle::BiosBoot(_) => Box::new(BiosBootCompressor),
                     PartitionHandle::Raw(_) => Box::new(RawPartitionCompressor),
+                    PartitionHandle::Mbr(_) => Box::new(MbrCompressor),
                 };
 
                 let (pm, compressed, archive_bytes) = compressor
@@ -495,6 +493,21 @@ impl Compressor for DefaultCompressor {
                         total_bytes += *size;
                     }
 
+                    PartitionContent::MbrBootCode { blob_id, size, .. } => {
+                        let data = self.storage.download_blob(*blob_id).await?;
+                        let out_path = output_root.join("mbr_boot_code.bin");
+                        if let Some(p) = out_path.parent() {
+                            std::fs::create_dir_all(p).map_err(|e| {
+                                crate::Error::Other(format!("create_dir {}: {e}", p.display()))
+                            })?;
+                        }
+                        std::fs::write(&out_path, &data).map_err(|e| {
+                            crate::Error::Other(format!("write {}: {e}", out_path.display()))
+                        })?;
+                        total_files += 1;
+                        total_bytes += *size;
+                    }
+
                     PartitionContent::Raw { blob, size, .. } => {
                         if let Some(bref) = blob {
                             let data = self.storage.download_blob(bref.blob_id).await?;
@@ -647,7 +660,8 @@ fn collect_manifest_blob_ids(manifest: &Manifest) -> std::collections::HashSet<u
     let mut ids = std::collections::HashSet::new();
     for pm in &manifest.partitions {
         match &pm.content {
-            PartitionContent::BiosBoot { blob_id, .. } => {
+            PartitionContent::BiosBoot { blob_id, .. }
+            | PartitionContent::MbrBootCode { blob_id, .. } => {
                 ids.insert(*blob_id);
             }
             PartitionContent::Raw { blob, .. } => {

@@ -21,7 +21,7 @@ use walkdir::WalkDir;
 
 use crate::decompress::decompress_fs_partition;
 use crate::encoders::Xdelta3Encoder;
-use crate::image::{BiosBootHandle, FsHandle, OpenImage, PartitionHandle, RawHandle};
+use crate::image::{BiosBootHandle, FsHandle, MbrHandle, OpenImage, PartitionHandle, RawHandle};
 use crate::manifest::{Manifest, PartitionContent};
 use crate::partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
 use crate::routing::RouterEncoder;
@@ -651,6 +651,9 @@ struct OpenQcow2Image {
     layout: DiskLayout,
     part_infos: Vec<PartInfo>,
     nbd: Arc<NbdConn>,
+    /// First 440 bytes of the raw disk (MBR boot-code area), captured at
+    /// `open()` time.  `None` when the read failed (non-fatal).
+    mbr_bytes: Option<Arc<Vec<u8>>>,
 }
 
 impl OpenImage for OpenQcow2Image {
@@ -660,6 +663,28 @@ impl OpenImage for OpenQcow2Image {
 
     fn partitions(&self) -> crate::Result<Vec<PartitionHandle>> {
         let mut handles = Vec::new();
+
+        // Prepend the synthetic MBR boot-code handle (number 0) whenever we
+        // successfully read those bytes at open time.  The compressor will
+        // store them as PartitionContent::MbrBootCode so the decompressor can
+        // restore them after sgdisk --clear rewrites LBA 0.
+        if let Some(bytes) = &self.mbr_bytes {
+            let bytes = Arc::clone(bytes);
+            let desc = PartitionDescriptor {
+                number: 0,
+                partition_guid: None,
+                type_guid: None,
+                name: Some("MBR boot code".into()),
+                start_lba: 0,
+                end_lba: 0,
+                size_bytes: 440,
+                flags: 0,
+                kind: PartitionKind::MbrBootCode,
+            };
+            handles.push(PartitionHandle::Mbr(MbrHandle::new(desc, move || {
+                Ok((*bytes).clone())
+            })));
+        }
 
         for pi in &self.part_infos {
             let nbd = Arc::clone(&self.nbd);
@@ -687,6 +712,11 @@ impl OpenImage for OpenQcow2Image {
                         mount_partition_ro(&dev, &fs_type, Arc::clone(&nbd))
                     }))
                 }
+                PartitionKind::MbrBootCode => {
+                    // MbrBootCode should never appear in part_infos (only in
+                    // the synthetic prepended handle above).  Skip defensively.
+                    continue;
+                }
             };
             handles.push(handle);
         }
@@ -706,6 +736,39 @@ fn read_block_device_bytes(dev: &str, size_bytes: usize) -> crate::Result<Vec<u8
     f.read_exact(&mut buf)
         .map_err(|e| crate::Error::Format(format!("read_exact({dev}, {size_bytes}B): {e}")))?;
     Ok(buf)
+}
+
+/// Read `len` bytes from the raw block device at the given byte `offset`.
+///
+/// Used to capture the MBR boot-code area (bytes 0–439) before any partition
+/// table manipulation overwrites it.
+fn read_raw_disk_bytes(dev: &str, offset: u64, len: usize) -> crate::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f =
+        fs::File::open(dev).map_err(|e| crate::Error::Format(format!("open({dev}): {e}")))?;
+    f.seek(SeekFrom::Start(offset))
+        .map_err(|e| crate::Error::Format(format!("seek({dev}, {offset}): {e}")))?;
+    let mut buf = vec![0u8; len];
+    f.read_exact(&mut buf)
+        .map_err(|e| crate::Error::Format(format!("read_exact({dev}, {len}B @ {offset}): {e}")))?;
+    Ok(buf)
+}
+
+/// Write `data` to the raw block device at the given byte `offset`.
+///
+/// Used to restore the MBR boot-code area after `sgdisk --clear` rewrites it.
+fn write_raw_disk_bytes(dev: &str, offset: u64, data: &[u8]) -> crate::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .open(dev)
+        .map_err(|e| crate::Error::Format(format!("open({dev}): {e}")))?;
+    f.seek(SeekFrom::Start(offset))
+        .map_err(|e| crate::Error::Format(format!("seek({dev}, {offset}): {e}")))?;
+    f.write_all(data).map_err(|e| {
+        crate::Error::Format(format!("write_all({dev}, {}B @ {offset}): {e}", data.len()))
+    })?;
+    Ok(())
 }
 
 /// Mount `device` read-only with the given `fs_type` and return a RAII handle.
@@ -990,7 +1053,13 @@ impl Image for Qcow2Image {
         // disconnect automatically when it drops at end of scope.
         let layout = parse_disk_layout(&nbd_device)?;
 
-        // 4. Build PartInfo for each partition.
+        // 4. Read the MBR boot-code area (first 440 bytes of the raw device).
+        //    Captured as the synthetic MBR partition (number 0) so the
+        //    compressor stores it as PartitionContent::MbrBootCode and the
+        //    decompressor can restore it after sgdisk --clear.  Non-fatal.
+        let mbr_bytes = read_raw_disk_bytes(&nbd_device, 0, 440).ok().map(Arc::new);
+
+        // 5. Build PartInfo for each partition.
         let part_infos: Vec<PartInfo> = layout
             .partitions
             .iter()
@@ -1004,6 +1073,7 @@ impl Image for Qcow2Image {
             layout,
             part_infos,
             nbd,
+            mbr_bytes,
         }))
     }
 
@@ -1256,6 +1326,14 @@ impl Qcow2Image {
 
         // 5. Apply each partition to its output block device.
         for pm in &manifest.partitions {
+            // MBR boot-code (number 0) is written directly to the raw disk
+            // after write_gpt so it overwrites sgdisk's Protective MBR.
+            if let PartitionContent::MbrBootCode { blob_id, .. } = &pm.content {
+                let data = storage.download_blob(*blob_id).await?;
+                write_raw_disk_bytes(&out_nbd, 0, &data)?;
+                continue;
+            }
+
             let part_dev = format!("{out_nbd}p{}", pm.descriptor.number);
 
             // Resolve the base root: mount the matching base Fs partition, or
@@ -1291,8 +1369,6 @@ impl Qcow2Image {
         Ok((total_files, total_bytes, patches_verified))
     }
 }
-
-// ── decompress_to_qcow2 helpers ───────────────────────────────────────────────
 
 /// Holds either a mounted partition or a temporary empty directory as the
 /// base root for `decompress_fs_partition`.
@@ -1335,6 +1411,10 @@ async fn apply_partition_with_base(
                 files_written: 1,
                 ..Default::default()
             })
+        }
+        PartitionContent::MbrBootCode { .. } => {
+            // Handled by the caller before entering this function.
+            Ok(PartitionDecompressStats::default())
         }
         PartitionContent::Raw { blob, .. } => {
             if let Some(b) = blob {
@@ -1494,6 +1574,11 @@ async fn apply_partition(
     match &pm.content {
         PartitionContent::BiosBoot { blob_id, .. } => {
             write_blob_to_device(storage.as_ref(), *blob_id, part_dev).await
+        }
+        PartitionContent::MbrBootCode { .. } => {
+            // Caller (pack_from_manifest) does not handle MBR separately;
+            // silently skip — this path is the non-delta pack helper.
+            Ok(())
         }
         PartitionContent::Raw { blob, .. } => {
             if let Some(b) = blob {
