@@ -32,3 +32,8 @@ pre-commit:
     license-header:
       glob: "*.{rs,toml,sh,sql,env}"
       run: bash scripts/check-license-header.sh {staged_files}
+
+commit-msg:
+  commands:
+    check-format:
+      run: python3 scripts/check-commit-msg.py {1}
