@@ -60,6 +60,7 @@ pub async fn compress_fs_partition(
     base_image_id: Option<&str>,
     router: Arc<RouterEncoder>,
     fs_type: &str,
+    fs_uuid: Option<String>,
     workers: usize,
     debug_dir: Option<&Path>,
 ) -> Result<(PartitionManifest, bool, u64)> {
@@ -97,7 +98,7 @@ pub async fn compress_fs_partition(
 
     // Stage 8: pack and upload archive.
     let (content, patches_compressed, archive_stored_bytes) =
-        pack_and_upload_archive_fn(draft, storage.as_ref(), image_id, fs_type).await?;
+        pack_and_upload_archive_fn(draft, storage.as_ref(), image_id, fs_type, fs_uuid).await?;
 
     Ok((
         PartitionManifest {

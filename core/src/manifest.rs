@@ -268,6 +268,11 @@ pub enum PartitionContent {
     Fs {
         /// Filesystem type, e.g. `"ext4"`, `"vfat"`.
         fs_type: String,
+        /// Filesystem UUID (e.g. ext4 superblock UUID).  Stored so that
+        /// decompression can restore the original UUID via `mkfs -U`, ensuring
+        /// GRUB and `fstab` entries that reference the UUID continue to work.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        fs_uuid: Option<String>,
         records: Vec<Record>,
     },
     /// MBR boot-code area (bytes 0–439 of the raw disk).
@@ -663,6 +668,7 @@ mod tests {
     fn partition_content_fs_roundtrip() {
         let c = PartitionContent::Fs {
             fs_type: "ext4".into(),
+            fs_uuid: None,
             records: vec![
                 make_record_added(),
                 make_record_deleted(),
@@ -701,6 +707,7 @@ mod tests {
                 },
                 content: PartitionContent::Fs {
                     fs_type: "ext4".into(),
+                    fs_uuid: None,
                     records: vec![make_record_added()],
                 },
             }],

@@ -52,7 +52,7 @@ impl PackAndUploadArchive {
         image_id: &str,
         fs_type: &str,
     ) -> Result<(PartitionContent, bool, u64)> {
-        pack_and_upload_archive_fn(draft, storage, image_id, fs_type).await
+        pack_and_upload_archive_fn(draft, storage, image_id, fs_type, None).await
     }
 }
 
@@ -63,6 +63,7 @@ pub async fn pack_and_upload_archive_fn(
     storage: &dyn crate::storage::Storage,
     image_id: &str,
     fs_type: &str,
+    fs_uuid: Option<String>,
 ) -> Result<(PartitionContent, bool, u64)> {
     let tar_bytes = {
         let mut builder = tar::Builder::new(Vec::<u8>::new());
@@ -98,6 +99,7 @@ pub async fn pack_and_upload_archive_fn(
     Ok((
         PartitionContent::Fs {
             fs_type: fs_type.to_string(),
+            fs_uuid,
             records,
         },
         compressed,

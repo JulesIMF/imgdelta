@@ -460,6 +460,7 @@ impl Compressor for DefaultCompressor {
                     PartitionContent::Fs {
                         records,
                         fs_type: _,
+                        ..
                     } => {
                         let part_stats = decompress_fs_partition(
                             &options.base_root,

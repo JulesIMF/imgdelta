@@ -52,6 +52,8 @@ impl MountHandle for SimpleMountHandle {
 pub struct FsHandle {
     /// Partition descriptor from the image's partition table.
     pub descriptor: PartitionDescriptor,
+    /// Filesystem UUID (e.g. ext4 superblock UUID), if known at open time.
+    pub fs_uuid: Option<String>,
     mount_fn: Box<dyn Fn() -> crate::Result<Box<dyn MountHandle>> + Send + Sync>,
 }
 
@@ -63,6 +65,20 @@ impl FsHandle {
     ) -> Self {
         Self {
             descriptor,
+            fs_uuid: None,
+            mount_fn: Box::new(mount_fn),
+        }
+    }
+
+    /// Create a new [`FsHandle`] with a known filesystem UUID.
+    pub fn new_with_uuid(
+        descriptor: PartitionDescriptor,
+        fs_uuid: Option<String>,
+        mount_fn: impl Fn() -> crate::Result<Box<dyn MountHandle>> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            descriptor,
+            fs_uuid,
             mount_fn: Box::new(mount_fn),
         }
     }

@@ -107,7 +107,11 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
                     desc.number
                 );
             }
-            PartitionContent::Fs { fs_type, records } => {
+            PartitionContent::Fs {
+                fs_type,
+                fs_uuid,
+                records,
+            } => {
                 let n_added = records
                     .iter()
                     .filter(|r| r.old_path.is_none() && r.new_path.is_some())
@@ -146,8 +150,12 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
                 let total_source_bytes: u64 = records.iter().map(|r| r.size).sum();
 
                 println!(
-                    "  partition {}  kind=fs  fs_type={fs_type}  records={}",
+                    "  partition {}  kind=fs  fs_type={fs_type}{}  records={}",
                     desc.number,
+                    fs_uuid
+                        .as_deref()
+                        .map(|u| format!("  uuid={u}"))
+                        .unwrap_or_default(),
                     records.len(),
                 );
                 println!(

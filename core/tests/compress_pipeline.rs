@@ -428,12 +428,15 @@ async fn test_pack_upload_archive_produces_fs_content() {
     draft = compute_patches(draft, &router, 1).unwrap();
 
     let (content, _compressed, _archive_bytes) =
-        pack_and_upload_archive(draft, &storage, "img-001", "ext4")
+        pack_and_upload_archive(draft, &storage, "img-001", "ext4", None)
             .await
             .unwrap();
 
     // Must return PartitionContent::Fs.
-    let PartitionContent::Fs { fs_type, records } = content else {
+    let PartitionContent::Fs {
+        fs_type, records, ..
+    } = content
+    else {
         panic!("expected PartitionContent::Fs");
     };
     assert_eq!(fs_type, "ext4");
@@ -519,13 +522,17 @@ async fn test_compress_fs_partition_golden() {
             Some("img-001"),
             router,
             "ext4",
+            None,
             1,
             None,
         )
         .await
         .unwrap();
 
-    let PartitionContent::Fs { fs_type, records } = &partition_manifest.content else {
+    let PartitionContent::Fs {
+        fs_type, records, ..
+    } = &partition_manifest.content
+    else {
         panic!("expected PartitionContent::Fs");
     };
     assert_eq!(fs_type, "ext4");
@@ -599,6 +606,7 @@ async fn test_compress_manifest_serialisation_roundtrip() {
             None,
             router,
             "ext4",
+            None,
             1,
             None,
         )
@@ -1058,7 +1066,7 @@ async fn test_pack_upload_archive_compressible_data_uses_gzip() {
         .patch_bytes
         .insert("000000.patch".to_string(), repetitive);
 
-    let (_content, _, _) = pack_and_upload_archive(draft, &storage, "img-comp", "ext4")
+    let (_content, _, _) = pack_and_upload_archive(draft, &storage, "img-comp", "ext4", None)
         .await
         .unwrap();
 
@@ -1105,6 +1113,7 @@ async fn test_compress_fs_partition_first_compression_many_new_files() {
             None, // no base image — first compression
             router,
             "ext4",
+            None,
             1,
             None,
         )

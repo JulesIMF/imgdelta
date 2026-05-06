@@ -708,7 +708,8 @@ impl OpenImage for OpenQcow2Image {
                     }))
                 }
                 PartitionKind::Fs { fs_type } => {
-                    PartitionHandle::Fs(FsHandle::new(desc, move || {
+                    let fs_uuid = blkid_uuid(&dev);
+                    PartitionHandle::Fs(FsHandle::new_with_uuid(desc, fs_uuid, move || {
                         mount_partition_ro(&dev, &fs_type, Arc::clone(&nbd))
                     }))
                 }
@@ -820,6 +821,23 @@ fn blkid_fs_type(device: &str) -> Option<String> {
     // blkid output: /dev/nbdNpM: UUID="..." TYPE="ext4" PARTUUID="..."
     for token in s.split_ascii_whitespace() {
         if let Some(rest) = token.strip_prefix("TYPE=\"") {
+            return Some(rest.trim_end_matches('"').to_string());
+        }
+    }
+    None
+}
+
+/// Run `blkid <device>` and extract the `UUID=` value.
+///
+/// Returns `None` when blkid reports no UUID (e.g. BIOS-boot partition).
+fn blkid_uuid(device: &str) -> Option<String> {
+    let out = Command::new("blkid").arg(device).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    for token in s.split_ascii_whitespace() {
+        if let Some(rest) = token.strip_prefix("UUID=\"") {
             return Some(rest.trim_end_matches('"').to_string());
         }
     }
@@ -1427,8 +1445,12 @@ async fn apply_partition_with_base(
                 Ok(PartitionDecompressStats::default())
             }
         }
-        PartitionContent::Fs { fs_type, records } => {
-            mkfs_partition(part_dev, fs_type)?;
+        PartitionContent::Fs {
+            fs_type,
+            fs_uuid,
+            records,
+        } => {
+            mkfs_partition(part_dev, fs_type, fs_uuid.as_deref())?;
 
             let mount_dir =
                 TempDir::new().map_err(|e| crate::Error::Format(format!("TempDir::new: {e}")))?;
@@ -1508,16 +1530,33 @@ fn write_gpt(nbd_device: &str, layout: &DiskLayout) -> crate::Result<()> {
     }
 
     args.push(nbd_device.into());
-    run_command(Command::new("sgdisk").args(&args), "sgdisk")
+    run_command(Command::new("sgdisk").args(&args), "sgdisk")?;
+
+    // Force the kernel to re-read the partition table.  sgdisk sends
+    // BLKRRPART, but NBD devices sometimes need an explicit nudge.
+    let _ = Command::new("partprobe").arg(nbd_device).output();
+    let _ = Command::new("blockdev")
+        .args(["--rereadpt", nbd_device])
+        .output();
+
+    Ok(())
 }
 
 /// Format a partition with the appropriate `mkfs` tool.
-fn mkfs_partition(part_dev: &str, fs_type: &str) -> crate::Result<()> {
+fn mkfs_partition(part_dev: &str, fs_type: &str, fs_uuid: Option<&str>) -> crate::Result<()> {
     match fs_type {
-        "ext4" => run_command(
-            Command::new("mkfs.ext4").args(["-F", part_dev]),
-            "mkfs.ext4",
-        ),
+        "ext4" => {
+            let mut cmd = Command::new("mkfs.ext4");
+            // Disable features not supported by GRUB 2.06's embedded ext2 driver:
+            //   - orphan_file: added in e2fsprogs 1.46.2+
+            //   - metadata_csum_seed: added in e2fsprogs 1.46.4+, only GRUB 2.12+ handles it
+            cmd.args(["-F", "-O", "^orphan_file,^metadata_csum_seed"]);
+            if let Some(uuid) = fs_uuid {
+                cmd.args(["-U", uuid]);
+            }
+            cmd.arg(part_dev);
+            run_command(&mut cmd, "mkfs.ext4")
+        }
         "xfs" => run_command(Command::new("mkfs.xfs").args(["-f", part_dev]), "mkfs.xfs"),
         "vfat" | "fat32" | "fat16" => run_command(
             Command::new("mkfs.fat").args(["-F", "32", part_dev]),
@@ -1586,9 +1625,13 @@ async fn apply_partition(
             }
             Ok(())
         }
-        PartitionContent::Fs { fs_type, records } => {
+        PartitionContent::Fs {
+            fs_type,
+            fs_uuid,
+            records,
+        } => {
             // Format the partition.
-            mkfs_partition(part_dev, fs_type)?;
+            mkfs_partition(part_dev, fs_type, fs_uuid.as_deref())?;
 
             // Mount read-write.
             let mount_dir =

@@ -145,7 +145,10 @@ async fn test_compress_golden_manifest_structure() {
     assert_eq!(manifest.header.format, "directory");
     assert_eq!(manifest.partitions.len(), 1);
 
-    let PartitionContent::Fs { fs_type, records } = &manifest.partitions[0].content else {
+    let PartitionContent::Fs {
+        fs_type, records, ..
+    } = &manifest.partitions[0].content
+    else {
         panic!("expected PartitionContent::Fs");
     };
     assert_eq!(fs_type, "directory");

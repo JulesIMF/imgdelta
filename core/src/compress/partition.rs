@@ -108,6 +108,8 @@ impl PartitionCompressor for FsPartitionCompressor {
             _ => fs_type.to_string(),
         };
 
+        let fs_uuid = fs_handle.fs_uuid.clone();
+
         super::compress_fs_partition(
             &base_root_path,
             &target_root_path,
@@ -117,6 +119,7 @@ impl PartitionCompressor for FsPartitionCompressor {
             ctx.base_image_id.as_deref(),
             Arc::clone(&ctx.router),
             &partition_fs_type,
+            fs_uuid,
             ctx.workers,
             ctx.debug_dir.as_deref(),
         )
