@@ -189,6 +189,8 @@ def main() -> None:
         f"      (e.g. cli/commands/image  →  cli/src/commands/image.rs)\n"
         f"\n"
         f"  Workspace crates (src/ may be omitted): {crates_str}"
+        f"\n"
+        f"  See more at CONTRIBUTING.md → Commit message format"
     )
 
 

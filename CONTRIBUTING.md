@@ -114,19 +114,59 @@ example (these run as doc-tests in CI).
 {scope}: {message}
 ```
 
-**Scope** follows the changed code path:
+**Scope** follows the changed code path.
 
-| Scope                | When to use                                                |
-| -------------------- | ---------------------------------------------------------- |
-| `core/manifest`      | changes to `image-delta-core/src/manifest.rs`              |
-| `core/formats/qcow2` | changes specific to the qcow2 format                       |
-| `core/formats`       | changes to the shared format traits                        |
-| `cli/export`         | changes to a specific CLI subcommand                       |
-| `git`                | changes to git hooks, lefthook config, `.gitmodules`, etc. |
-| `all`                | wide-ranging changes that touch many modules               |
+### General scopes
 
-Rules:
+These fixed keywords are always accepted by the commit-msg hook regardless of
+the filesystem:
 
+| Scope   | When to use                                                |
+| ------- | ---------------------------------------------------------- |
+| `all`   | wide-ranging changes that touch many modules               |
+| `cargo` | changes to `Cargo.toml`, `Cargo.lock`, or workspace config |
+| `ci`    | CI pipeline files (GitHub Actions, etc.)                   |
+| `docs`  | documentation-only changes                                 |
+| `git`   | git hooks, lefthook config, `.gitmodules`, etc.            |
+
+### Path-based scopes
+
+For everything else, the scope must correspond to a **real path** in the
+repository. The commit-msg hook validates this automatically.
+
+| Scope                | When to use                                   |
+| -------------------- | --------------------------------------------- |
+| `core/manifest`      | changes to `image-delta-core/src/manifest.rs` |
+| `core/formats/qcow2` | changes specific to the qcow2 format          |
+| `core/formats`       | changes to the shared format traits           |
+| `cli/export`         | changes to a specific CLI subcommand          |
+
+**How the hook resolves a path-based scope:**
+
+1. `<scope>` → directory in repo root
+2. `<scope>.rs` → Rust source file in repo root
+3. For workspace crates (`core`, `cli`, …), `src/` is **injected automatically**:
+   - `core/manifest` → `core/src/manifest.rs` ✓
+   - `core/compress/stages` → `core/src/compress/stages/` ✓
+
+> **Important:** Do **not** write `src/` explicitly in a scope — the hook will
+> reject it with an error.\
+> ✗ `core/src/manifest: …` → rejected\
+> ✓ `core/manifest: …` → accepted
+
+### Rules
+
+- Scope characters: `[A-Za-z0-9_\-/]` — letters, digits, hyphens, underscores,
+  slashes. No spaces, dots, or other punctuation.
 - Use `cli/` prefix for `image-delta-cli`, `core/` for `image-delta-core`.
 - Append sub-path components when the change is narrower (`core/encoders/vcdiff`).
 - Keep the subject line ≤ 72 characters, imperative mood, no trailing period.
+  _(these style rules are conventions; the hook does not enforce them)_
+
+### Auto-skipped messages
+
+The hook silently accepts the following without validation:
+
+- Messages starting with `Merge `, `Revert `, `fixup! `, `squash! `, or
+  `Initial commit`
+- Empty messages and comment lines (starting with `#`)
