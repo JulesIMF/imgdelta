@@ -15,9 +15,9 @@ use sha2::{Digest, Sha256};
 use tracing::info;
 use walkdir::WalkDir;
 
-use crate::compress::context::StageContext;
-use crate::compress::stage::CompressStage;
-use crate::compress::FsDraft;
+use crate::compress::partitions::fs::context::StageContext;
+use crate::compress::partitions::fs::draft::FsDraft;
+use crate::compress::partitions::fs::stage::CompressStage;
 use crate::manifest::DataRef;
 use crate::manifest::{Data, DeviceInfo, EntryType, Metadata, Patch, Record};
 use crate::Result;
@@ -62,7 +62,7 @@ impl CompressStage for Walkdir {
     }
 
     fn dump_debug(&self, draft: &FsDraft, path: &std::path::Path) -> Result<()> {
-        crate::compress::stage::dump_records_json(&draft.records, path)
+        crate::compress::partitions::fs::stage::dump_records_json(&draft.records, path)
     }
 }
 

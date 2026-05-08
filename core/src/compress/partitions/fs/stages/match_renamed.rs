@@ -8,9 +8,9 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 
-use crate::compress::context::StageContext;
-use crate::compress::stage::{dump_records_json, CompressStage};
-use crate::compress::FsDraft;
+use crate::compress::partitions::fs::context::StageContext;
+use crate::compress::partitions::fs::draft::FsDraft;
+use crate::compress::partitions::fs::stage::{dump_records_json, CompressStage};
 use crate::manifest::{Data, DataRef, EntryType, Patch, Record};
 use crate::path_match::{find_best_matches, PathMatchConfig};
 use crate::Result;

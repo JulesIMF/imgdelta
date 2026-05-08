@@ -21,3 +21,13 @@ pub use pack_archive::PackAndUploadArchive;
 pub use s3_lookup::S3Lookup;
 pub use upload_blobs::UploadLazyBlobs;
 pub use walkdir::Walkdir;
+
+// Stage fn re-exports (canonical location).
+pub use cleanup::cleanup_fn;
+pub use compute_patches::compute_patches_fn;
+pub use download_blobs::download_blobs_for_patches_fn;
+pub use match_renamed::match_renamed_fn;
+pub use pack_archive::pack_and_upload_archive_fn;
+pub use s3_lookup::s3_lookup_fn;
+pub use upload_blobs::upload_lazy_blobs_fn;
+pub use walkdir::walkdir_fn;

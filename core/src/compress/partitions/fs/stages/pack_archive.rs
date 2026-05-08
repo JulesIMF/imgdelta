@@ -9,9 +9,9 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::io::Write;
 
-use crate::compress::context::StageContext;
-use crate::compress::stage::CompressStage;
-use crate::compress::FsDraft;
+use crate::compress::partitions::fs::context::StageContext;
+use crate::compress::partitions::fs::draft::FsDraft;
+use crate::compress::partitions::fs::stage::CompressStage;
 use crate::manifest::{PartitionContent, Patch, Record};
 use crate::Result;
 

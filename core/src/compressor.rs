@@ -12,7 +12,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tracing::{error, info};
 
-use crate::compress::partition::{
+use crate::compress::partitions::{
     BiosBootCompressor, FsPartitionCompressor, MbrCompressor, PartitionCompressor,
     RawPartitionCompressor,
 };
@@ -235,7 +235,7 @@ impl Compressor for DefaultCompressor {
                     "compress: processing partition"
                 );
 
-                let ctx = crate::compress::context::StageContext {
+                let ctx = crate::compress::partitions::fs::context::StageContext {
                     storage: Arc::clone(&self.storage),
                     router: Arc::clone(&self.router),
                     image_id: Arc::from(image_id.as_str()),

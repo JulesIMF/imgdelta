@@ -14,7 +14,7 @@ use super::stage::CompressStage;
 use super::stages::{
     Cleanup, ComputePatches, DownloadBlobsForPatches, MatchRenamed, S3Lookup, UploadLazyBlobs,
 };
-use crate::compress::FsDraft;
+use crate::compress::partitions::fs::draft::FsDraft;
 use crate::Result;
 
 /// Runs stages 1–7 of the compress pipeline in order.

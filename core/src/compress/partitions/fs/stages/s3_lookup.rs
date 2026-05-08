@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use tracing::debug;
 
-use crate::compress::context::StageContext;
-use crate::compress::stage::CompressStage;
-use crate::compress::FsDraft;
+use crate::compress::partitions::fs::context::StageContext;
+use crate::compress::partitions::fs::draft::FsDraft;
+use crate::compress::partitions::fs::stage::CompressStage;
 use crate::manifest::{BlobRef, Data, DataRef, EntryType, Patch};
 use crate::path_match::{find_best_matches, PathMatchConfig};
 use crate::Result;

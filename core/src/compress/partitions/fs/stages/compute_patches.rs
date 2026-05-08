@@ -11,9 +11,9 @@ use rayon::prelude::*;
 use tracing::debug;
 
 use crate::algorithm::FileSnapshot;
-use crate::compress::context::StageContext;
-use crate::compress::stage::CompressStage;
-use crate::compress::FsDraft;
+use crate::compress::partitions::fs::context::StageContext;
+use crate::compress::partitions::fs::draft::FsDraft;
+use crate::compress::partitions::fs::stage::CompressStage;
 use crate::encoder::PatchEncoder;
 use crate::manifest::{DataRef, EntryType, Patch, PatchRef};
 use crate::routing::FileInfo;
@@ -111,7 +111,7 @@ pub fn compute_patches_fn(
 
                 let file_patch = encoder.encode(&base_snap, &target_snap)?;
 
-                use crate::compress::stages::upload_blobs::hex_sha256_bytes;
+                use crate::compress::partitions::fs::stages::upload_blobs::hex_sha256_bytes;
                 let sha256 = hex_sha256_bytes(&file_patch.bytes);
                 let archive_entry = format!("{:06}.patch", i);
                 let pref = PatchRef {

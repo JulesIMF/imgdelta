@@ -11,10 +11,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use common::FakeStorage;
-use image_delta_core::compress::{
-    compute_patches, download_blobs_for_patches, pack_and_upload_archive, s3_lookup,
-    upload_lazy_blobs, walkdir, FsDraft,
+use image_delta_core::compress::partitions::fs::stages::{
+    compute_patches_fn as compute_patches,
+    download_blobs_for_patches_fn as download_blobs_for_patches,
+    pack_and_upload_archive_fn as pack_and_upload_archive, s3_lookup_fn as s3_lookup,
+    upload_lazy_blobs_fn as upload_lazy_blobs, walkdir_fn as walkdir,
 };
+use image_delta_core::compress::FsDraft;
 use image_delta_core::manifest::{
     BlobRef, Data, DataRef, EntryType, PartitionContent, Patch, Record,
 };

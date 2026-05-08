@@ -9,7 +9,7 @@ use std::path::Path;
 use async_trait::async_trait;
 
 use super::context::StageContext;
-use crate::compress::FsDraft;
+use crate::compress::partitions::fs::draft::FsDraft;
 use crate::manifest::Record;
 use crate::Result;
 
