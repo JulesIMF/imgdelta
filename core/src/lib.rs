@@ -44,7 +44,7 @@ pub use compressor::{
     CompressOptions, CompressionStats, Compressor, DecompressOptions, DecompressionStats,
     DefaultCompressor, DeleteOptions, DeleteStats,
 };
-pub use encoding::encoders::router::{
+pub use encoding::router::{
     ElfRule, FileInfo, GlobRule, MagicRule, RouterEncoder, RoutingRule, SizeRule,
 };
 pub use image::DirectoryImage;
