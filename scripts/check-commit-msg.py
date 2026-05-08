@@ -27,7 +27,7 @@ import sys
 
 # ── Hardcoded general modules ─────────────────────────────────────────────────
 
-GENERAL_MODULES = {"all", "ci", "git", "cargo", "docs"}
+GENERAL_MODULES = {"all", "ci", "git", "cargo", "docs", "scripts"}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
