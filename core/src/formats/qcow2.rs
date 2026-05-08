@@ -723,6 +723,30 @@ impl Drop for PartitionMountHandle {
     }
 }
 
+// ── RwOutputMountHandle ───────────────────────────────────────────────────────
+
+/// RAII handle to an RW-mounted partition directory used during decompress output.
+///
+/// Unlike [`PartitionMountHandle`] this is not tied to a shared [`NbdConn`]:
+/// the output NBD connection is kept alive by the `_out_nbd` guard in the
+/// caller's scope.  On drop it simply calls `umount2(MNT_DETACH)`.
+struct RwOutputMountHandle {
+    _dir: TempDir,
+    root: PathBuf,
+}
+
+impl MountHandle for RwOutputMountHandle {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for RwOutputMountHandle {
+    fn drop(&mut self) {
+        let _ = umount2(self.root.as_path(), MntFlags::MNT_DETACH);
+    }
+}
+
 // ── PartInfo ──────────────────────────────────────────────────────────────────
 
 /// Precomputed info for a single partition in an open qcow2 image.
@@ -1458,9 +1482,31 @@ impl Qcow2Image {
         for pm in &manifest.partitions {
             // MBR boot-code (number 0) is written directly to the raw disk
             // after write_gpt so it overwrites sgdisk's Protective MBR.
-            if let PartitionContent::MbrBootCode { blob_id, .. } = &pm.content {
-                let data = storage.download_blob(*blob_id).await?;
-                write_raw_disk_bytes(&out_nbd, 0, &data)?;
+            // Uses MbrHandle::new_rw + MbrDecompressor so write_raw() is exercised.
+            if let PartitionContent::MbrBootCode { .. } = &pm.content {
+                use crate::decompress::{MbrDecompressor, PartitionDecompressor};
+                let disk = out_nbd.clone();
+                let handle = MbrHandle::new_rw(
+                    pm.descriptor.clone(),
+                    || {
+                        Err(crate::Error::Format(
+                            "output Mbr handle: read not supported".into(),
+                        ))
+                    },
+                    move |data| write_raw_disk_bytes(&disk, 0, data),
+                );
+                MbrDecompressor
+                    .decompress(
+                        pm,
+                        Path::new(""),
+                        &PartitionHandle::Mbr(handle),
+                        Arc::clone(&storage),
+                        archive_bytes,
+                        patches_compressed,
+                        Arc::clone(&router),
+                        workers,
+                    )
+                    .await?;
                 continue;
             }
 
@@ -1519,8 +1565,12 @@ impl BaseRootHolder {
 /// Apply one [`PartitionManifest`] to its output block device using a
 /// pre-fetched patches archive and a known base root.
 ///
-/// - `BiosBoot` / `Raw` → download blob → write raw bytes to device.
-/// - `Fs`               → `mkfs` → mount rw → [`decompress_fs_partition`].
+/// Creates a **writable** [`PartitionHandle`] appropriate for the partition
+/// type, then dispatches to the matching [`PartitionDecompressor`] so that
+/// binary partitions go through `write_raw()` and Fs partitions go through
+/// the full 3-stage pipeline via `FsPartitionDecompressor`.
+///
+/// [`PartitionDecompressor`]: crate::decompress::PartitionDecompressor
 #[allow(clippy::too_many_arguments)]
 async fn apply_partition_with_base(
     pm: &crate::manifest::PartitionManifest,
@@ -1533,7 +1583,10 @@ async fn apply_partition_with_base(
     router: Arc<RouterEncoder>,
     workers: usize,
 ) -> crate::Result<crate::decompress::PartitionDecompressStats> {
-    use crate::decompress::PartitionDecompressStats;
+    use crate::decompress::{
+        BiosBootDecompressor, FsPartitionDecompressor, PartitionDecompressor,
+        RawPartitionDecompressor,
+    };
 
     // Wait for this specific partition node to be stable before any I/O.
     // This is a belt-and-suspenders guard: the caller already waits for all
@@ -1548,54 +1601,112 @@ async fn apply_partition_with_base(
     let stable_dev = wait_for_partition_stable(nbd_base, part_num, NBD_PARTITION_TIMEOUT)?;
     let part_dev: &str = &stable_dev;
 
+    let desc = pm.descriptor.clone();
+
     match &pm.content {
-        PartitionContent::BiosBoot { blob_id, .. } => {
-            write_blob_to_device(storage.as_ref(), *blob_id, part_dev).await?;
-            Ok(PartitionDecompressStats {
-                files_written: 1,
-                ..Default::default()
-            })
+        PartitionContent::BiosBoot { .. } => {
+            // Create a writable handle whose write_fn writes the bytes directly
+            // to the block device; BiosBootDecompressor calls write_raw().
+            let dev = part_dev.to_string();
+            let handle = BiosBootHandle::new_rw(
+                desc,
+                || {
+                    Err(crate::Error::Format(
+                        "output BiosBoot handle: read not supported".into(),
+                    ))
+                },
+                move |data| {
+                    let mut f = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&dev)
+                        .map_err(|e| crate::Error::Format(format!("open {dev}: {e}")))?;
+                    f.write_all(data)
+                        .map_err(|e| crate::Error::Format(format!("write {dev}: {e}")))
+                },
+            );
+            BiosBootDecompressor
+                .decompress(
+                    pm,
+                    base_root,
+                    &PartitionHandle::BiosBoot(handle),
+                    storage,
+                    archive_bytes,
+                    patches_compressed,
+                    router,
+                    workers,
+                )
+                .await
         }
+
         PartitionContent::MbrBootCode { .. } => {
-            // Handled by the caller before entering this function.
-            Ok(PartitionDecompressStats::default())
+            // Handled by the caller (written to disk offset 0 via MbrDecompressor).
+            Ok(crate::decompress::PartitionDecompressStats::default())
         }
-        PartitionContent::Raw { blob, .. } => {
-            if let Some(b) = blob {
-                write_blob_to_device(storage.as_ref(), b.blob_id, part_dev).await?;
-                Ok(PartitionDecompressStats {
-                    files_written: 1,
-                    ..Default::default()
-                })
-            } else {
-                Ok(PartitionDecompressStats::default())
-            }
+
+        PartitionContent::Raw { .. } => {
+            // Create a writable handle whose write_fn writes to the block
+            // device; RawPartitionDecompressor calls write_raw().
+            let dev = part_dev.to_string();
+            let handle = RawHandle::new_rw(
+                desc,
+                || {
+                    Err(crate::Error::Format(
+                        "output Raw handle: read not supported".into(),
+                    ))
+                },
+                move |data| {
+                    let mut f = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&dev)
+                        .map_err(|e| crate::Error::Format(format!("open {dev}: {e}")))?;
+                    f.write_all(data)
+                        .map_err(|e| crate::Error::Format(format!("write {dev}: {e}")))
+                },
+            );
+            RawPartitionDecompressor
+                .decompress(
+                    pm,
+                    base_root,
+                    &PartitionHandle::Raw(handle),
+                    storage,
+                    archive_bytes,
+                    patches_compressed,
+                    router,
+                    workers,
+                )
+                .await
         }
+
         PartitionContent::Fs {
-            fs_type,
-            fs_uuid,
-            records,
+            fs_type, fs_uuid, ..
         } => {
+            // Format the partition first (mkfs cannot be deferred into mount_fn
+            // because it must run before any mount attempt).
             mkfs_partition(part_dev, fs_type, fs_uuid.as_deref())?;
-
-            let mount_dir =
-                TempDir::new().map_err(|e| crate::Error::Format(format!("TempDir::new: {e}")))?;
-            mount_partition_rw_plain(part_dev, fs_type, mount_dir.path())?;
-
-            let result = decompress_fs_partition(
-                base_root,
-                mount_dir.path(),
-                records,
-                archive_bytes,
-                patches_compressed,
-                storage,
-                router,
-                workers,
-            )
-            .await;
-
-            let _ = umount2(mount_dir.path(), MntFlags::MNT_DETACH);
-            result
+            // Create an Fs handle whose mount_fn mounts the freshly-formatted
+            // partition RW and returns a RwOutputMountHandle that umounts on drop.
+            // FsPartitionDecompressor calls fh.mount() internally.
+            let dev = part_dev.to_string();
+            let fs = fs_type.clone();
+            let output_fh = FsHandle::new(desc, move || {
+                let dir = TempDir::new()
+                    .map_err(|e| crate::Error::Format(format!("TempDir::new: {e}")))?;
+                mount_partition_rw_plain(&dev, &fs, dir.path())?;
+                let root = dir.path().to_path_buf();
+                Ok(Box::new(RwOutputMountHandle { _dir: dir, root }) as Box<dyn MountHandle>)
+            });
+            FsPartitionDecompressor
+                .decompress(
+                    pm,
+                    base_root,
+                    &PartitionHandle::Fs(output_fh),
+                    storage,
+                    archive_bytes,
+                    patches_compressed,
+                    router,
+                    workers,
+                )
+                .await
         }
     }
 }

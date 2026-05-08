@@ -17,7 +17,10 @@
 pub mod partitions;
 
 pub use partitions::fs::decompress_fs_partition;
-pub use partitions::{FsPartitionDecompressor, PartitionDecompressor};
+pub use partitions::{
+    BiosBootDecompressor, FsPartitionDecompressor, MbrDecompressor, PartitionDecompressor,
+    RawPartitionDecompressor,
+};
 
 // ── Public stats type ─────────────────────────────────────────────────────────
 

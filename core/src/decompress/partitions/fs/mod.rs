@@ -17,6 +17,7 @@ use async_trait::async_trait;
 
 use crate::decompress::PartitionDecompressStats;
 use crate::manifest::{PartitionContent, PartitionManifest, Record};
+use crate::partitions::PartitionHandle;
 use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::Result;
@@ -30,6 +31,11 @@ pub use crate::decompress::partitions::PartitionDecompressor;
 // ── FsPartitionDecompressor ───────────────────────────────────────────────────
 
 /// Decompresses an Fs partition by running the 3-stage decompress pipeline.
+///
+/// `output_ph` must be `PartitionHandle::Fs(fh)` whose `mount_fn` provides an
+/// **RW-mounted** (or directory-backed) filesystem root.  The mount is acquired
+/// at the start of `decompress`, used for the 3-stage pipeline, then dropped
+/// (which triggers `umount2` for block-device backed mounts).
 pub struct FsPartitionDecompressor;
 
 #[async_trait]
@@ -38,21 +44,26 @@ impl PartitionDecompressor for FsPartitionDecompressor {
         &self,
         pm: &PartitionManifest,
         base_root: &Path,
-        output_root: &Path,
+        output_ph: &PartitionHandle,
         storage: Arc<dyn Storage>,
         archive_bytes: &[u8],
         patches_compressed: bool,
         router: Arc<RouterEncoder>,
         workers: usize,
     ) -> Result<PartitionDecompressStats> {
+        let fs_handle = match output_ph {
+            PartitionHandle::Fs(h) => h,
+            _ => unreachable!("FsPartitionDecompressor called with non-Fs handle"),
+        };
         let records = match &pm.content {
             PartitionContent::Fs { records, .. } => records,
             _ => unreachable!("FsPartitionDecompressor called with non-Fs partition"),
         };
-
-        decompress_fs_partition(
+        // Acquire the output mount (RW for qcow2, simple dir handle for directory format).
+        let output_mount = fs_handle.mount()?;
+        let result = decompress_fs_partition(
             base_root,
-            output_root,
+            output_mount.root(),
             records,
             archive_bytes,
             patches_compressed,
@@ -60,7 +71,9 @@ impl PartitionDecompressor for FsPartitionDecompressor {
             router,
             workers,
         )
-        .await
+        .await;
+        drop(output_mount); // triggers umount2 for block-device backed mounts
+        result
     }
 }
 

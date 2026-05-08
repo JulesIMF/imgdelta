@@ -359,8 +359,14 @@ impl Compressor for DefaultCompressor {
         output_root: &Path,
         options: DecompressOptions,
     ) -> Result<DecompressionStats> {
-        use crate::decompress::decompress_fs_partition;
+        use crate::decompress::{
+            BiosBootDecompressor, FsPartitionDecompressor, MbrDecompressor, PartitionDecompressor,
+            RawPartitionDecompressor,
+        };
         use crate::manifest::MANIFEST_VERSION;
+        use crate::partitions::{
+            BiosBootHandle, FsHandle, MbrHandle, RawHandle, SimpleMountHandle,
+        };
 
         let started_at = Instant::now();
         let image_id = &options.image_id;
@@ -456,77 +462,150 @@ impl Compressor for DefaultCompressor {
             let mut total_bytes: u64 = 0;
 
             for pm in &manifest.partitions {
-                match &pm.content {
-                    PartitionContent::Fs {
-                        records,
-                        fs_type: _,
-                        ..
-                    } => {
-                        let part_stats = decompress_fs_partition(
-                            &options.base_root,
-                            output_root,
-                            records,
-                            &archive_bytes,
-                            patches_compressed,
-                            Arc::clone(&self.storage),
-                            Arc::clone(&self.router),
-                            options.workers,
-                        )
-                        .await?;
-                        total_files += part_stats.files_written;
-                        patches_verified += part_stats.patches_verified;
-                        total_bytes += part_stats.bytes_written;
+                let desc = pm.descriptor.clone();
+
+                let part_stats = match &pm.content {
+                    PartitionContent::Fs { .. } => {
+                        // Wrap the output directory in a FsHandle whose mount_fn
+                        // returns a SimpleMountHandle (no OS-level mount needed).
+                        let out = output_root.to_path_buf();
+                        let output_fh = FsHandle::new(desc, move || {
+                            Ok(Box::new(SimpleMountHandle::new(out.clone()))
+                                as Box<dyn crate::partitions::MountHandle>)
+                        });
+                        FsPartitionDecompressor
+                            .decompress(
+                                pm,
+                                &options.base_root,
+                                &PartitionHandle::Fs(output_fh),
+                                Arc::clone(&self.storage),
+                                &archive_bytes,
+                                patches_compressed,
+                                Arc::clone(&self.router),
+                                options.workers,
+                            )
+                            .await?
                     }
 
-                    PartitionContent::BiosBoot { blob_id, size, .. } => {
-                        let data = self.storage.download_blob(*blob_id).await?;
-                        let out_path =
-                            output_root.join(format!("biosboot_{}.bin", pm.descriptor.number));
+                    PartitionContent::BiosBoot { size, .. } => {
+                        let out_path = output_root.join(format!("biosboot_{}.bin", desc.number));
                         if let Some(p) = out_path.parent() {
                             std::fs::create_dir_all(p).map_err(|e| {
                                 crate::Error::Other(format!("create_dir {}: {e}", p.display()))
                             })?;
                         }
-                        std::fs::write(&out_path, &data).map_err(|e| {
-                            crate::Error::Other(format!("write {}: {e}", out_path.display()))
-                        })?;
-                        total_files += 1;
-                        total_bytes += *size;
+                        let handle = BiosBootHandle::new_rw(
+                            desc,
+                            || {
+                                Err(crate::Error::Format(
+                                    "output BiosBoot handle: read not supported".into(),
+                                ))
+                            },
+                            move |data| {
+                                std::fs::write(&out_path, data).map_err(|e| {
+                                    crate::Error::Other(format!(
+                                        "write {}: {e}",
+                                        out_path.display()
+                                    ))
+                                })
+                            },
+                        );
+                        let _ = size; // stats come from decompressor
+                        BiosBootDecompressor
+                            .decompress(
+                                pm,
+                                Path::new(""),
+                                &PartitionHandle::BiosBoot(handle),
+                                Arc::clone(&self.storage),
+                                &archive_bytes,
+                                patches_compressed,
+                                Arc::clone(&self.router),
+                                options.workers,
+                            )
+                            .await?
                     }
 
-                    PartitionContent::MbrBootCode { blob_id, size, .. } => {
-                        let data = self.storage.download_blob(*blob_id).await?;
+                    PartitionContent::MbrBootCode { size, .. } => {
                         let out_path = output_root.join("mbr_boot_code.bin");
                         if let Some(p) = out_path.parent() {
                             std::fs::create_dir_all(p).map_err(|e| {
                                 crate::Error::Other(format!("create_dir {}: {e}", p.display()))
                             })?;
                         }
-                        std::fs::write(&out_path, &data).map_err(|e| {
-                            crate::Error::Other(format!("write {}: {e}", out_path.display()))
-                        })?;
-                        total_files += 1;
-                        total_bytes += *size;
+                        let handle = MbrHandle::new_rw(
+                            desc,
+                            || {
+                                Err(crate::Error::Format(
+                                    "output Mbr handle: read not supported".into(),
+                                ))
+                            },
+                            move |data| {
+                                std::fs::write(&out_path, data).map_err(|e| {
+                                    crate::Error::Other(format!(
+                                        "write {}: {e}",
+                                        out_path.display()
+                                    ))
+                                })
+                            },
+                        );
+                        let _ = size;
+                        MbrDecompressor
+                            .decompress(
+                                pm,
+                                Path::new(""),
+                                &PartitionHandle::Mbr(handle),
+                                Arc::clone(&self.storage),
+                                &archive_bytes,
+                                patches_compressed,
+                                Arc::clone(&self.router),
+                                options.workers,
+                            )
+                            .await?
                     }
 
-                    PartitionContent::Raw { blob, size, .. } => {
-                        if let Some(bref) = blob {
-                            let data = self.storage.download_blob(bref.blob_id).await?;
-                            let out_path = output_root
-                                .join(format!("raw_partition_{}.img", pm.descriptor.number));
-                            if let Some(p) = out_path.parent() {
-                                std::fs::create_dir_all(p).map_err(|e| {
-                                    crate::Error::Other(format!("create_dir {}: {e}", p.display()))
-                                })?;
-                            }
-                            std::fs::write(&out_path, &data).map_err(|e| {
-                                crate::Error::Other(format!("write {}: {e}", out_path.display()))
+                    PartitionContent::Raw { blob: _, size, .. } => {
+                        let out_path =
+                            output_root.join(format!("raw_partition_{}.img", desc.number));
+                        if let Some(p) = out_path.parent() {
+                            std::fs::create_dir_all(p).map_err(|e| {
+                                crate::Error::Other(format!("create_dir {}: {e}", p.display()))
                             })?;
-                            total_files += 1;
-                            total_bytes += *size;
                         }
+                        let handle = RawHandle::new_rw(
+                            desc,
+                            || {
+                                Err(crate::Error::Format(
+                                    "output Raw handle: read not supported".into(),
+                                ))
+                            },
+                            move |data| {
+                                std::fs::write(&out_path, data).map_err(|e| {
+                                    crate::Error::Other(format!(
+                                        "write {}: {e}",
+                                        out_path.display()
+                                    ))
+                                })
+                            },
+                        );
+                        let _ = size;
+                        RawPartitionDecompressor
+                            .decompress(
+                                pm,
+                                Path::new(""),
+                                &PartitionHandle::Raw(handle),
+                                Arc::clone(&self.storage),
+                                &archive_bytes,
+                                patches_compressed,
+                                Arc::clone(&self.router),
+                                options.workers,
+                            )
+                            .await?
                     }
-                }
+                };
+
+                total_files += part_stats.files_written;
+                patches_verified += part_stats.patches_verified;
+                total_bytes += part_stats.bytes_written;
             }
 
             // ── 6. Update status ───────────────────────────────────────────────
