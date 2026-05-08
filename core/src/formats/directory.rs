@@ -51,6 +51,9 @@ impl Image for DirectoryImage {
     }
 
     fn pack(&self, source_dir: &Path, output_path: &Path) -> Result<()> {
+        if source_dir == output_path {
+            return Ok(()); // no-op if source and output are the same
+        }
         if output_path.exists() {
             std::fs::remove_dir_all(output_path)
                 .map_err(|e| crate::Error::Format(e.to_string()))?;

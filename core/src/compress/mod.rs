@@ -11,10 +11,3 @@
 //! here for backward compatibility.
 
 pub mod partitions;
-
-// Re-export the FS draft type used by the CLI and tests.
-pub use partitions::fs::FsDraft;
-
-// Re-export entry point so existing callers (`crate::compress::compress_fs_partition`)
-// keep working without path changes.
-pub use partitions::fs::compress_fs_partition;

@@ -63,9 +63,10 @@ impl FsHandle {
         descriptor: PartitionDescriptor,
         mount_fn: impl Fn() -> crate::Result<Box<dyn MountHandle>> + Send + Sync + 'static,
     ) -> Self {
+        let uuid_str = descriptor.type_guid.map(|uuid| uuid.to_string());
         Self {
             descriptor,
-            fs_uuid: None,
+            fs_uuid: uuid_str,
             mount_fn: Box::new(mount_fn),
         }
     }

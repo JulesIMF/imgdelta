@@ -46,7 +46,6 @@ pub mod storage;
 pub use error::{Error, Result};
 
 pub use algorithm::{AlgorithmCode, FilePatch, FileSnapshot};
-pub use compress::FsDraft;
 pub use compressor::{
     CompressOptions, CompressionStats, Compressor, DecompressOptions, DecompressionStats,
     DefaultCompressor, DeleteOptions, DeleteStats,

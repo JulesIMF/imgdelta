@@ -12,10 +12,10 @@ use crate::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder, Result};
 /// Raw passthrough algorithm: returns `target` bytes verbatim.
 ///
 /// Zero-size type — instantiation is free.
-pub(crate) struct PassthroughAlgorithm;
+struct PassthroughAlgorithm;
 
 impl PassthroughAlgorithm {
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self
     }
 }
