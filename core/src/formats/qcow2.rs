@@ -84,7 +84,11 @@ impl Drop for Qcow2MountHandle {
             .args(["--disconnect", &self.nbd_device])
             .output();
 
-        // 3. TempDir drops last, removing the (now empty) mount point directory.
+        // 3. Wait for the kernel to release the NBD slot (size → 0 in sysfs)
+        //    so that subsequent calls to find_free_nbd() don't see it as busy.
+        wait_for_nbd_disconnected(&self.nbd_device);
+
+        // 4. TempDir drops last, removing the (now empty) mount point directory.
     }
 }
 
@@ -116,6 +120,81 @@ fn wait_for_nbd_connected(dev: &str) {
         }
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Poll `/sys/block/nbdN/size` until it returns to 0, confirming that the
+/// kernel has released the NBD slot after `qemu-nbd --disconnect`.
+///
+/// Without this, a subsequent `find_free_nbd` call may see the device as
+/// still in use and skip to the next slot, eventually exhausting all 16 NBD
+/// devices across multiple roundtrip runs.
+fn wait_for_nbd_disconnected(dev: &str) {
+    let base_name = dev.trim_start_matches("/dev/");
+    let size_path = format!("/sys/block/{base_name}/size");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        let size: u64 = fs::read_to_string(&size_path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+        if size == 0 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Wait until `/dev/nbdNpM` exists **and** has remained present continuously
+/// for at least `STABILITY_WINDOW`.
+///
+/// After `sgdisk --clear` / `partprobe` the kernel re-reads the partition
+/// table asynchronously and may create, delete, and re-create the partition
+/// device nodes several times within a few hundred milliseconds.  Waiting only
+/// for the first appearance is insufficient: `mkfs` or `blkid` issued
+/// immediately after may find the node temporarily absent and fail with
+/// "does not exist and no size was specified".
+fn wait_for_partition_stable(
+    nbd_device: &str,
+    part_num: u32,
+    timeout: Duration,
+) -> crate::Result<String> {
+    /// How long the node must be present without interruption.
+    const STABILITY_WINDOW: Duration = Duration::from_millis(400);
+    const POLL: Duration = Duration::from_millis(50);
+
+    let part_dev = format!("{nbd_device}p{part_num}");
+    let deadline = Instant::now() + timeout;
+    let mut stable_since: Option<Instant> = None;
+
+    while Instant::now() < deadline {
+        if Path::new(&part_dev).exists() {
+            match stable_since {
+                None => {
+                    // Node appeared for the first time — start the stability timer.
+                    stable_since = Some(Instant::now());
+                }
+                Some(t) if t.elapsed() >= STABILITY_WINDOW => {
+                    // Node has been present long enough; it is stable.
+                    return Ok(part_dev);
+                }
+                _ => {
+                    // Still within the stability window; keep polling.
+                }
+            }
+        } else {
+            // Node disappeared (kernel re-reading partition table); reset timer.
+            stable_since = None;
+        }
+        thread::sleep(POLL);
+    }
+
+    Err(crate::Error::Format(format!(
+        "timeout waiting for {part_dev} to become stable ({}s)",
+        timeout.as_secs()
+    )))
 }
 
 /// Return the path to the first free NBD device at or after `start_index`.
@@ -488,8 +567,15 @@ fn pack_with_base(base: &Path, source_dir: &Path, output_path: &Path) -> Result<
             .output();
     };
 
-    // Wait for partition nodes to appear.
+    // Wait for the main filesystem partition node to become stable before
+    // probing with blkid.  The partition table re-read is asynchronous and
+    // may cause p1/p2 to appear and disappear several times.
+    // We wait for p1 (sentinel) first, then individually for each candidate.
     let _ = wait_for_block_device(&nbd_device);
+    // Additionally ensure the specific partition nodes used by blkid are stable.
+    for n in 1u32..=4 {
+        let _ = wait_for_partition_stable(&nbd_device, n, Duration::from_secs(8));
+    }
 
     // 3. Find the main filesystem partition.
     let main_part = match find_main_partition(&nbd_device) {
@@ -601,6 +687,10 @@ impl Drop for NbdConn {
         let _ = Command::new("qemu-nbd")
             .args(["--disconnect", &self.0])
             .output();
+        // Wait until the kernel marks the device as free (size=0 in sysfs).
+        // Without this, a rapid subsequent find_free_nbd() may still see the
+        // device as in-use and skip it, eventually exhausting all NBD slots.
+        wait_for_nbd_disconnected(&self.0);
     }
 }
 
@@ -1243,8 +1333,18 @@ impl Qcow2Image {
         // 4. Write GPT.
         write_gpt(&nbd_device, layout)?;
 
-        // 5. Wait for partition device nodes to appear.
+        // 5. Wait for all partition device nodes to be stable before I/O.
+        //    wait_for_block_device waits for p1; we additionally wait for
+        //    every partition in the manifest, because the kernel re-reads the
+        //    partition table asynchronously and p2/p3/… may not be stable yet.
         let _ = wait_for_block_device(&nbd_device);
+        for pm in &manifest.partitions {
+            if pm.descriptor.number == 0 {
+                continue; // MBR boot-code uses the raw device, skip
+            }
+            let _ =
+                wait_for_partition_stable(&nbd_device, pm.descriptor.number, NBD_PARTITION_TIMEOUT);
+        }
 
         // 6. Process each partition.
         let image_id = &manifest.header.image_id;
@@ -1317,7 +1417,18 @@ impl Qcow2Image {
 
         // 3. Write GPT and wait for partition nodes.
         write_gpt(&out_nbd, layout)?;
+        // Wait for p1 first (sentinel), then for every partition in the manifest.
+        // The kernel re-reads the partition table asynchronously after sgdisk/partprobe
+        // and partition nodes may briefly disappear and re-appear.  Waiting only for
+        // the first appearance of p1 is insufficient for higher-numbered partitions.
         let _ = wait_for_block_device(&out_nbd);
+        for pm in &manifest.partitions {
+            if pm.descriptor.number == 0 {
+                continue; // MBR boot-code uses the raw device, skip
+            }
+            let _ =
+                wait_for_partition_stable(&out_nbd, pm.descriptor.number, NBD_PARTITION_TIMEOUT);
+        }
 
         // 4. Open base qcow2 (if delta image) and index its Fs partitions.
         let base_open: Option<Box<dyn OpenImage>> = base_path.map(|p| self.open(p)).transpose()?;
@@ -1423,6 +1534,20 @@ async fn apply_partition_with_base(
     workers: usize,
 ) -> crate::Result<crate::decompress::PartitionDecompressStats> {
     use crate::decompress::PartitionDecompressStats;
+
+    // Wait for this specific partition node to be stable before any I/O.
+    // This is a belt-and-suspenders guard: the caller already waits for all
+    // partitions upfront, but individual partition nodes can still flicker
+    // if the kernel issues a second BLKRRPART in response to I/O on another
+    // partition.
+    let part_num = node_partition_number(part_dev);
+    let nbd_base = part_dev
+        .rfind('p')
+        .map(|i| &part_dev[..i])
+        .unwrap_or(part_dev);
+    let stable_dev = wait_for_partition_stable(nbd_base, part_num, NBD_PARTITION_TIMEOUT)?;
+    let part_dev: &str = &stable_dev;
+
     match &pm.content {
         PartitionContent::BiosBoot { blob_id, .. } => {
             write_blob_to_device(storage.as_ref(), *blob_id, part_dev).await?;
@@ -1631,13 +1756,21 @@ async fn apply_partition(
             fs_uuid,
             records,
         } => {
+            // Wait for the specific partition node to be stable before mkfs.
+            let part_num = node_partition_number(part_dev);
+            let nbd_base = part_dev
+                .rfind('p')
+                .map(|i| &part_dev[..i])
+                .unwrap_or(part_dev);
+            let stable_dev = wait_for_partition_stable(nbd_base, part_num, NBD_PARTITION_TIMEOUT)?;
+
             // Format the partition.
-            mkfs_partition(part_dev, fs_type, fs_uuid.as_deref())?;
+            mkfs_partition(&stable_dev, fs_type, fs_uuid.as_deref())?;
 
             // Mount read-write.
             let mount_dir =
                 TempDir::new().map_err(|e| crate::Error::Format(format!("TempDir::new: {e}")))?;
-            mount_partition_rw_plain(part_dev, fs_type, mount_dir.path())?;
+            mount_partition_rw_plain(&stable_dev, fs_type, mount_dir.path())?;
 
             // Use an empty directory as the base (full-image manifest: no
             // files to copy from a base partition).

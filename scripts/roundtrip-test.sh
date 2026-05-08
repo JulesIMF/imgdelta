@@ -28,18 +28,18 @@ set -euo pipefail
 
 # ── colour helpers ────────────────────────────────────────────────────────────
 if [[ -t 1 && "${CI:-}" != "true" ]]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-    CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
 else
     RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; RESET=''
 fi
 
-info()    { printf "${CYAN}[INFO]${RESET}  %s\n" "$*"; }
-ok()      { printf "${GREEN}[OK]${RESET}    %s\n" "$*"; }
-warn()    { printf "${YELLOW}[WARN]${RESET}  %s\n" "$*"; }
-fail()    { printf "${RED}[FAIL]${RESET}  %s\n" "$*" >&2; }
-header()  { printf "\n${BOLD}=== %s ===${RESET}\n" "$*"; }
-step()    { printf "${BOLD}--- %s ---${RESET}\n" "$*"; }
+info()    { printf -- "${CYAN}[INFO]${RESET}  %s\n" "$*"; }
+ok()      { printf -- "${GREEN}[OK]${RESET}    %s\n" "$*"; }
+warn()    { printf -- "${YELLOW}[WARN]${RESET}  %s\n" "$*"; }
+fail()    { printf -- "${RED}[FAIL]${RESET}  %s\n" "$*" >&2; }
+header()  { printf -- "\n${BOLD}=== %s ===${RESET}\n" "$*"; }
+step()    { printf -- "${BOLD}--- %s ---${RESET}\n" "$*"; }
 
 # ── defaults ──────────────────────────────────────────────────────────────────
 WORKERS=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
