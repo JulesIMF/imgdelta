@@ -9,9 +9,9 @@ use std::io::Read;
 
 use async_trait::async_trait;
 
-use crate::decompress::context::DecompressContext;
-use crate::decompress::draft::DecompressDraft;
-use crate::decompress::stage::DecompressStage;
+use crate::decompress::partitions::fs::context::DecompressContext;
+use crate::decompress::partitions::fs::draft::DecompressDraft;
+use crate::decompress::partitions::fs::stage::DecompressStage;
 use crate::{Error, Result};
 
 // ── Stage struct ──────────────────────────────────────────────────────────────

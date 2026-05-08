@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use super::PartitionDecompressStats;
+use crate::decompress::PartitionDecompressStats;
 
 // ── DecompressDraft ───────────────────────────────────────────────────────────
 

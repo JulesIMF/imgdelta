@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use tracing::debug;
 use walkdir::WalkDir;
 
-use crate::decompress::context::DecompressContext;
-use crate::decompress::draft::DecompressDraft;
-use crate::decompress::stage::DecompressStage;
+use crate::decompress::partitions::fs::context::DecompressContext;
+use crate::decompress::partitions::fs::draft::DecompressDraft;
+use crate::decompress::partitions::fs::stage::DecompressStage;
 use crate::{Error, Result};
 
 use super::super::PartitionDecompressStats;

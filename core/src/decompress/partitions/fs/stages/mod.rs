@@ -2,7 +2,7 @@
 // Copyright (c) 2026 JulesIMF
 //
 // image-delta — incremental disk-image compression toolkit
-// Decompress stages: module index
+// Decompress FS partition stages: module index
 
 pub mod apply_records;
 pub mod copy_unchanged;
