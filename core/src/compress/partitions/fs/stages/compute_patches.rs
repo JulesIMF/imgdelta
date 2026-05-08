@@ -145,7 +145,7 @@ pub fn compute_patches_fn(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-pub(crate) fn read_entry_bytes(data: &DataRef, entry_type: &EntryType) -> Result<Vec<u8>> {
+fn read_entry_bytes(data: &DataRef, entry_type: &EntryType) -> Result<Vec<u8>> {
     match data {
         DataRef::FilePath(path) => {
             if *entry_type == EntryType::Symlink {

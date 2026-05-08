@@ -234,7 +234,7 @@ pub(crate) struct EntrySnapshot {
 }
 
 /// Walk `root` and collect metadata only — no file content is read.
-pub(crate) fn snapshot_fast(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
+fn snapshot_fast(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
     let mut map = HashMap::new();
     let mut count = 0usize;
     info!(root = %root.display(), "snapshot: scanning filesystem");
@@ -314,7 +314,7 @@ fn hash_files_par(snap: &HashMap<String, EntrySnapshot>) -> Result<HashMap<Strin
         .collect()
 }
 
-pub(crate) fn sha256_of_file(path: &Path) -> std::io::Result<[u8; 32]> {
+fn sha256_of_file(path: &Path) -> std::io::Result<[u8; 32]> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 65536];
@@ -365,7 +365,7 @@ fn metadata_from_snapshot(e: &EntrySnapshot) -> Metadata {
 ///
 /// Returns `None` when all tracked fields are equal (within ±1 s mtime
 /// tolerance).
-pub(crate) fn metadata_diff(b: &EntrySnapshot, t: &EntrySnapshot) -> Option<Metadata> {
+fn metadata_diff(b: &EntrySnapshot, t: &EntrySnapshot) -> Option<Metadata> {
     let mode = (b.mode != t.mode).then_some(t.mode);
     let uid = (b.uid != t.uid).then_some(t.uid);
     let gid = (b.gid != t.gid).then_some(t.gid);
@@ -383,7 +383,7 @@ pub(crate) fn metadata_diff(b: &EntrySnapshot, t: &EntrySnapshot) -> Option<Meta
     }
 }
 
-pub(crate) fn make_removed_record(path: &str, b: &EntrySnapshot, base_root: &Path) -> Record {
+fn make_removed_record(path: &str, b: &EntrySnapshot, base_root: &Path) -> Record {
     let data = if b.is_file {
         Some(Data::OriginalFile(base_root.join(path)))
     } else {
@@ -400,7 +400,7 @@ pub(crate) fn make_removed_record(path: &str, b: &EntrySnapshot, base_root: &Pat
     }
 }
 
-pub(crate) fn make_added_record(
+fn make_added_record(
     path: &str,
     t: &EntrySnapshot,
     target_root: &Path,
@@ -476,7 +476,7 @@ pub(crate) fn make_added_record(
 }
 
 /// Emit changed records for a path present in *both* trees.
-pub(crate) fn diff_entry(
+fn diff_entry(
     path: &str,
     b: &EntrySnapshot,
     t: &EntrySnapshot,

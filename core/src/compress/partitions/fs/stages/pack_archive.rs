@@ -109,7 +109,7 @@ pub async fn pack_and_upload_archive_fn(
 
 /// Attempt to gzip `bytes`.  Returns `(bytes, true)` if the compressed form is
 /// smaller, `(original, false)` otherwise.
-pub(crate) fn try_gzip(bytes: Vec<u8>) -> Result<(Vec<u8>, bool)> {
+fn try_gzip(bytes: Vec<u8>) -> Result<(Vec<u8>, bool)> {
     let mut enc = GzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(&bytes)
         .map_err(|e| crate::Error::Archive(format!("gzip write: {e}")))?;

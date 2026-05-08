@@ -202,7 +202,7 @@ pub async fn apply_records_fn(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn apply_record_sync(
+fn apply_record_sync(
     record: &Record,
     base_root: &Path,
     output_root: &Path,
@@ -430,7 +430,7 @@ pub fn apply_record_sync(
     Ok(())
 }
 
-pub fn apply_metadata(path: &Path, meta: Option<&crate::manifest::Metadata>) {
+fn apply_metadata(path: &Path, meta: Option<&crate::manifest::Metadata>) {
     let meta = match meta {
         Some(m) => m,
         None => return,
@@ -485,7 +485,7 @@ pub fn apply_metadata(path: &Path, meta: Option<&crate::manifest::Metadata>) {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn apply_file_record_sync(
+fn apply_file_record_sync(
     record: &Record,
     new_path: &str,
     dst: &Path,

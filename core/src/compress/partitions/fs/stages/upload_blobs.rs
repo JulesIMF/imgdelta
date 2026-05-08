@@ -247,6 +247,6 @@ pub(crate) fn hex_sha256_bytes(data: &[u8]) -> String {
 }
 
 /// Encode a pre-computed raw SHA-256 digest as a hex string.
-pub(crate) fn hex_sha256_bytes_raw(hash: &[u8; 32]) -> String {
+fn hex_sha256_bytes_raw(hash: &[u8; 32]) -> String {
     hex::encode(hash)
 }
