@@ -10,14 +10,15 @@ use async_trait::async_trait;
 use rayon::prelude::*;
 use tracing::debug;
 
-use crate::algorithm::FileSnapshot;
 use crate::compress::partitions::fs::context::StageContext;
 use crate::compress::partitions::fs::draft::FsDraft;
 use crate::compress::partitions::fs::stage::CompressStage;
-use crate::encoder::PatchEncoder;
+use crate::encoding::algorithm::FileSnapshot;
+use crate::encoding::encoders::router::FileInfo;
+use crate::encoding::PassthroughEncoder;
+use crate::encoding::PatchEncoder;
 use crate::manifest::{DataRef, EntryType, Patch, PatchRef};
-use crate::routing::FileInfo;
-use crate::{PassthroughEncoder, Result};
+use crate::Result;
 
 // ── Stage struct ──────────────────────────────────────────────────────────────
 
@@ -46,7 +47,7 @@ impl CompressStage for ComputePatches {
 
 pub fn compute_patches_fn(
     mut draft: FsDraft,
-    router: &crate::routing::RouterEncoder,
+    router: &crate::encoding::RouterEncoder,
     workers: usize,
 ) -> Result<FsDraft> {
     let needs_patch: Vec<usize> = draft
@@ -168,9 +169,9 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     use super::*;
+    use crate::encoding::RouterEncoder;
+    use crate::encoding::{AlgorithmCode, Xdelta3Encoder};
     use crate::manifest::{EntryType, Patch, Record};
-    use crate::routing::RouterEncoder;
-    use crate::{AlgorithmCode, Xdelta3Encoder};
 
     fn write(dir: &std::path::Path, rel: &str, content: &[u8]) {
         let full = dir.join(rel);

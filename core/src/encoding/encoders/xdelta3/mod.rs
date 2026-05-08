@@ -6,8 +6,9 @@
 
 mod ffi;
 
-use crate::encoder::PatchAlgorithm;
-use crate::{AlgorithmCode, Error, FilePatch, FileSnapshot, PatchEncoder, Result};
+use super::super::PatchAlgorithm;
+use super::super::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder};
+use crate::{Error, Result};
 
 // ── Xdelta3Algorithm ──────────────────────────────────────────────────────────
 

@@ -20,10 +20,10 @@ use async_trait::async_trait;
 use tracing::info;
 
 use crate::compress::context::CompressContext;
+use crate::encoding::RouterEncoder;
 use crate::manifest::PartitionManifest;
 use crate::partition::{PartitionDescriptor, PartitionKind};
 use crate::partitions::PartitionHandle;
-use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::Result;
 

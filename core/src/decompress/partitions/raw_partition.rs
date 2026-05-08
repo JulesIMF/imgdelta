@@ -11,9 +11,9 @@ use async_trait::async_trait;
 
 use crate::decompress::partitions::PartitionDecompressor;
 use crate::decompress::PartitionDecompressStats;
+use crate::encoding::RouterEncoder;
 use crate::manifest::{PartitionContent, PartitionManifest};
 use crate::partitions::PartitionHandle;
-use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::Result;
 

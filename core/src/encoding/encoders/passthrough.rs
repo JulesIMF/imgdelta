@@ -4,8 +4,9 @@
 // image-delta — incremental disk-image compression toolkit
 // PassthroughEncoder: stores files verbatim when delta would be larger
 
-use crate::encoder::PatchAlgorithm;
-use crate::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder, Result};
+use super::super::PatchAlgorithm;
+use super::super::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder};
+use crate::Result;
 
 // ── PassthroughAlgorithm ──────────────────────────────────────────────────────
 

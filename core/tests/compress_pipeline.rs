@@ -18,11 +18,12 @@ use image_delta_core::compress::partitions::fs::stages::{
     upload_lazy_blobs_fn as upload_lazy_blobs, walkdir_fn as walkdir,
 };
 use image_delta_core::compress::partitions::fs::FsDraft;
+use image_delta_core::encoding::Xdelta3Encoder;
 use image_delta_core::manifest::{
     BlobRef, Data, DataRef, EntryType, PartitionContent, Patch, Record,
 };
 use image_delta_core::partition::{PartitionDescriptor, PartitionKind};
-use image_delta_core::{Storage, Xdelta3Encoder};
+use image_delta_core::Storage;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -37,8 +38,8 @@ fn write(dir: &std::path::Path, rel: &str, content: &[u8]) {
     std::fs::write(full, content).unwrap();
 }
 
-fn xdelta3_router() -> image_delta_core::routing::RouterEncoder {
-    image_delta_core::routing::RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new()))
+fn xdelta3_router() -> image_delta_core::encoding::RouterEncoder {
+    image_delta_core::encoding::RouterEncoder::new(vec![], Arc::new(Xdelta3Encoder::new()))
 }
 
 fn simple_descriptor() -> PartitionDescriptor {
@@ -1053,7 +1054,7 @@ async fn test_pack_upload_archive_compressible_data_uses_gzip() {
     let pref = image_delta_core::manifest::PatchRef {
         archive_entry: "000000.patch".to_string(),
         sha256,
-        algorithm_code: image_delta_core::AlgorithmCode::Passthrough,
+        algorithm_code: image_delta_core::encoding::AlgorithmCode::Passthrough,
         algorithm_id: None,
     };
     draft.records.push(Record {

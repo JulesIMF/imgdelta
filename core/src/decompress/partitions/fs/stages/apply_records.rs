@@ -14,10 +14,10 @@ use tokio::task::JoinSet;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::algorithm::FilePatch;
-use crate::encoder::PatchEncoder;
+use crate::encoding::algorithm::FilePatch;
+use crate::encoding::PatchEncoder;
+use crate::encoding::RouterEncoder;
 use crate::manifest::{Data, EntryType, Patch, Record};
-use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::{Error, Result};
 

@@ -16,9 +16,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::decompress::PartitionDecompressStats;
+use crate::encoding::RouterEncoder;
 use crate::manifest::{PartitionContent, PartitionManifest, Record};
 use crate::partitions::PartitionHandle;
-use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::Result;
 

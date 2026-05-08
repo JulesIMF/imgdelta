@@ -4,8 +4,9 @@
 // image-delta — incremental disk-image compression toolkit
 // TextDiffEncoder: unified-diff based encoder for human-readable text files
 
-use crate::encoder::PatchAlgorithm;
-use crate::{AlgorithmCode, Error, FilePatch, FileSnapshot, PatchEncoder, Result};
+use super::super::PatchAlgorithm;
+use super::super::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder};
+use crate::{Error, Result};
 
 // ── MyersAlgorithm ────────────────────────────────────────────────────────────
 

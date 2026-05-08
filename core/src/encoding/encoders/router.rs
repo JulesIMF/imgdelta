@@ -4,8 +4,9 @@
 // image-delta — incremental disk-image compression toolkit
 // RouterEncoder: selects a PatchEncoder per file path using glob rules
 
-use crate::encoders::PassthroughEncoder;
-use crate::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder, Result};
+use crate::encoding::PassthroughEncoder;
+use crate::encoding::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder};
+use crate::Result;
 use std::sync::Arc;
 
 /// Context passed to routing rules for per-file encoder selection.

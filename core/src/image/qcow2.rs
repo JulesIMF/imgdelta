@@ -20,12 +20,12 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::decompress::decompress_fs_partition;
-use crate::encoders::Xdelta3Encoder;
+use crate::encoding::RouterEncoder;
+use crate::encoding::Xdelta3Encoder;
 use crate::image::OpenImage;
 use crate::manifest::{Manifest, PartitionContent, PartitionManifest};
 use crate::partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
 use crate::partitions::{BiosBootHandle, FsHandle, MbrHandle, PartitionHandle, RawHandle};
-use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::{Image, MountHandle, Result};
 use tracing::debug;
@@ -1389,7 +1389,7 @@ impl Image for Qcow2Image {
 
     /// Create a new, empty qcow2 image at `path` with the GPT layout from
     /// `layout`, connect it RW via NBD, and return a writable [`OpenQcow2Image`]
-    /// whose [`create_partition`][crate::image::OpenImage::create_partition]
+    /// whose [`create_partition`][crate::formats::OpenImage::create_partition]
     /// prepares each partition (mkfs for Fs, direct write for binary types).
     ///
     /// Steps:

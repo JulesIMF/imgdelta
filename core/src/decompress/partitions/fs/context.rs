@@ -7,8 +7,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::encoding::RouterEncoder;
 use crate::manifest::Record;
-use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 
 // ── DecompressContext ─────────────────────────────────────────────────────────

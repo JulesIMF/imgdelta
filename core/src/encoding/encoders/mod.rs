@@ -2,12 +2,14 @@
 // Copyright (c) 2026 JulesIMF
 //
 // image-delta — incremental disk-image compression toolkit
-// Re-exports all built-in PatchEncoder implementations
+// Re-exports all encoders
 
 pub mod passthrough;
+pub mod router;
 pub mod text_diff;
-pub mod vcdiff;
+pub mod xdelta3;
 
 pub use passthrough::PassthroughEncoder;
+pub use router::RouterEncoder;
 pub use text_diff::TextDiffEncoder;
-pub use vcdiff::Xdelta3Encoder;
+pub use xdelta3::Xdelta3Encoder;

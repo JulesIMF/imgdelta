@@ -12,10 +12,10 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use image_delta_core::{
-    ElfRule, GlobRule, MagicRule, PassthroughEncoder, PatchEncoder, RouterEncoder, RoutingRule,
-    SizeRule, Storage, TextDiffEncoder, Xdelta3Encoder,
+use image_delta_core::encoding::{
+    PassthroughEncoder, PatchEncoder, RouterEncoder, TextDiffEncoder, Xdelta3Encoder,
 };
+use image_delta_core::{ElfRule, GlobRule, MagicRule, RoutingRule, SizeRule, Storage};
 
 use crate::impls::local_storage::LocalStorage;
 use crate::impls::s3_storage::S3Storage;

@@ -83,7 +83,7 @@ impl Image for DirectoryImage {
     /// Create a new, writable directory image at `path`.
     ///
     /// Creates the directory (and any parent directories) and returns an
-    /// [`OpenDirectory`] whose [`create_partition`][crate::image::OpenImage::create_partition]
+    /// [`OpenDirectory`] whose [`create_partition`][crate::formats::OpenImage::create_partition]
     /// writes partition data as files into that directory.
     fn create(&self, path: &Path, _layout: &DiskLayout) -> Result<Box<dyn OpenImage>> {
         std::fs::create_dir_all(path)

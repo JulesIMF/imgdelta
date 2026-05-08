@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::routing::RouterEncoder;
+use crate::encoding::RouterEncoder;
 use crate::storage::Storage;
 
 /// Immutable shared resources passed by reference to every stage and

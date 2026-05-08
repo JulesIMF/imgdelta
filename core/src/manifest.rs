@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::encoding::AlgorithmCode;
 use crate::partition::{DiskLayout, PartitionDescriptor};
-use crate::AlgorithmCode;
 
 /// Manifest format version stored in every [`ManifestHeader`].
 ///
@@ -280,7 +280,7 @@ pub enum PartitionContent {
     /// Stored as a single verbatim blob (SHA-256 dedup), exactly like
     /// [`BiosBoot`][PartitionContent::BiosBoot].  Corresponds to the
     /// synthetic [`PartitionKind::MbrBootCode`][crate::partition::PartitionKind::MbrBootCode]
-    /// partition (number 0) produced by [`PartitionHandle::Mbr`][crate::image::PartitionHandle::Mbr].
+    /// partition (number 0) produced by [`PartitionHandle::Mbr`][crate::formats::PartitionHandle::Mbr].
     MbrBootCode {
         blob_id: Uuid,
         sha256: String,

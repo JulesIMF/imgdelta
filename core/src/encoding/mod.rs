@@ -2,9 +2,19 @@
 // Copyright (c) 2026 JulesIMF
 //
 // image-delta — incremental disk-image compression toolkit
-// PatchEncoder trait and FilePatch type used by all delta encoders
+// Re-exports all built-in PatchEncoder implementations
 
-use crate::{AlgorithmCode, FilePatch, FileSnapshot, Result};
+pub mod algorithm;
+pub mod encoders;
+
+pub use encoders::passthrough::PassthroughEncoder;
+pub use encoders::router::RouterEncoder;
+pub use encoders::text_diff::TextDiffEncoder;
+pub use encoders::xdelta3::Xdelta3Encoder;
+
+pub use algorithm::{AlgorithmCode, FilePatch, FileSnapshot};
+
+use crate::Result;
 
 // ── PatchAlgorithm ────────────────────────────────────────────────────────────
 

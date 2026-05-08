@@ -8,9 +8,11 @@
 ///
 /// These tests exercise the full encode/decode cycle, as well as error paths
 /// for binary inputs that are not valid UTF-8.
-use image_delta_core::{
-    AlgorithmCode, Error, FilePatch, FileSnapshot, PatchEncoder, TextDiffEncoder,
+use image_delta_core::encoding::{
+    AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder, TextDiffEncoder,
 };
+
+use image_delta_core::Error;
 
 fn encoder() -> TextDiffEncoder {
     TextDiffEncoder::new()

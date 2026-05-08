@@ -118,7 +118,7 @@ pub trait Compressor: Send + Sync {
 
 pub struct DefaultCompressor {
     storage: Arc<dyn Storage>,
-    router: Arc<crate::routing::RouterEncoder>,
+    router: Arc<crate::encoding::RouterEncoder>,
     image_format: Arc<dyn Image>,
 }
 
@@ -127,7 +127,7 @@ impl DefaultCompressor {
     pub fn new(
         image_format: Arc<dyn Image>,
         storage: Arc<dyn Storage>,
-        router: Arc<crate::routing::RouterEncoder>,
+        router: Arc<crate::encoding::RouterEncoder>,
     ) -> Self {
         Self {
             image_format,
@@ -140,12 +140,12 @@ impl DefaultCompressor {
     pub fn with_encoder(
         image_format: Arc<dyn Image>,
         storage: Arc<dyn Storage>,
-        encoder: Arc<dyn crate::encoder::PatchEncoder>,
+        encoder: Arc<dyn crate::encoding::PatchEncoder>,
     ) -> Self {
         Self::new(
             image_format,
             storage,
-            Arc::new(crate::routing::RouterEncoder::new(vec![], encoder)),
+            Arc::new(crate::encoding::RouterEncoder::new(vec![], encoder)),
         )
     }
 }

@@ -25,36 +25,32 @@
 
 mod error;
 
-pub mod algorithm;
 pub mod compress;
 pub mod compressor;
 pub mod decompress;
-pub mod encoder;
-pub mod encoders;
-pub mod formats;
+pub mod encoding;
 pub mod fs_diff;
 pub mod image;
 pub mod manifest;
 pub mod partition;
 pub mod partitions;
 pub mod path_match;
-pub mod routing;
 pub mod storage;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
 
 pub use error::{Error, Result};
 
-pub use algorithm::{AlgorithmCode, FilePatch, FileSnapshot};
 pub use compressor::{
     CompressOptions, CompressionStats, Compressor, DecompressOptions, DecompressionStats,
     DefaultCompressor, DeleteOptions, DeleteStats,
 };
-pub use encoder::PatchEncoder;
-pub use encoders::{PassthroughEncoder, TextDiffEncoder, Xdelta3Encoder};
-pub use formats::DirectoryImage;
+pub use encoding::encoders::router::{
+    ElfRule, FileInfo, GlobRule, MagicRule, RouterEncoder, RoutingRule, SizeRule,
+};
+pub use image::DirectoryImage;
 #[cfg(all(target_os = "linux", feature = "qcow2"))]
-pub use formats::Qcow2Image;
+pub use image::Qcow2Image;
 pub use image::{Image, OpenImage};
 pub use manifest::{
     BlobRef, Data, DataRef, EntryType, Manifest, ManifestHeader, Metadata, PartitionContent,
@@ -64,5 +60,4 @@ pub use partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
 pub use partitions::{
     BiosBootHandle, FsHandle, MbrHandle, MountHandle, PartitionHandle, RawHandle, SimpleMountHandle,
 };
-pub use routing::{ElfRule, FileInfo, GlobRule, MagicRule, RouterEncoder, RoutingRule, SizeRule};
 pub use storage::{BlobCandidate, ImageMeta, ImageStatus, Storage};

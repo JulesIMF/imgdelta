@@ -445,13 +445,14 @@ mod tests {
     fn test_qcow2_pack_from_manifest() {
         use crate::common::fake_storage::FakeStorage;
         use image_delta_core::compress::partitions::fs::compress_fs_partition_and_upload;
+        use image_delta_core::encoding::RouterEncoder;
+        use image_delta_core::encoding::Xdelta3Encoder;
         use image_delta_core::manifest::{
             BlobRef, Manifest, ManifestHeader, PartitionContent, PartitionManifest,
             MANIFEST_VERSION,
         };
         use image_delta_core::partitions::PartitionHandle;
-        use image_delta_core::routing::RouterEncoder;
-        use image_delta_core::{Storage, Xdelta3Encoder};
+        use image_delta_core::Storage;
         use sha2::{Digest, Sha256};
         use std::sync::Arc;
         use tempfile::tempdir;

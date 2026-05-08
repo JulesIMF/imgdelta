@@ -17,10 +17,9 @@ use std::sync::Arc;
 
 use common::FakeStorage;
 use filetime::FileTime;
+use image_delta_core::encoding::Xdelta3Encoder;
 use image_delta_core::manifest::{Data, Manifest, PartitionContent, Patch};
-use image_delta_core::{
-    CompressOptions, Compressor, DefaultCompressor, DirectoryImage, Storage, Xdelta3Encoder,
-};
+use image_delta_core::{CompressOptions, Compressor, DefaultCompressor, DirectoryImage, Storage};
 use tempfile::TempDir;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

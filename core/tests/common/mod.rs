@@ -337,7 +337,8 @@ pub fn make_compressor() -> (
     std::sync::Arc<FakeStorage>,
     std::sync::Arc<image_delta_core::DefaultCompressor>,
 ) {
-    use image_delta_core::{DefaultCompressor, PassthroughEncoder};
+    use image_delta_core::encoding::PassthroughEncoder;
+    use image_delta_core::DefaultCompressor;
     use std::sync::Arc;
 
     let storage = Arc::new(FakeStorage::new());

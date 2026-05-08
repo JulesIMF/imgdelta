@@ -11,9 +11,11 @@
 /// [`AlgorithmCode`] during decoding.
 use std::sync::Arc;
 
-use image_delta_core::{
-    AlgorithmCode, Error, FilePatch, FileSnapshot, GlobRule, PassthroughEncoder, PatchEncoder,
-    RouterEncoder, TextDiffEncoder, Xdelta3Encoder,
+use image_delta_core::{Error, GlobRule, RouterEncoder};
+
+use image_delta_core::encoding::{
+    AlgorithmCode, FilePatch, FileSnapshot, PassthroughEncoder, PatchEncoder, TextDiffEncoder,
+    Xdelta3Encoder,
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
