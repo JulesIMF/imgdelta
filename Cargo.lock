@@ -1762,6 +1762,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "clap",
+ "flate2",
  "hex",
  "image-delta-core",
  "indicatif 0.17.11",

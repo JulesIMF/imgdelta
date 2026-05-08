@@ -14,15 +14,15 @@
 ///   images/{image_id}/manifest      — serialised Manifest bytes
 ///   images/{image_id}/patches.tar   — patches tar (or tar.gz)
 ///   images/{image_id}/meta.json     — ImageMeta + ImageStatus
-///   sha256_index.json               — sha256 hex → uuid mapping (dedup)
-///   blob_origins.json               — [(uuid, image_id, file_path)]
+///   sha256_index.json               — sha256 hex → {uuid, compressed} mapping (dedup)
+///   blobs.json                      — [(uuid, image_id, file_path)] blob origins
 /// ```
 ///
 /// Blob UUIDs are derived deterministically from their SHA-256 via UUID v5
 /// (namespace OID), so `upload_blob` is idempotent at the byte level.
 ///
 /// Thread safety: all mutable state is protected by a [`Mutex`].
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -63,7 +63,16 @@ impl From<StoredImageMeta> for ImageMeta {
     }
 }
 
-/// Persisted blob-origin record.
+/// Value stored in `sha256_index.json` for each known blob.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BlobIndexEntry {
+    pub uuid: Uuid,
+    /// `true` if the blob file on disk is gzip-compressed.
+    #[serde(default)]
+    pub compressed: bool,
+}
+
+/// Persisted blob-origin record (`blobs.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BlobOriginRecord {
     pub blob_uuid: String,
@@ -75,10 +84,13 @@ struct BlobOriginRecord {
 /// In-memory cache of mutable index state (persisted to disk after each write).
 #[derive(Debug, Default)]
 struct LocalStorageInner {
-    /// sha256 hex → UUID
-    sha256_index: HashMap<String, Uuid>,
-    /// (blob_uuid_str, image_id, file_path)
+    /// sha256 hex → BlobIndexEntry { uuid, compressed }
+    sha256_index: HashMap<String, BlobIndexEntry>,
+    /// blob origins — persisted as `blobs.json`
     blob_origins: Vec<BlobOriginRecord>,
+    /// UUIDs of compressed blobs — derived from `sha256_index` at load time,
+    /// never persisted separately.
+    compressed_blobs: HashSet<Uuid>,
 }
 
 pub struct LocalStorage {
@@ -99,6 +111,12 @@ impl LocalStorage {
             .map_err(|e| anyhow::anyhow!("cannot create images dir: {e}"))?;
 
         let sha256_index = Self::load_sha256_index(&base_dir);
+        // Derive compressed_blobs from the index — no separate file needed.
+        let compressed_blobs = sha256_index
+            .values()
+            .filter(|e| e.compressed)
+            .map(|e| e.uuid)
+            .collect();
         let blob_origins = Self::load_blob_origins(&base_dir);
 
         Ok(Self {
@@ -106,6 +124,7 @@ impl LocalStorage {
             inner: Mutex::new(LocalStorageInner {
                 sha256_index,
                 blob_origins,
+                compressed_blobs,
             }),
         })
     }
@@ -132,41 +151,52 @@ impl LocalStorage {
         self.image_dir(image_id).join("meta.json")
     }
 
-    #[allow(dead_code)]
-    fn sha256_index_path(&self) -> PathBuf {
-        self.base_dir.join("sha256_index.json")
-    }
-
-    #[allow(dead_code)]
-    fn blob_origins_path(&self) -> PathBuf {
-        self.base_dir.join("blob_origins.json")
-    }
-
     // ── Index I/O ─────────────────────────────────────────────────────────────
 
-    fn load_sha256_index(base_dir: &Path) -> HashMap<String, Uuid> {
+    fn load_sha256_index(base_dir: &Path) -> HashMap<String, BlobIndexEntry> {
         let path = base_dir.join("sha256_index.json");
         let Ok(bytes) = std::fs::read(&path) else {
             return HashMap::new();
         };
+        // Try new format {sha256: {uuid, compressed}} first; fall back to legacy
+        // {sha256: uuid_str} so old stores are migrated transparently.
+        if let Ok(new) = serde_json::from_slice::<HashMap<String, BlobIndexEntry>>(&bytes) {
+            return new;
+        }
         serde_json::from_slice::<HashMap<String, String>>(&bytes)
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|(k, v)| v.parse::<Uuid>().ok().map(|u| (k, u)))
+            .filter_map(|(k, v)| {
+                v.parse::<Uuid>().ok().map(|uuid| {
+                    (
+                        k,
+                        BlobIndexEntry {
+                            uuid,
+                            compressed: false,
+                        },
+                    )
+                })
+            })
             .collect()
     }
 
-    fn save_sha256_index(base_dir: &Path, index: &HashMap<String, Uuid>) -> std::io::Result<()> {
-        let map: HashMap<&str, String> = index
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.to_string()))
-            .collect();
-        let bytes = serde_json::to_vec_pretty(&map).map_err(std::io::Error::other)?;
+    fn save_sha256_index(
+        base_dir: &Path,
+        index: &HashMap<String, BlobIndexEntry>,
+    ) -> std::io::Result<()> {
+        let bytes = serde_json::to_vec_pretty(index).map_err(std::io::Error::other)?;
         std::fs::write(base_dir.join("sha256_index.json"), bytes)
     }
 
     fn load_blob_origins(base_dir: &Path) -> Vec<BlobOriginRecord> {
-        let path = base_dir.join("blob_origins.json");
+        // Support both old name (blob_origins.json) and new name (blobs.json).
+        let new_path = base_dir.join("blobs.json");
+        let old_path = base_dir.join("blob_origins.json");
+        let path = if new_path.exists() {
+            new_path
+        } else {
+            old_path
+        };
         let Ok(bytes) = std::fs::read(&path) else {
             return Vec::new();
         };
@@ -175,7 +205,35 @@ impl LocalStorage {
 
     fn save_blob_origins(base_dir: &Path, origins: &[BlobOriginRecord]) -> std::io::Result<()> {
         let bytes = serde_json::to_vec_pretty(origins).map_err(std::io::Error::other)?;
-        std::fs::write(base_dir.join("blob_origins.json"), bytes)
+        std::fs::write(base_dir.join("blobs.json"), bytes)
+    }
+
+    /// Try gzip-compress `data`; return (bytes_to_store, was_compressed).
+    fn try_compress_blob(data: &[u8]) -> (Vec<u8>, bool) {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut enc = GzEncoder::new(Vec::with_capacity(data.len()), Compression::default());
+        if enc.write_all(data).is_err() {
+            return (data.to_vec(), false);
+        }
+        match enc.finish() {
+            Ok(gz) if gz.len() < data.len() => (gz, true),
+            _ => (data.to_vec(), false),
+        }
+    }
+
+    /// Decompress a gzip blob back to raw bytes.
+    fn decompress_blob(data: &[u8]) -> Result<Vec<u8>> {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let mut dec = GzDecoder::new(data);
+        let mut out = Vec::new();
+        dec.read_to_end(&mut out)
+            .map_err(|e| Error::Storage(format!("decompress blob: {e}")))?;
+        Ok(out)
     }
 
     fn io_err(e: impl std::fmt::Display) -> Error {
@@ -186,30 +244,55 @@ impl LocalStorage {
 #[async_trait]
 impl Storage for LocalStorage {
     async fn blob_exists(&self, sha256: &str) -> Result<Option<Uuid>> {
-        Ok(self.inner.lock().unwrap().sha256_index.get(sha256).copied())
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .sha256_index
+            .get(sha256)
+            .map(|e| e.uuid))
     }
 
     async fn upload_blob(&self, sha256: &str, data: &[u8]) -> Result<Uuid> {
         let mut inner = self.inner.lock().unwrap();
 
         // Idempotent: if already uploaded, return existing UUID.
-        if let Some(&existing) = inner.sha256_index.get(sha256) {
-            return Ok(existing);
+        if let Some(existing) = inner.sha256_index.get(sha256) {
+            return Ok(existing.uuid);
         }
 
         // Derive a deterministic UUID from the SHA-256.
         let uuid = Uuid::new_v5(&Uuid::NAMESPACE_OID, sha256.as_bytes());
         let path = self.blob_path(uuid);
-        std::fs::write(&path, data).map_err(Self::io_err)?;
 
-        inner.sha256_index.insert(sha256.to_string(), uuid);
+        let (bytes_to_store, compressed) = Self::try_compress_blob(data);
+        std::fs::write(&path, &bytes_to_store).map_err(Self::io_err)?;
+
+        if compressed {
+            inner.compressed_blobs.insert(uuid);
+        }
+
+        inner
+            .sha256_index
+            .insert(sha256.to_string(), BlobIndexEntry { uuid, compressed });
         Self::save_sha256_index(&self.base_dir, &inner.sha256_index).map_err(Self::io_err)?;
         Ok(uuid)
     }
 
     async fn download_blob(&self, blob_id: Uuid) -> Result<Vec<u8>> {
-        std::fs::read(self.blob_path(blob_id))
-            .map_err(|e| Error::Storage(format!("blob {blob_id} not found: {e}")))
+        let raw = std::fs::read(self.blob_path(blob_id))
+            .map_err(|e| Error::Storage(format!("blob {blob_id} not found: {e}")))?;
+        let is_compressed = self
+            .inner
+            .lock()
+            .unwrap()
+            .compressed_blobs
+            .contains(&blob_id);
+        if is_compressed {
+            Self::decompress_blob(&raw)
+        } else {
+            Ok(raw)
+        }
     }
 
     async fn upload_manifest(&self, image_id: &str, manifest_bytes: &[u8]) -> Result<()> {
@@ -300,7 +383,13 @@ impl Storage for LocalStorage {
                     let sha256 = inner
                         .sha256_index
                         .iter()
-                        .find_map(|(k, &v)| if v == uuid { Some(k.clone()) } else { None })
+                        .find_map(|(k, e)| {
+                            if e.uuid == uuid {
+                                Some(k.clone())
+                            } else {
+                                None
+                            }
+                        })
                         .unwrap_or_default();
                     BlobCandidate {
                         uuid,
@@ -352,10 +441,11 @@ impl Storage for LocalStorage {
         if path.exists() {
             std::fs::remove_file(&path).map_err(Self::io_err)?;
         }
-        // Remove from sha256_index.
         let mut inner = self.inner.lock().unwrap();
-        inner.sha256_index.retain(|_, &mut v| v != blob_id);
-        Self::save_sha256_index(&self.base_dir, &inner.sha256_index).map_err(Self::io_err)
+        inner.sha256_index.retain(|_, e| e.uuid != blob_id);
+        inner.compressed_blobs.remove(&blob_id);
+        Self::save_sha256_index(&self.base_dir, &inner.sha256_index).map_err(Self::io_err)?;
+        Ok(())
     }
 
     async fn delete_blob_origins(&self, image_id: &str) -> Result<()> {
