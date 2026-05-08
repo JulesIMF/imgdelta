@@ -12,6 +12,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tracing::{error, info};
 
+use crate::compress::partitions::fs::stages::pack_archive::pack_and_upload_patches;
 use crate::compress::partitions::{
     BiosBootCompressor, FsPartitionCompressor, MbrCompressor, PartitionCompressor,
     RawPartitionCompressor,
@@ -19,7 +20,6 @@ use crate::compress::partitions::{
 use crate::manifest::{
     Data, Manifest, ManifestHeader, PartitionContent, PartitionManifest, MANIFEST_VERSION,
 };
-use crate::partition::PartitionKind;
 use crate::partitions::PartitionHandle;
 use crate::storage::ImageStatus;
 use crate::{Image, ImageMeta, Result, Storage};
@@ -195,35 +195,48 @@ impl Compressor for DefaultCompressor {
             // ── 2. Open target image ───────────────────────────────────────────────
             let target_open = self.image_format.open(target_root)?;
 
-            // ── 3. Open base image (if any) and index its partitions by number ────
+            // ── 3. Open base image (if any) and index its Fs partitions by number ─
             //
             // `_base_open` is kept alive so that any mount handles derived from it
-            // stay valid during partition processing.  It must outlive
-            // `base_partitions`.
+            // stay valid during partition processing.  It must outlive the loop.
             let _base_open: Option<Box<dyn crate::image::OpenImage>>;
-            let base_partitions: HashMap<u32, PartitionHandle>;
+            let base_fs_handles: HashMap<u32, crate::partitions::FsHandle>;
             if let Some(_base_id) = base_image_id {
                 let open = self.image_format.open(source_root)?;
                 let mut map = HashMap::new();
                 for ph in open.partitions()? {
-                    map.insert(ph.descriptor().number, ph);
+                    if let PartitionHandle::Fs(fsh) = ph {
+                        map.insert(fsh.descriptor.number, fsh);
+                    }
                 }
-                base_partitions = map;
+                base_fs_handles = map;
                 _base_open = Some(open);
             } else {
-                base_partitions = HashMap::new();
+                base_fs_handles = HashMap::new();
                 _base_open = None;
             }
 
             // ── 4. Process each target partition ──────────────────────────────────
             let disk_layout = target_open.disk_layout().clone();
-            let target_partitions = target_open.partitions()?;
+            let mut target_partitions = target_open.partitions()?;
+
+            // Inject base mount fn into Fs handles so FsPartitionCompressor
+            // doesn't need a global base_partitions map.
+            for ph in &mut target_partitions {
+                if let PartitionHandle::Fs(ref mut fsh) = ph {
+                    if let Some(base_fsh) = base_fs_handles.get(&fsh.descriptor.number) {
+                        fsh.set_base(base_fsh);
+                    }
+                }
+            }
+
+            // Shared directory for all FS partition patch files.
+            // All partitions write patches here as flat files (keys are SHA-256
+            // hashes, globally unique across partitions).
+            let all_patches_dir = tempfile::TempDir::new()?;
 
             let mut partition_manifests: Vec<PartitionManifest> = Vec::new();
-            let mut patches_compressed = false;
-            let mut archive_stored_bytes: u64 = 0;
-            // Keep TempDirs and MountHandles alive until all processing is done.
-            let mut _live_mounts: Vec<Box<dyn crate::partitions::MountHandle>> = Vec::new();
+            // Per-partition tmp dirs for blob downloads (stage 6).
             let mut _live_tmpdirs: Vec<tempfile::TempDir> = Vec::new();
 
             for target_ph in target_partitions {
@@ -235,26 +248,19 @@ impl Compressor for DefaultCompressor {
                     "compress: processing partition"
                 );
 
-                let ctx = crate::compress::partitions::fs::context::StageContext {
+                let tmp_dir = tempfile::TempDir::new()?;
+                let ctx = crate::compress::context::CompressContext {
                     storage: Arc::clone(&self.storage),
                     router: Arc::clone(&self.router),
                     image_id: Arc::from(image_id.as_str()),
                     base_image_id: options.base_image_id.as_deref().map(Arc::from),
                     partition_number: Some(descriptor.number as i32),
                     workers: options.workers,
-                    tmp_dir: {
-                        let t = tempfile::TempDir::new()?;
-                        let p: Arc<std::path::Path> = Arc::from(t.path());
-                        _live_tmpdirs.push(t);
-                        p
-                    },
+                    tmp_dir: Arc::from(tmp_dir.path()),
+                    patches_dir: Arc::from(all_patches_dir.path()),
                     debug_dir: options.debug_dir.as_deref().map(Arc::from),
                 };
-
-                let fs_type = match &descriptor.kind {
-                    PartitionKind::Fs { fs_type } => fs_type.clone(),
-                    _ => "unknown".into(),
-                };
+                _live_tmpdirs.push(tmp_dir);
 
                 let compressor: Box<dyn PartitionCompressor> = match &target_ph {
                     PartitionHandle::Fs(_) => Box::new(FsPartitionCompressor),
@@ -263,23 +269,18 @@ impl Compressor for DefaultCompressor {
                     PartitionHandle::Mbr(_) => Box::new(MbrCompressor),
                 };
 
-                let (pm, compressed, archive_bytes) = compressor
-                    .compress(
-                        &ctx,
-                        target_ph,
-                        &fs_type,
-                        &base_partitions,
-                        &mut _live_mounts,
-                        &mut _live_tmpdirs,
-                    )
-                    .await?;
-
-                patches_compressed = compressed;
-                archive_stored_bytes += archive_bytes;
+                let pm = compressor.compress(&ctx, target_ph).await?;
                 partition_manifests.push(pm);
             }
 
-            // ── 5. Build and upload the manifest ──────────────────────────────────
+            // ── 5. Pack and upload the combined patches archive ───────────────────
+            //   • One archive for all FS partitions in the image.
+            //   • Binary partitions did not write anything to all_patches_dir.
+            let (archive_stored_bytes, patches_compressed) =
+                pack_and_upload_patches(all_patches_dir.path(), self.storage.as_ref(), image_id)
+                    .await?;
+
+            // ── 6. Build and upload the manifest ──────────────────────────────────
             let created_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -311,12 +312,12 @@ impl Compressor for DefaultCompressor {
                 .upload_manifest(image_id, &manifest_bytes_gz)
                 .await?;
 
-            // ── 6. Mark as compressed ─────────────────────────────────────────────
+            // ── 7. Mark as compressed ─────────────────────────────────────────────
             self.storage
                 .update_status(image_id, ImageStatus::Compressed)
                 .await?;
 
-            // ── 7. Compute stats from manifest ────────────────────────────────────
+            // ── 8. Compute stats from manifest ────────────────────────────────────
             let elapsed = started_at.elapsed();
             let manifest_stored_bytes = manifest_bytes_gz.len() as u64;
             let stats = stats_from_manifest(
@@ -342,7 +343,7 @@ impl Compressor for DefaultCompressor {
         }
         .await; // end of main pipeline
 
-        // ── 8. On any error — mark image as Failed ────────────────────────────
+        // ── 9. On any error — mark image as Failed ────────────────────────────
         if let Err(ref e) = result {
             error!(image_id, error = %e, "compress: failed, marking as Failed");
             let _ = self

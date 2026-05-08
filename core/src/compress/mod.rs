@@ -10,4 +10,7 @@
 //! [`compress_fs_partition`][partitions::fs::compress_fs_partition], re-exported
 //! here for backward compatibility.
 
+pub mod context;
 pub mod partitions;
+
+pub use context::CompressContext;

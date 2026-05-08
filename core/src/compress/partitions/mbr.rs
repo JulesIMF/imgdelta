@@ -4,15 +4,13 @@
 // image-delta — incremental disk-image compression toolkit
 // compress/partitions/mbr — MbrCompressor
 
-use std::collections::HashMap;
-
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
-use crate::compress::partitions::fs::context::StageContext;
+use crate::compress::context::CompressContext;
 use crate::compress::partitions::PartitionCompressor;
 use crate::manifest::{PartitionContent, PartitionManifest};
-use crate::partitions::{MountHandle, PartitionHandle};
+use crate::partitions::PartitionHandle;
 use crate::Result;
 
 /// Compresses the MBR boot-code area (bytes 0–439) as a single verbatim blob.
@@ -22,13 +20,9 @@ pub struct MbrCompressor;
 impl PartitionCompressor for MbrCompressor {
     async fn compress(
         &self,
-        ctx: &StageContext,
+        ctx: &CompressContext,
         handle: PartitionHandle,
-        _fs_type: &str,
-        _base_partitions: &HashMap<u32, PartitionHandle>,
-        _live_mounts: &mut Vec<Box<dyn MountHandle>>,
-        _live_tmpdirs: &mut Vec<tempfile::TempDir>,
-    ) -> Result<(PartitionManifest, bool, u64)> {
+    ) -> Result<PartitionManifest> {
         let mbr_handle = match handle {
             PartitionHandle::Mbr(h) => h,
             _ => unreachable!("MbrCompressor called with non-Mbr handle"),
@@ -41,17 +35,13 @@ impl PartitionCompressor for MbrCompressor {
             Some(id) => id,
             None => ctx.storage.upload_blob(&sha256, &bytes).await?,
         };
-        Ok((
-            PartitionManifest {
-                descriptor,
-                content: PartitionContent::MbrBootCode {
-                    blob_id,
-                    sha256,
-                    size,
-                },
+        Ok(PartitionManifest {
+            descriptor,
+            content: PartitionContent::MbrBootCode {
+                blob_id,
+                sha256,
+                size,
             },
-            false,
-            size,
-        ))
+        })
     }
 }

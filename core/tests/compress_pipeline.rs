@@ -516,7 +516,7 @@ async fn test_compress_fs_partition_golden() {
     let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
-        image_delta_core::compress::partitions::fs::compress_fs_partition(
+        image_delta_core::compress::partitions::fs::compress_fs_partition_and_upload(
             base_dir.path(),
             target_dir.path(),
             &descriptor,
@@ -600,7 +600,7 @@ async fn test_compress_manifest_serialisation_roundtrip() {
     let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
-        image_delta_core::compress::partitions::fs::compress_fs_partition(
+        image_delta_core::compress::partitions::fs::compress_fs_partition_and_upload(
             base_dir.path(),
             target_dir.path(),
             &descriptor,
@@ -1107,7 +1107,7 @@ async fn test_compress_fs_partition_first_compression_many_new_files() {
     let router = Arc::new(xdelta3_router());
 
     let (partition_manifest, _compressed, _archive_bytes) =
-        image_delta_core::compress::partitions::fs::compress_fs_partition(
+        image_delta_core::compress::partitions::fs::compress_fs_partition_and_upload(
             base_dir.path(),
             target_dir.path(),
             &descriptor,

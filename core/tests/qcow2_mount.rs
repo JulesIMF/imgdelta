@@ -444,7 +444,7 @@ mod tests {
     #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH + sgdisk + mkfs.*"]
     fn test_qcow2_pack_from_manifest() {
         use crate::common::fake_storage::FakeStorage;
-        use image_delta_core::compress::partitions::fs::compress_fs_partition;
+        use image_delta_core::compress::partitions::fs::compress_fs_partition_and_upload;
         use image_delta_core::manifest::{
             BlobRef, Manifest, ManifestHeader, PartitionContent, PartitionManifest,
             MANIFEST_VERSION,
@@ -501,7 +501,7 @@ mod tests {
                     let mount = fh.mount().expect("mount Fs partition");
                     let empty_base = tempdir().unwrap();
                     let (pm, compressed, _archive_bytes) = rt
-                        .block_on(compress_fs_partition(
+                        .block_on(compress_fs_partition_and_upload(
                             empty_base.path(),
                             mount.root(),
                             &desc,

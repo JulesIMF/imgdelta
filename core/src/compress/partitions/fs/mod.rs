@@ -12,7 +12,6 @@ pub mod stages;
 
 pub use draft::FsDraft;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -20,16 +19,17 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tracing::info;
 
+use crate::compress::context::CompressContext;
 use crate::manifest::PartitionManifest;
 use crate::partition::{PartitionDescriptor, PartitionKind};
-use crate::partitions::{MountHandle, PartitionHandle};
+use crate::partitions::PartitionHandle;
 use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::Result;
 
 use context::StageContext;
 use pipeline::CompressPipeline;
-use stages::pack_archive::pack_and_upload_archive_fn;
+use stages::pack_archive::{collect_fs_content, pack_and_upload_patches};
 use stages::walkdir::walkdir_fn;
 
 // ── FsPartitionCompressor ─────────────────────────────────────────────────────
@@ -37,19 +37,18 @@ use stages::walkdir::walkdir_fn;
 use crate::compress::partitions::PartitionCompressor;
 
 /// Compresses a filesystem partition by running the 8-stage pipeline.
+///
+/// Patch files are written to `ctx.patches_dir`.  The orchestrator packs them
+/// into a single archive after all partitions finish.
 pub struct FsPartitionCompressor;
 
 #[async_trait]
 impl PartitionCompressor for FsPartitionCompressor {
     async fn compress(
         &self,
-        ctx: &StageContext,
+        ctx: &CompressContext,
         handle: PartitionHandle,
-        fs_type: &str,
-        base_partitions: &HashMap<u32, PartitionHandle>,
-        live_mounts: &mut Vec<Box<dyn MountHandle>>,
-        live_tmpdirs: &mut Vec<tempfile::TempDir>,
-    ) -> Result<(PartitionManifest, bool, u64)> {
+    ) -> Result<PartitionManifest> {
         let fs_handle = match handle {
             PartitionHandle::Fs(h) => h,
             _ => unreachable!("FsPartitionCompressor called with non-Fs handle"),
@@ -68,34 +67,41 @@ impl PartitionCompressor for FsPartitionCompressor {
             "FsPartitionCompressor: target mounted"
         );
         let target_root_path: PathBuf = target_mount.root().to_path_buf();
-        live_mounts.push(target_mount);
+        // Keep mount alive until compress_fs_partition returns.
+        let _target_mount = target_mount;
 
-        let base_root_path: PathBuf = match base_partitions.get(&descriptor.number) {
-            Some(PartitionHandle::Fs(base_fs)) => {
+        // Base root: use the injected base mount fn if present, otherwise an
+        // empty tmp directory (full-image compress).
+        let _base_mount_guard: Option<Box<dyn crate::partitions::MountHandle>>;
+        let _base_tmpdir: Option<tempfile::TempDir>;
+        let base_root_path: PathBuf = match fs_handle.mount_base() {
+            Some(mount_result) => {
                 info!(
                     partition = descriptor.number,
                     "FsPartitionCompressor: mounting base partition"
                 );
-                let base_mount = base_fs.mount()?;
+                let base_mount = mount_result?;
                 info!(
                     partition = descriptor.number,
                     "FsPartitionCompressor: base mounted"
                 );
                 let p = base_mount.root().to_path_buf();
-                live_mounts.push(base_mount);
+                _base_mount_guard = Some(base_mount);
+                _base_tmpdir = None;
                 p
             }
-            _ => {
+            None => {
                 let tmp = tempfile::TempDir::new()?;
                 let p = tmp.path().to_path_buf();
-                live_tmpdirs.push(tmp);
+                _base_mount_guard = None;
+                _base_tmpdir = Some(tmp);
                 p
             }
         };
 
         let partition_fs_type = match &descriptor.kind {
             PartitionKind::Fs { fs_type } => fs_type.clone(),
-            _ => fs_type.to_string(),
+            _ => "unknown".into(),
         };
 
         let fs_uuid = fs_handle.fs_uuid.clone();
@@ -112,6 +118,7 @@ impl PartitionCompressor for FsPartitionCompressor {
             fs_uuid,
             ctx.workers,
             ctx.debug_dir.as_deref(),
+            &ctx.patches_dir,
         )
         .await
     }
@@ -120,6 +127,10 @@ impl PartitionCompressor for FsPartitionCompressor {
 // ── compress_fs_partition ─────────────────────────────────────────────────────
 
 /// Run the full 8-stage compress pipeline for one Fs partition.
+///
+/// Patch files are written as `<patches_dir>/<key>`.  The orchestrator
+/// accumulates all partition patches in a shared directory and calls
+/// [`pack_and_upload_patches`] once after the loop.
 #[allow(clippy::too_many_arguments)]
 pub async fn compress_fs_partition(
     base_root: &Path,
@@ -133,7 +144,8 @@ pub async fn compress_fs_partition(
     fs_uuid: Option<String>,
     workers: usize,
     debug_dir: Option<&Path>,
-) -> Result<(PartitionManifest, bool, u64)> {
+    patches_dir: &Path,
+) -> Result<PartitionManifest> {
     let tmp_dir = tempfile::TempDir::new()?;
 
     let base = base_root.to_path_buf();
@@ -157,21 +169,61 @@ pub async fn compress_fs_partition(
         partition_number: Some(descriptor.number as i32),
         workers,
         tmp_dir: Arc::from(tmp_dir.path()),
+        patches_dir: Arc::from(patches_dir),
         debug_dir: debug_dir.map(Arc::from),
     };
 
     let pipeline = CompressPipeline::default_fs();
     let draft = pipeline.run(&ctx, draft, debug_dir).await?;
 
-    let (content, patches_compressed, archive_stored_bytes) =
-        pack_and_upload_archive_fn(draft, storage.as_ref(), image_id, fs_type, fs_uuid).await?;
+    let content = collect_fs_content(draft, fs_type, fs_uuid, patches_dir)?;
 
-    Ok((
-        PartitionManifest {
-            descriptor: descriptor.clone(),
-            content,
-        },
-        patches_compressed,
-        archive_stored_bytes,
-    ))
+    Ok(PartitionManifest {
+        descriptor: descriptor.clone(),
+        content,
+    })
+}
+
+// ── Backward-compatible wrapper used by tests ─────────────────────────────────
+
+/// Like [`compress_fs_partition`] but also packs and uploads the patches
+/// archive immediately, returning `(PartitionManifest, patches_compressed,
+/// archive_stored_bytes)`.
+///
+/// Creates a temporary directory for patches, so each call is self-contained.
+/// Use this in tests written against the old single-partition API.
+#[allow(clippy::too_many_arguments)]
+pub async fn compress_fs_partition_and_upload(
+    base_root: &Path,
+    target_root: &Path,
+    descriptor: &PartitionDescriptor,
+    storage: Arc<dyn Storage>,
+    image_id: &str,
+    base_image_id: Option<&str>,
+    router: Arc<RouterEncoder>,
+    fs_type: &str,
+    fs_uuid: Option<String>,
+    workers: usize,
+    debug_dir: Option<&Path>,
+) -> Result<(PartitionManifest, bool, u64)> {
+    let patches_tmp = tempfile::TempDir::new()
+        .map_err(|e| crate::Error::Other(format!("tempdir for patches: {e}")))?;
+    let pm = compress_fs_partition(
+        base_root,
+        target_root,
+        descriptor,
+        Arc::clone(&storage),
+        image_id,
+        base_image_id,
+        Arc::clone(&router),
+        fs_type,
+        fs_uuid,
+        workers,
+        debug_dir,
+        patches_tmp.path(),
+    )
+    .await?;
+    let (stored_bytes, compressed) =
+        pack_and_upload_patches(patches_tmp.path(), storage.as_ref(), image_id).await?;
+    Ok((pm, compressed, stored_bytes))
 }
