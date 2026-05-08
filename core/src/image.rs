@@ -4,13 +4,11 @@
 // image-delta — incremental disk-image compression toolkit
 // Image and OpenImage traits
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::manifest::{PartitionContent, PartitionManifest};
-use crate::partition::{DiskLayout, DiskScheme, PartitionDescriptor};
-use crate::partitions::{
-    BiosBootHandle, FsHandle, MbrHandle, MountHandle, PartitionHandle, RawHandle, SimpleMountHandle,
-};
+use crate::manifest::PartitionManifest;
+use crate::partition::DiskLayout;
+use crate::partitions::{MountHandle, PartitionHandle};
 
 // ── OpenImage trait ───────────────────────────────────────────────────────────
 
@@ -97,124 +95,5 @@ pub trait Image: Send + Sync {
         Err(crate::Error::Format(
             "create not supported for this image format".into(),
         ))
-    }
-}
-
-// ── OpenDirectory (DirectoryImage OpenImage impl) ────────────────────────────
-
-/// [`OpenImage`] returned by `DirectoryImage::open()`.
-///
-/// The directory itself is the single filesystem partition; no actual mounting
-/// is performed.
-pub struct OpenDirectory {
-    path: PathBuf,
-    layout: DiskLayout,
-}
-
-impl OpenDirectory {
-    pub(crate) fn new(path: PathBuf) -> Self {
-        let layout = DiskLayout {
-            scheme: DiskScheme::SingleFs,
-            disk_guid: None,
-            partitions: vec![],
-        };
-        Self { path, layout }
-    }
-}
-
-impl OpenImage for OpenDirectory {
-    fn disk_layout(&self) -> &DiskLayout {
-        &self.layout
-    }
-
-    fn partitions(&self) -> crate::Result<Vec<PartitionHandle>> {
-        use crate::partition::PartitionKind;
-
-        let descriptor = PartitionDescriptor {
-            number: 1,
-            partition_guid: None,
-            type_guid: None,
-            name: Some("root".into()),
-            start_lba: 0,
-            end_lba: 0,
-            size_bytes: 0,
-            flags: 0,
-            kind: PartitionKind::Fs {
-                fs_type: "directory".into(),
-            },
-        };
-
-        let path = self.path.clone();
-        let handle = FsHandle::new(descriptor, move || {
-            Ok(Box::new(SimpleMountHandle::new(path.clone())))
-        });
-
-        Ok(vec![PartitionHandle::Fs(handle)])
-    }
-
-    /// Create a writable partition handle that writes into this directory.
-    ///
-    /// - `Fs`          → [`SimpleMountHandle`] wrapping the directory root.
-    /// - `BiosBoot`    → writes a `biosboot_N.bin` file via `write_raw()`.
-    /// - `MbrBootCode` → writes `mbr_boot_code.bin` via `write_raw()`.
-    /// - `Raw`         → writes `raw_partition_N.img` via `write_raw()`.
-    fn create_partition(&self, pm: &PartitionManifest) -> crate::Result<PartitionHandle> {
-        let desc = pm.descriptor.clone();
-        match &pm.content {
-            PartitionContent::Fs { .. } => {
-                let path = self.path.clone();
-                Ok(PartitionHandle::Fs(FsHandle::new(desc, move || {
-                    Ok(Box::new(SimpleMountHandle::new(path.clone())) as Box<dyn MountHandle>)
-                })))
-            }
-            PartitionContent::BiosBoot { .. } => {
-                let out = self.path.join(format!("biosboot_{}.bin", desc.number));
-                Ok(PartitionHandle::BiosBoot(BiosBootHandle::new_rw(
-                    desc,
-                    || {
-                        Err(crate::Error::Format(
-                            "output BiosBoot handle: read not supported".into(),
-                        ))
-                    },
-                    move |data| {
-                        std::fs::write(&out, data).map_err(|e| {
-                            crate::Error::Format(format!("write {}: {e}", out.display()))
-                        })
-                    },
-                )))
-            }
-            PartitionContent::MbrBootCode { .. } => {
-                let out = self.path.join("mbr_boot_code.bin");
-                Ok(PartitionHandle::Mbr(MbrHandle::new_rw(
-                    desc,
-                    || {
-                        Err(crate::Error::Format(
-                            "output Mbr handle: read not supported".into(),
-                        ))
-                    },
-                    move |data| {
-                        std::fs::write(&out, data).map_err(|e| {
-                            crate::Error::Format(format!("write {}: {e}", out.display()))
-                        })
-                    },
-                )))
-            }
-            PartitionContent::Raw { .. } => {
-                let out = self.path.join(format!("raw_partition_{}.img", desc.number));
-                Ok(PartitionHandle::Raw(RawHandle::new_rw(
-                    desc,
-                    || {
-                        Err(crate::Error::Format(
-                            "output Raw handle: read not supported".into(),
-                        ))
-                    },
-                    move |data| {
-                        std::fs::write(&out, data).map_err(|e| {
-                            crate::Error::Format(format!("write {}: {e}", out.display()))
-                        })
-                    },
-                )))
-            }
-        }
     }
 }

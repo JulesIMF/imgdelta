@@ -5,12 +5,11 @@
 // DirectoryImage: treats a plain directory tree as an image with one FS partition
 
 use crate::{
-    image::{OpenDirectory, OpenImage},
-    partition::DiskLayout,
-    partitions::SimpleMountHandle,
-    Image, MountHandle, Result,
+    image::OpenImage, partition::DiskLayout, partitions::SimpleMountHandle, DiskScheme, FsHandle,
+    Image, MountHandle, PartitionContent, PartitionDescriptor, PartitionHandle, PartitionManifest,
+    Result,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 /// [`Image`] implementation for a plain directory.
@@ -87,5 +86,78 @@ impl Image for DirectoryImage {
         std::fs::create_dir_all(path)
             .map_err(|e| crate::Error::Format(format!("create_dir_all {}: {e}", path.display())))?;
         Ok(Box::new(OpenDirectory::new(path.to_path_buf())))
+    }
+}
+
+// ── OpenDirectory (DirectoryImage OpenImage impl) ────────────────────────────
+
+/// [`OpenImage`] returned by `DirectoryImage::open()`.
+///
+/// The directory itself is the single filesystem partition; no actual mounting
+/// is performed.
+pub struct OpenDirectory {
+    path: PathBuf,
+    layout: DiskLayout,
+}
+
+impl OpenDirectory {
+    fn new(path: PathBuf) -> Self {
+        let layout = DiskLayout {
+            scheme: DiskScheme::SingleFs,
+            disk_guid: None,
+            partitions: vec![],
+        };
+        Self { path, layout }
+    }
+}
+
+impl OpenImage for OpenDirectory {
+    fn disk_layout(&self) -> &DiskLayout {
+        &self.layout
+    }
+
+    fn partitions(&self) -> crate::Result<Vec<PartitionHandle>> {
+        use crate::partition::PartitionKind;
+
+        let descriptor = PartitionDescriptor {
+            number: 1,
+            partition_guid: None,
+            type_guid: None,
+            name: Some("root".into()),
+            start_lba: 0,
+            end_lba: 0,
+            size_bytes: 0,
+            flags: 0,
+            kind: PartitionKind::Fs {
+                fs_type: "directory".into(),
+            },
+        };
+
+        let path = self.path.clone();
+        let handle = FsHandle::new(descriptor, move || {
+            Ok(Box::new(SimpleMountHandle::new(path.clone())))
+        });
+
+        Ok(vec![PartitionHandle::Fs(handle)])
+    }
+
+    /// Create a writable partition handle that writes into this directory.
+    ///
+    /// - `Fs`                        → [`SimpleMountHandle`] wrapping the directory root.
+    /// - others (BiosBoot, Raw, Mbr) → error, since they don't make sense for a directory.
+    fn create_partition(&self, pm: &PartitionManifest) -> crate::Result<PartitionHandle> {
+        let desc = pm.descriptor.clone();
+        match &pm.content {
+            PartitionContent::Fs { .. } => {
+                let path = self.path.clone();
+                Ok(PartitionHandle::Fs(FsHandle::new(desc, move || {
+                    Ok(Box::new(SimpleMountHandle::new(path.clone())) as Box<dyn MountHandle>)
+                })))
+            }
+            _ => Err(crate::Error::Format(format!(
+                "OpenDirectory can only create Fs partitions, got kind {:?}",
+                desc.kind
+            ))),
+        }
     }
 }
