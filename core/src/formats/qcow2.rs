@@ -22,7 +22,7 @@ use walkdir::WalkDir;
 use crate::decompress::decompress_fs_partition;
 use crate::encoders::Xdelta3Encoder;
 use crate::image::OpenImage;
-use crate::manifest::{Manifest, PartitionContent};
+use crate::manifest::{Manifest, PartitionContent, PartitionManifest};
 use crate::partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
 use crate::partitions::{BiosBootHandle, FsHandle, MbrHandle, PartitionHandle, RawHandle};
 use crate::routing::RouterEncoder;
@@ -839,6 +839,108 @@ impl OpenImage for OpenQcow2Image {
 
         Ok(handles)
     }
+
+    /// Create a writable partition handle for an output qcow2 image.
+    ///
+    /// This method is called on an [`OpenQcow2Image`] that was returned by
+    /// [`Qcow2Image::create`] (RW-connected NBD).  It:
+    /// 1. Waits for the partition device node to be stable.
+    /// 2. For `Fs` partitions: runs `mkfs`, returns an [`FsHandle`] whose
+    ///    `mount_fn` mounts the freshly-formatted partition RW.
+    /// 3. For binary partitions: returns a writable handle whose `write_fn`
+    ///    writes the raw bytes directly to the block device node.
+    /// 4. For `MbrBootCode`: returns an [`MbrHandle`] whose `write_fn` calls
+    ///    `write_raw_disk_bytes` at offset 0 on the raw NBD device.
+    fn create_partition(&self, pm: &PartitionManifest) -> crate::Result<PartitionHandle> {
+        let nbd_device = &self.nbd.0;
+        let desc = pm.descriptor.clone();
+
+        match &pm.content {
+            PartitionContent::MbrBootCode { .. } => {
+                // MBR boot-code goes to offset 0 of the raw disk — not a partition node.
+                let disk = nbd_device.to_string();
+                let handle = MbrHandle::new_rw(
+                    desc,
+                    || {
+                        Err(crate::Error::Format(
+                            "output Mbr handle: read not supported".into(),
+                        ))
+                    },
+                    move |data| write_raw_disk_bytes(&disk, 0, data),
+                );
+                Ok(PartitionHandle::Mbr(handle))
+            }
+
+            PartitionContent::BiosBoot { .. } => {
+                let part_num = desc.number;
+                let stable_dev =
+                    wait_for_partition_stable(nbd_device, part_num, NBD_PARTITION_TIMEOUT)?;
+                let dev = stable_dev.clone();
+                let handle = BiosBootHandle::new_rw(
+                    desc,
+                    || {
+                        Err(crate::Error::Format(
+                            "output BiosBoot handle: read not supported".into(),
+                        ))
+                    },
+                    move |data| {
+                        let mut f = std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(&dev)
+                            .map_err(|e| crate::Error::Format(format!("open {dev}: {e}")))?;
+                        f.write_all(data)
+                            .map_err(|e| crate::Error::Format(format!("write {dev}: {e}")))
+                    },
+                );
+                Ok(PartitionHandle::BiosBoot(handle))
+            }
+
+            PartitionContent::Raw { .. } => {
+                let part_num = desc.number;
+                let stable_dev =
+                    wait_for_partition_stable(nbd_device, part_num, NBD_PARTITION_TIMEOUT)?;
+                let dev = stable_dev.clone();
+                let handle = RawHandle::new_rw(
+                    desc,
+                    || {
+                        Err(crate::Error::Format(
+                            "output Raw handle: read not supported".into(),
+                        ))
+                    },
+                    move |data| {
+                        let mut f = std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(&dev)
+                            .map_err(|e| crate::Error::Format(format!("open {dev}: {e}")))?;
+                        f.write_all(data)
+                            .map_err(|e| crate::Error::Format(format!("write {dev}: {e}")))
+                    },
+                );
+                Ok(PartitionHandle::Raw(handle))
+            }
+
+            PartitionContent::Fs {
+                fs_type, fs_uuid, ..
+            } => {
+                let part_num = desc.number;
+                let stable_dev =
+                    wait_for_partition_stable(nbd_device, part_num, NBD_PARTITION_TIMEOUT)?;
+                // Format the partition before returning the handle — mkfs must
+                // happen before any attempt to mount.
+                mkfs_partition(&stable_dev, fs_type, fs_uuid.as_deref())?;
+                let dev = stable_dev;
+                let fs = fs_type.clone();
+                let fh = FsHandle::new(desc, move || {
+                    let dir = TempDir::new()
+                        .map_err(|e| crate::Error::Format(format!("TempDir::new: {e}")))?;
+                    mount_partition_rw_plain(&dev, &fs, dir.path())?;
+                    let root = dir.path().to_path_buf();
+                    Ok(Box::new(RwOutputMountHandle { _dir: dir, root }) as Box<dyn MountHandle>)
+                });
+                Ok(PartitionHandle::Fs(fh))
+            }
+        }
+    }
 }
 
 // ── open() helpers ────────────────────────────────────────────────────────────
@@ -1283,6 +1385,75 @@ impl Image for Qcow2Image {
         } else {
             pack_fresh(source_dir, output_path)
         }
+    }
+
+    /// Create a new, empty qcow2 image at `path` with the GPT layout from
+    /// `layout`, connect it RW via NBD, and return a writable [`OpenQcow2Image`]
+    /// whose [`create_partition`][crate::image::OpenImage::create_partition]
+    /// prepares each partition (mkfs for Fs, direct write for binary types).
+    ///
+    /// Steps:
+    /// 1. `qemu-img create -f qcow2 path <size>`
+    /// 2. `qemu-nbd --connect` (writable)
+    /// 3. `sgdisk` to write the GPT
+    /// 4. Wait for all partition nodes to be stable
+    /// 5. Return [`OpenQcow2Image`] with RW NBD alive
+    fn create(&self, path: &Path, layout: &DiskLayout) -> Result<Box<dyn OpenImage>> {
+        let image_size = calculate_image_size(layout);
+        run_command(
+            Command::new("qemu-img").args([
+                "create",
+                "-f",
+                "qcow2",
+                path.to_str()
+                    .ok_or_else(|| crate::Error::Format("non-UTF-8 output path".into()))?,
+                &image_size.to_string(),
+            ]),
+            "qemu-img create",
+        )?;
+
+        let start_index: u32 = std::env::var("QCOW2_DEVICE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let nbd_device = {
+            let _guard = NBD_ALLOC
+                .lock()
+                .map_err(|_| crate::Error::Format("NBD_ALLOC mutex poisoned".into()))?;
+            let dev = find_free_nbd(start_index)?;
+            nbd_connect_rw(&dev, path)?;
+            wait_for_nbd_connected(&dev);
+            dev
+        };
+        let nbd = Arc::new(NbdConn(nbd_device.clone()));
+
+        write_gpt(&nbd_device, layout)?;
+
+        // Wait for partition nodes: first sentinel (p1), then each partition.
+        let _ = wait_for_block_device(&nbd_device);
+        for p in &layout.partitions {
+            let _ = wait_for_partition_stable(&nbd_device, p.number, NBD_PARTITION_TIMEOUT);
+        }
+
+        // Build PartInfo from layout — no need to re-parse with sfdisk since
+        // we just wrote the GPT ourselves.
+        let part_infos: Vec<PartInfo> = layout
+            .partitions
+            .iter()
+            .map(|p| PartInfo {
+                desc: p.clone(),
+                block_dev: format!("{nbd_device}p{}", p.number),
+            })
+            .collect();
+
+        Ok(Box::new(OpenQcow2Image {
+            layout: layout.clone(),
+            part_infos,
+            nbd,
+            // New blank image has no pre-existing MBR boot code; the
+            // MbrBootCode partition (if any) is written via create_partition.
+            mbr_bytes: None,
+        }))
     }
 }
 

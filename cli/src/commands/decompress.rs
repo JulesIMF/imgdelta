@@ -8,7 +8,9 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use image_delta_core::{Compressor, DecompressOptions, DefaultCompressor, DirectoryImage};
+use image_delta_core::{
+    Compressor, DecompressOptions, DefaultCompressor, DirectoryImage, Qcow2Image,
+};
 
 use crate::commands::compress::load_config;
 
@@ -38,14 +40,24 @@ pub async fn run(args: DecompressArgs, config_path: Option<&Path>) -> anyhow::Re
 
     let storage = config.storage.build().await?;
     let router = config.compressor.build_router()?;
-    let compressor = DefaultCompressor::new(
-        Arc::new(DirectoryImage::new()),
-        Arc::clone(&storage),
-        router,
-    );
 
-    // Pass the base image path directly; DefaultCompressor::decompress
-    // will interpret it based on the manifest format (qcow2 file or directory).
+    // Select the image-format driver from the output path extension so that
+    // DefaultCompressor::decompress stays format-agnostic: it just calls
+    // image_format.create() and then create_partition() for each partition.
+    let image_format: Arc<dyn image_delta_core::Image> = {
+        let ext = args
+            .output
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        match ext {
+            "qcow2" => Arc::new(Qcow2Image::new()),
+            _ => Arc::new(DirectoryImage::new()),
+        }
+    };
+
+    let compressor = DefaultCompressor::new(image_format, Arc::clone(&storage), router);
+
     let base_root: PathBuf = args.base_image.unwrap_or_default();
 
     let opts = DecompressOptions {

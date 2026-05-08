@@ -363,10 +363,10 @@ impl Compressor for DefaultCompressor {
             BiosBootDecompressor, FsPartitionDecompressor, MbrDecompressor, PartitionDecompressor,
             RawPartitionDecompressor,
         };
-        use crate::manifest::MANIFEST_VERSION;
-        use crate::partitions::{
-            BiosBootHandle, FsHandle, MbrHandle, RawHandle, SimpleMountHandle,
-        };
+        use crate::manifest::{PartitionContent, MANIFEST_VERSION};
+        use crate::partitions::FsHandle;
+        use std::collections::HashMap;
+        use tempfile::TempDir;
 
         let started_at = Instant::now();
         let image_id = &options.image_id;
@@ -403,212 +403,98 @@ impl Compressor for DefaultCompressor {
             // ── 3. Download patches archive (once for all partitions) ─────────
             let archive_bytes = self.storage.download_patches(image_id).await?;
 
-            // ── 4. Dispatch based on manifest format ──────────────────────────
-            if manifest.header.format == "qcow2" {
-                // Reconstruct as a qcow2 image.  `output_root` is the path to
-                // the new .qcow2 file; `base_root` is the base .qcow2 (or empty
-                // for full images).
-                #[cfg(all(target_os = "linux", feature = "qcow2"))]
-                {
-                    use crate::formats::qcow2::Qcow2Image;
-                    let base_path = if options.base_root.as_os_str().is_empty()
-                        || !options.base_root.exists()
-                    {
-                        None
-                    } else {
-                        Some(options.base_root.as_path())
-                    };
-                    let (total_files, total_bytes, patches_verified) = Qcow2Image::new()
-                        .decompress_to_qcow2(
-                            &manifest,
-                            &archive_bytes,
-                            Arc::clone(&self.storage),
-                            output_root,
-                            base_path,
-                            options.workers,
-                        )
-                        .await?;
+            // ── 4. Open base image via the same driver — completely format-agnostic.
+            let base_open: Option<Box<dyn crate::image::OpenImage>> =
+                if options.base_root.as_os_str().is_empty() || !options.base_root.exists() {
+                    None
+                } else {
+                    Some(self.image_format.open(&options.base_root)?)
+                };
+            // Index base Fs-partition handles by partition number.
+            let base_fs_handles: HashMap<u32, FsHandle> = if let Some(ref b) = base_open {
+                b.partitions()?
+                    .into_iter()
+                    .filter_map(|ph| match ph {
+                        PartitionHandle::Fs(fh) => Some((fh.descriptor.number, fh)),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
 
-                    self.storage
-                        .update_status(image_id, ImageStatus::Compressed)
-                        .await?;
+            // ── 5. Create output image — format-agnostic via Image::create(). ─
+            //   • qcow2  → qemu-img create + NBD RW + sgdisk (write GPT)
+            //   • directory → create_dir_all(output_root)
+            let output_open = self
+                .image_format
+                .create(output_root, &manifest.disk_layout)?;
 
-                    let elapsed = started_at.elapsed();
-                    let stats = DecompressionStats {
-                        total_files,
-                        patches_verified,
-                        total_bytes,
-                        elapsed_secs: elapsed.as_secs_f64(),
-                    };
-                    info!(
-                        image_id,
-                        total_files,
-                        total_bytes,
-                        elapsed_secs = stats.elapsed_secs,
-                        "decompress: done (qcow2)"
-                    );
-                    return Ok(stats);
-                }
-                #[cfg(not(all(target_os = "linux", feature = "qcow2")))]
-                return Err(crate::Error::Other(
-                    "qcow2 decompression requires Linux + qcow2 feature".into(),
-                ));
-            }
-
-            // ── 5. Directory-based decompress (legacy / directory format) ──────
             let patches_compressed = manifest.header.patches_compressed;
             let mut total_files: usize = 0;
             let mut patches_verified: usize = 0;
             let mut total_bytes: u64 = 0;
 
+            // ── 6. For each partition: create_partition() → PartitionDecompressor ──
             for pm in &manifest.partitions {
-                let desc = pm.descriptor.clone();
-
-                let part_stats = match &pm.content {
-                    PartitionContent::Fs { .. } => {
-                        // Wrap the output directory in a FsHandle whose mount_fn
-                        // returns a SimpleMountHandle (no OS-level mount needed).
-                        let out = output_root.to_path_buf();
-                        let output_fh = FsHandle::new(desc, move || {
-                            Ok(Box::new(SimpleMountHandle::new(out.clone()))
-                                as Box<dyn crate::partitions::MountHandle>)
-                        });
-                        FsPartitionDecompressor
-                            .decompress(
-                                pm,
-                                &options.base_root,
-                                &PartitionHandle::Fs(output_fh),
-                                Arc::clone(&self.storage),
-                                &archive_bytes,
-                                patches_compressed,
-                                Arc::clone(&self.router),
-                                options.workers,
-                            )
-                            .await?
-                    }
-
-                    PartitionContent::BiosBoot { size, .. } => {
-                        let out_path = output_root.join(format!("biosboot_{}.bin", desc.number));
-                        if let Some(p) = out_path.parent() {
-                            std::fs::create_dir_all(p).map_err(|e| {
-                                crate::Error::Other(format!("create_dir {}: {e}", p.display()))
-                            })?;
+                // For Fs partitions we need a mounted base directory.
+                // Binary partitions receive an empty path and ignore it.
+                let _base_mount: Option<Box<dyn crate::partitions::MountHandle>>;
+                let _base_tmpdir: Option<TempDir>;
+                let base_root: std::path::PathBuf =
+                    if matches!(&pm.content, PartitionContent::Fs { .. }) {
+                        if let Some(fh) = base_fs_handles.get(&pm.descriptor.number) {
+                            let mount = fh.mount()?;
+                            let path = mount.root().to_path_buf();
+                            _base_mount = Some(mount);
+                            _base_tmpdir = None;
+                            path
+                        } else {
+                            let dir = TempDir::new()
+                                .map_err(|e| crate::Error::Other(format!("TempDir: {e}")))?;
+                            let path = dir.path().to_path_buf();
+                            _base_mount = None;
+                            _base_tmpdir = Some(dir);
+                            path
                         }
-                        let handle = BiosBootHandle::new_rw(
-                            desc,
-                            || {
-                                Err(crate::Error::Format(
-                                    "output BiosBoot handle: read not supported".into(),
-                                ))
-                            },
-                            move |data| {
-                                std::fs::write(&out_path, data).map_err(|e| {
-                                    crate::Error::Other(format!(
-                                        "write {}: {e}",
-                                        out_path.display()
-                                    ))
-                                })
-                            },
-                        );
-                        let _ = size; // stats come from decompressor
-                        BiosBootDecompressor
-                            .decompress(
-                                pm,
-                                Path::new(""),
-                                &PartitionHandle::BiosBoot(handle),
-                                Arc::clone(&self.storage),
-                                &archive_bytes,
-                                patches_compressed,
-                                Arc::clone(&self.router),
-                                options.workers,
-                            )
-                            .await?
-                    }
+                    } else {
+                        _base_mount = None;
+                        _base_tmpdir = None;
+                        std::path::PathBuf::new()
+                    };
 
-                    PartitionContent::MbrBootCode { size, .. } => {
-                        let out_path = output_root.join("mbr_boot_code.bin");
-                        if let Some(p) = out_path.parent() {
-                            std::fs::create_dir_all(p).map_err(|e| {
-                                crate::Error::Other(format!("create_dir {}: {e}", p.display()))
-                            })?;
-                        }
-                        let handle = MbrHandle::new_rw(
-                            desc,
-                            || {
-                                Err(crate::Error::Format(
-                                    "output Mbr handle: read not supported".into(),
-                                ))
-                            },
-                            move |data| {
-                                std::fs::write(&out_path, data).map_err(|e| {
-                                    crate::Error::Other(format!(
-                                        "write {}: {e}",
-                                        out_path.display()
-                                    ))
-                                })
-                            },
-                        );
-                        let _ = size;
-                        MbrDecompressor
-                            .decompress(
-                                pm,
-                                Path::new(""),
-                                &PartitionHandle::Mbr(handle),
-                                Arc::clone(&self.storage),
-                                &archive_bytes,
-                                patches_compressed,
-                                Arc::clone(&self.router),
-                                options.workers,
-                            )
-                            .await?
-                    }
+                // create_partition prepares the partition (mkfs for Fs, noop for
+                // binary types) and returns a writable handle.
+                let output_ph = output_open.create_partition(pm)?;
 
-                    PartitionContent::Raw { blob: _, size, .. } => {
-                        let out_path =
-                            output_root.join(format!("raw_partition_{}.img", desc.number));
-                        if let Some(p) = out_path.parent() {
-                            std::fs::create_dir_all(p).map_err(|e| {
-                                crate::Error::Other(format!("create_dir {}: {e}", p.display()))
-                            })?;
-                        }
-                        let handle = RawHandle::new_rw(
-                            desc,
-                            || {
-                                Err(crate::Error::Format(
-                                    "output Raw handle: read not supported".into(),
-                                ))
-                            },
-                            move |data| {
-                                std::fs::write(&out_path, data).map_err(|e| {
-                                    crate::Error::Other(format!(
-                                        "write {}: {e}",
-                                        out_path.display()
-                                    ))
-                                })
-                            },
-                        );
-                        let _ = size;
-                        RawPartitionDecompressor
-                            .decompress(
-                                pm,
-                                Path::new(""),
-                                &PartitionHandle::Raw(handle),
-                                Arc::clone(&self.storage),
-                                &archive_bytes,
-                                patches_compressed,
-                                Arc::clone(&self.router),
-                                options.workers,
-                            )
-                            .await?
-                    }
+                let decompressor: Box<dyn PartitionDecompressor> = match &pm.content {
+                    PartitionContent::Fs { .. } => Box::new(FsPartitionDecompressor),
+                    PartitionContent::BiosBoot { .. } => Box::new(BiosBootDecompressor),
+                    PartitionContent::MbrBootCode { .. } => Box::new(MbrDecompressor),
+                    PartitionContent::Raw { .. } => Box::new(RawPartitionDecompressor),
                 };
+
+                let part_stats = decompressor
+                    .decompress(
+                        pm,
+                        &base_root,
+                        &output_ph,
+                        Arc::clone(&self.storage),
+                        &archive_bytes,
+                        patches_compressed,
+                        Arc::clone(&self.router),
+                        options.workers,
+                    )
+                    .await?;
+                // _base_mount / _base_tmpdir drop here → umount / tmpdir cleanup.
 
                 total_files += part_stats.files_written;
                 patches_verified += part_stats.patches_verified;
                 total_bytes += part_stats.bytes_written;
             }
+            // output_open drops here → for qcow2: NbdConn drops → qemu-nbd --disconnect.
 
-            // ── 6. Update status ───────────────────────────────────────────────
+            // ── 7. Update status ───────────────────────────────────────────────
             self.storage
                 .update_status(image_id, ImageStatus::Compressed)
                 .await?;
@@ -632,7 +518,6 @@ impl Compressor for DefaultCompressor {
         }
         .await;
 
-        // On any error — mark image as Failed
         if let Err(ref e) = result {
             error!(image_id, error = %e, "decompress: failed, marking as Failed");
             let _ = self

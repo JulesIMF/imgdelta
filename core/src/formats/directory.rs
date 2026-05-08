@@ -6,6 +6,7 @@
 
 use crate::{
     image::{OpenDirectory, OpenImage},
+    partition::DiskLayout,
     partitions::SimpleMountHandle,
     Image, MountHandle, Result,
 };
@@ -75,5 +76,16 @@ impl Image for DirectoryImage {
             }
         }
         Ok(())
+    }
+
+    /// Create a new, writable directory image at `path`.
+    ///
+    /// Creates the directory (and any parent directories) and returns an
+    /// [`OpenDirectory`] whose [`create_partition`][crate::image::OpenImage::create_partition]
+    /// writes partition data as files into that directory.
+    fn create(&self, path: &Path, _layout: &DiskLayout) -> Result<Box<dyn OpenImage>> {
+        std::fs::create_dir_all(path)
+            .map_err(|e| crate::Error::Format(format!("create_dir_all {}: {e}", path.display())))?;
+        Ok(Box::new(OpenDirectory::new(path.to_path_buf())))
     }
 }

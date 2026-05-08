@@ -6,8 +6,11 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::manifest::{PartitionContent, PartitionManifest};
 use crate::partition::{DiskLayout, DiskScheme, PartitionDescriptor};
-use crate::partitions::{FsHandle, MountHandle, PartitionHandle, SimpleMountHandle};
+use crate::partitions::{
+    BiosBootHandle, FsHandle, MbrHandle, MountHandle, PartitionHandle, RawHandle, SimpleMountHandle,
+};
 
 // ── OpenImage trait ───────────────────────────────────────────────────────────
 
@@ -31,12 +34,17 @@ pub trait OpenImage: Send + Sync {
     fn partitions(&self) -> crate::Result<Vec<PartitionHandle>>;
 
     /// Create (or overwrite) one partition in a writable image and return a
-    /// handle to it.
+    /// writable handle to it.
     ///
     /// The default implementation returns [`crate::Error::Format`] with
     /// `"create_partition not supported"`, so read-only image backends do not
     /// need to override this method.
-    fn create_partition(&self, _desc: &PartitionDescriptor) -> crate::Result<PartitionHandle> {
+    ///
+    /// The full [`PartitionManifest`] is passed (not just the descriptor) so
+    /// that implementations can access `fs_type`, `fs_uuid`, etc. from the
+    /// partition content to run `mkfs` or similar setup before returning the
+    /// handle.
+    fn create_partition(&self, _pm: &PartitionManifest) -> crate::Result<PartitionHandle> {
         Err(crate::Error::Format(
             "create_partition not supported for this image format".into(),
         ))
@@ -77,6 +85,19 @@ pub trait Image: Send + Sync {
     /// Pack the filesystem tree rooted at `source_dir` into a container at
     /// `output_path` (legacy directory-copy API).
     fn pack(&self, source_dir: &Path, output_path: &Path) -> crate::Result<()>;
+
+    /// Create a new, empty, writable image at `path` with the given partition
+    /// layout and return an [`OpenImage`] that supports [`OpenImage::create_partition`].
+    ///
+    /// For qcow2: runs `qemu-img create`, connects NBD RW, writes the GPT.
+    /// For directory: calls `create_dir_all(path)`.
+    ///
+    /// The default implementation returns [`crate::Error::Format`].
+    fn create(&self, _path: &Path, _layout: &DiskLayout) -> crate::Result<Box<dyn OpenImage>> {
+        Err(crate::Error::Format(
+            "create not supported for this image format".into(),
+        ))
+    }
 }
 
 // ── OpenDirectory (DirectoryImage OpenImage impl) ────────────────────────────
@@ -129,5 +150,71 @@ impl OpenImage for OpenDirectory {
         });
 
         Ok(vec![PartitionHandle::Fs(handle)])
+    }
+
+    /// Create a writable partition handle that writes into this directory.
+    ///
+    /// - `Fs`          → [`SimpleMountHandle`] wrapping the directory root.
+    /// - `BiosBoot`    → writes a `biosboot_N.bin` file via `write_raw()`.
+    /// - `MbrBootCode` → writes `mbr_boot_code.bin` via `write_raw()`.
+    /// - `Raw`         → writes `raw_partition_N.img` via `write_raw()`.
+    fn create_partition(&self, pm: &PartitionManifest) -> crate::Result<PartitionHandle> {
+        let desc = pm.descriptor.clone();
+        match &pm.content {
+            PartitionContent::Fs { .. } => {
+                let path = self.path.clone();
+                Ok(PartitionHandle::Fs(FsHandle::new(desc, move || {
+                    Ok(Box::new(SimpleMountHandle::new(path.clone())) as Box<dyn MountHandle>)
+                })))
+            }
+            PartitionContent::BiosBoot { .. } => {
+                let out = self.path.join(format!("biosboot_{}.bin", desc.number));
+                Ok(PartitionHandle::BiosBoot(BiosBootHandle::new_rw(
+                    desc,
+                    || {
+                        Err(crate::Error::Format(
+                            "output BiosBoot handle: read not supported".into(),
+                        ))
+                    },
+                    move |data| {
+                        std::fs::write(&out, data).map_err(|e| {
+                            crate::Error::Format(format!("write {}: {e}", out.display()))
+                        })
+                    },
+                )))
+            }
+            PartitionContent::MbrBootCode { .. } => {
+                let out = self.path.join("mbr_boot_code.bin");
+                Ok(PartitionHandle::Mbr(MbrHandle::new_rw(
+                    desc,
+                    || {
+                        Err(crate::Error::Format(
+                            "output Mbr handle: read not supported".into(),
+                        ))
+                    },
+                    move |data| {
+                        std::fs::write(&out, data).map_err(|e| {
+                            crate::Error::Format(format!("write {}: {e}", out.display()))
+                        })
+                    },
+                )))
+            }
+            PartitionContent::Raw { .. } => {
+                let out = self.path.join(format!("raw_partition_{}.img", desc.number));
+                Ok(PartitionHandle::Raw(RawHandle::new_rw(
+                    desc,
+                    || {
+                        Err(crate::Error::Format(
+                            "output Raw handle: read not supported".into(),
+                        ))
+                    },
+                    move |data| {
+                        std::fs::write(&out, data).map_err(|e| {
+                            crate::Error::Format(format!("write {}: {e}", out.display()))
+                        })
+                    },
+                )))
+            }
+        }
     }
 }
