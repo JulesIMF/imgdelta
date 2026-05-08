@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use crate::manifest::PartitionManifest;
-use crate::partition::DiskLayout;
+use crate::partitions::DiskLayout;
 use crate::partitions::{MountHandle, PartitionHandle};
 
 // ── OpenImage trait ───────────────────────────────────────────────────────────

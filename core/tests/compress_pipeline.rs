@@ -22,7 +22,7 @@ use image_delta_core::encoding::Xdelta3Encoder;
 use image_delta_core::manifest::{
     BlobRef, Data, DataRef, EntryType, PartitionContent, Patch, Record,
 };
-use image_delta_core::partition::{PartitionDescriptor, PartitionKind};
+use image_delta_core::partitions::{PartitionDescriptor, PartitionKind};
 use image_delta_core::Storage;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -588,7 +588,7 @@ async fn test_compress_fs_partition_golden() {
 #[tokio::test]
 async fn test_compress_manifest_serialisation_roundtrip() {
     use image_delta_core::manifest::{Manifest, ManifestHeader, MANIFEST_VERSION};
-    use image_delta_core::partition::{DiskLayout, DiskScheme};
+    use image_delta_core::partitions::{DiskLayout, DiskScheme};
 
     let storage = FakeStorage::new();
     let base_dir = TempDir::new().unwrap();

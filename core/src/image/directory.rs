@@ -5,7 +5,7 @@
 // DirectoryImage: treats a plain directory tree as an image with one FS partition
 
 use crate::{
-    image::OpenImage, partition::DiskLayout, partitions::SimpleMountHandle, DiskScheme, FsHandle,
+    image::OpenImage, partitions::DiskLayout, partitions::SimpleMountHandle, DiskScheme, FsHandle,
     Image, MountHandle, PartitionContent, PartitionDescriptor, PartitionHandle, PartitionManifest,
     Result,
 };
@@ -120,7 +120,7 @@ impl OpenImage for OpenDirectory {
     }
 
     fn partitions(&self) -> crate::Result<Vec<PartitionHandle>> {
-        use crate::partition::PartitionKind;
+        use crate::partitions::PartitionKind;
 
         let descriptor = PartitionDescriptor {
             number: 1,

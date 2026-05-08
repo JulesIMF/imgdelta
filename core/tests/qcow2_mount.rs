@@ -277,7 +277,7 @@ mod tests {
     #[test]
     #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH"]
     fn test_qcow2_open_disk_layout() {
-        use image_delta_core::partition::DiskScheme;
+        use image_delta_core::partitions::DiskScheme;
 
         let path = test_image_path().expect("no qcow2 fixture; set QCOW2_PATH");
         let img = Qcow2Image::new();
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH"]
     fn test_qcow2_open_partition_kinds() {
-        use image_delta_core::partition::PartitionKind;
+        use image_delta_core::partitions::PartitionKind;
 
         let path = test_image_path().expect("no qcow2 fixture; set QCOW2_PATH");
         let img = Qcow2Image::new();
@@ -494,7 +494,7 @@ mod tests {
                 PartitionHandle::Fs(fh) => {
                     let desc = fh.descriptor.clone();
                     let fs_type = match &desc.kind {
-                        image_delta_core::partition::PartitionKind::Fs { fs_type } => {
+                        image_delta_core::partitions::PartitionKind::Fs { fs_type } => {
                             fs_type.clone()
                         }
                         _ => "ext4".into(),

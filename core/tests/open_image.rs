@@ -4,7 +4,7 @@
 // image-delta — incremental disk-image compression toolkit
 // Integration tests for Image::open() and PartitionHandle variants
 
-use image_delta_core::partition::{DiskScheme, PartitionDescriptor};
+use image_delta_core::partitions::{DiskScheme, PartitionDescriptor};
 /// Tests for [`OpenImage`] / [`PartitionHandle`] — Phase 6.C.
 ///
 /// All tests here run without cloud or qcow2 support: they exercise

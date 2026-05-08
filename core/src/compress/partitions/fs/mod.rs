@@ -22,8 +22,7 @@ use tracing::info;
 use crate::compress::context::CompressContext;
 use crate::encoding::RouterEncoder;
 use crate::manifest::PartitionManifest;
-use crate::partition::{PartitionDescriptor, PartitionKind};
-use crate::partitions::PartitionHandle;
+use crate::partitions::{PartitionDescriptor, PartitionHandle, PartitionKind};
 use crate::storage::Storage;
 use crate::Result;
 

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::encoding::AlgorithmCode;
-use crate::partition::{DiskLayout, PartitionDescriptor};
+use crate::partitions::{DiskLayout, PartitionDescriptor};
 
 /// Manifest format version stored in every [`ManifestHeader`].
 ///
@@ -683,7 +683,7 @@ mod tests {
 
     #[test]
     fn manifest_msgpack_roundtrip() {
-        use crate::partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
+        use crate::partitions::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
         let manifest = Manifest {
             header: make_header(),
             disk_layout: DiskLayout {

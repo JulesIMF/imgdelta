@@ -32,7 +32,6 @@ pub mod encoding;
 pub mod fs_diff;
 pub mod image;
 pub mod manifest;
-pub mod partition;
 pub mod partitions;
 pub mod path_match;
 pub mod storage;
@@ -56,8 +55,8 @@ pub use manifest::{
     BlobRef, Data, DataRef, EntryType, Manifest, ManifestHeader, Metadata, PartitionContent,
     PartitionManifest, Patch, PatchRef, Record, MANIFEST_VERSION,
 };
-pub use partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
 pub use partitions::{
     BiosBootHandle, FsHandle, MbrHandle, MountHandle, PartitionHandle, RawHandle, SimpleMountHandle,
 };
+pub use partitions::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
 pub use storage::{BlobCandidate, ImageMeta, ImageStatus, Storage};
