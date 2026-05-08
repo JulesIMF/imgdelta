@@ -29,6 +29,18 @@ pub trait OpenImage: Send + Sync {
     /// (synthetic number 0) whenever the raw disk could be read at open time,
     /// so that the MBR boot-code area is compressed alongside the real partitions.
     fn partitions(&self) -> crate::Result<Vec<PartitionHandle>>;
+
+    /// Create (or overwrite) one partition in a writable image and return a
+    /// handle to it.
+    ///
+    /// The default implementation returns [`crate::Error::Format`] with
+    /// `"create_partition not supported"`, so read-only image backends do not
+    /// need to override this method.
+    fn create_partition(&self, _desc: &PartitionDescriptor) -> crate::Result<PartitionHandle> {
+        Err(crate::Error::Format(
+            "create_partition not supported for this image format".into(),
+        ))
+    }
 }
 
 // ── Image trait ───────────────────────────────────────────────────────────────

@@ -210,7 +210,7 @@ pub fn walkdir_fn(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
 // ── Internal filesystem snapshot ──────────────────────────────────────────────
 
 #[derive(Debug)]
-pub(crate) struct EntrySnapshot {
+struct EntrySnapshot {
     pub is_file: bool,
     pub is_symlink: bool,
     pub is_dir: bool,
