@@ -404,7 +404,7 @@ impl Compressor for DefaultCompressor {
             let archive_bytes = self.storage.download_patches(image_id).await?;
 
             // ── 4. Open base image via the same driver — completely format-agnostic.
-            let base_open: Option<Box<dyn crate::image::OpenImage>> =
+            let base_open =
                 if options.base_root.as_os_str().is_empty() || !options.base_root.exists() {
                     None
                 } else {
