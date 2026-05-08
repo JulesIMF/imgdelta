@@ -16,11 +16,11 @@ use crate::compress::partition::{
     BiosBootCompressor, FsPartitionCompressor, MbrCompressor, PartitionCompressor,
     RawPartitionCompressor,
 };
-use crate::image::PartitionHandle;
 use crate::manifest::{
     Data, Manifest, ManifestHeader, PartitionContent, PartitionManifest, MANIFEST_VERSION,
 };
 use crate::partition::PartitionKind;
+use crate::partitions::PartitionHandle;
 use crate::storage::ImageStatus;
 use crate::{Image, ImageMeta, Result, Storage};
 
@@ -223,7 +223,7 @@ impl Compressor for DefaultCompressor {
             let mut patches_compressed = false;
             let mut archive_stored_bytes: u64 = 0;
             // Keep TempDirs and MountHandles alive until all processing is done.
-            let mut _live_mounts: Vec<Box<dyn crate::image::MountHandle>> = Vec::new();
+            let mut _live_mounts: Vec<Box<dyn crate::partitions::MountHandle>> = Vec::new();
             let mut _live_tmpdirs: Vec<tempfile::TempDir> = Vec::new();
 
             for target_ph in target_partitions {

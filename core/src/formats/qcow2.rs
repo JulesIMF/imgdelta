@@ -21,9 +21,10 @@ use walkdir::WalkDir;
 
 use crate::decompress::decompress_fs_partition;
 use crate::encoders::Xdelta3Encoder;
-use crate::image::{BiosBootHandle, FsHandle, MbrHandle, OpenImage, PartitionHandle, RawHandle};
+use crate::image::OpenImage;
 use crate::manifest::{Manifest, PartitionContent};
 use crate::partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
+use crate::partitions::{BiosBootHandle, FsHandle, MbrHandle, PartitionHandle, RawHandle};
 use crate::routing::RouterEncoder;
 use crate::storage::Storage;
 use crate::{Image, MountHandle, Result};

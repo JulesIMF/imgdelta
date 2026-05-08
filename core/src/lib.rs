@@ -36,6 +36,7 @@ pub mod fs_diff;
 pub mod image;
 pub mod manifest;
 pub mod partition;
+pub mod partitions;
 pub mod path_match;
 pub mod routing;
 pub mod storage;
@@ -55,14 +56,14 @@ pub use encoders::{PassthroughEncoder, TextDiffEncoder, Xdelta3Encoder};
 pub use formats::DirectoryImage;
 #[cfg(all(target_os = "linux", feature = "qcow2"))]
 pub use formats::Qcow2Image;
-pub use image::{
-    BiosBootHandle, FsHandle, Image, MbrHandle, MountHandle, OpenImage, PartitionHandle, RawHandle,
-    SimpleMountHandle,
-};
+pub use image::{Image, OpenImage};
 pub use manifest::{
     BlobRef, Data, DataRef, EntryType, Manifest, ManifestHeader, Metadata, PartitionContent,
     PartitionManifest, Patch, PatchRef, Record, MANIFEST_VERSION,
 };
 pub use partition::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
+pub use partitions::{
+    BiosBootHandle, FsHandle, MbrHandle, MountHandle, PartitionHandle, RawHandle, SimpleMountHandle,
+};
 pub use routing::{ElfRule, FileInfo, GlobRule, MagicRule, RouterEncoder, RoutingRule, SizeRule};
 pub use storage::{BlobCandidate, ImageMeta, ImageStatus, Storage};

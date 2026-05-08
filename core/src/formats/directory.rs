@@ -5,7 +5,8 @@
 // DirectoryImage: treats a plain directory tree as an image with one FS partition
 
 use crate::{
-    image::{OpenDirectory, OpenImage, SimpleMountHandle},
+    image::{OpenDirectory, OpenImage},
+    partitions::SimpleMountHandle,
     Image, MountHandle, Result,
 };
 use std::path::Path;

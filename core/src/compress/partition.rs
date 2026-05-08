@@ -14,9 +14,9 @@ use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::compress::context::StageContext;
-use crate::image::PartitionHandle;
 use crate::manifest::{BlobRef, PartitionContent, PartitionManifest};
 use crate::partition::PartitionKind;
+use crate::partitions::PartitionHandle;
 use crate::Result;
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ pub trait PartitionCompressor: Send + Sync {
         handle: PartitionHandle,
         fs_type: &str,
         base_partitions: &HashMap<u32, PartitionHandle>,
-        live_mounts: &mut Vec<Box<dyn crate::image::MountHandle>>,
+        live_mounts: &mut Vec<Box<dyn crate::partitions::MountHandle>>,
         live_tmpdirs: &mut Vec<tempfile::TempDir>,
     ) -> Result<(PartitionManifest, bool, u64)>;
 }
@@ -57,7 +57,7 @@ impl PartitionCompressor for FsPartitionCompressor {
         handle: PartitionHandle,
         fs_type: &str,
         base_partitions: &HashMap<u32, PartitionHandle>,
-        live_mounts: &mut Vec<Box<dyn crate::image::MountHandle>>,
+        live_mounts: &mut Vec<Box<dyn crate::partitions::MountHandle>>,
         live_tmpdirs: &mut Vec<tempfile::TempDir>,
     ) -> Result<(PartitionManifest, bool, u64)> {
         let fs_handle = match handle {
@@ -140,7 +140,7 @@ impl PartitionCompressor for BiosBootCompressor {
         handle: PartitionHandle,
         _fs_type: &str,
         _base_partitions: &HashMap<u32, PartitionHandle>,
-        _live_mounts: &mut Vec<Box<dyn crate::image::MountHandle>>,
+        _live_mounts: &mut Vec<Box<dyn crate::partitions::MountHandle>>,
         _live_tmpdirs: &mut Vec<tempfile::TempDir>,
     ) -> Result<(PartitionManifest, bool, u64)> {
         let bb_handle = match handle {
@@ -183,7 +183,7 @@ impl PartitionCompressor for RawPartitionCompressor {
         handle: PartitionHandle,
         _fs_type: &str,
         _base_partitions: &HashMap<u32, PartitionHandle>,
-        _live_mounts: &mut Vec<Box<dyn crate::image::MountHandle>>,
+        _live_mounts: &mut Vec<Box<dyn crate::partitions::MountHandle>>,
         _live_tmpdirs: &mut Vec<tempfile::TempDir>,
     ) -> Result<(PartitionManifest, bool, u64)> {
         let raw_handle = match handle {
@@ -226,7 +226,7 @@ impl PartitionCompressor for MbrCompressor {
         handle: PartitionHandle,
         _fs_type: &str,
         _base_partitions: &HashMap<u32, PartitionHandle>,
-        _live_mounts: &mut Vec<Box<dyn crate::image::MountHandle>>,
+        _live_mounts: &mut Vec<Box<dyn crate::partitions::MountHandle>>,
         _live_tmpdirs: &mut Vec<tempfile::TempDir>,
     ) -> Result<(PartitionManifest, bool, u64)> {
         let mbr_handle = match handle {

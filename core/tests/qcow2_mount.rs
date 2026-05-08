@@ -351,7 +351,7 @@ mod tests {
     #[test]
     #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH"]
     fn test_qcow2_open_fs_partition_readable() {
-        use image_delta_core::image::PartitionHandle;
+        use image_delta_core::partitions::PartitionHandle;
 
         let path = test_image_path().expect("no qcow2 fixture; set QCOW2_PATH");
         let img = Qcow2Image::new();
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     #[ignore = "L2: requires qemu-nbd + CAP_SYS_ADMIN + QCOW2_PATH"]
     fn test_qcow2_open_bios_boot_readable() {
-        use image_delta_core::image::PartitionHandle;
+        use image_delta_core::partitions::PartitionHandle;
 
         let path = test_image_path().expect("no qcow2 fixture; set QCOW2_PATH");
         let img = Qcow2Image::new();
@@ -445,11 +445,11 @@ mod tests {
     fn test_qcow2_pack_from_manifest() {
         use crate::common::fake_storage::FakeStorage;
         use image_delta_core::compress::compress_fs_partition;
-        use image_delta_core::image::PartitionHandle;
         use image_delta_core::manifest::{
             BlobRef, Manifest, ManifestHeader, PartitionContent, PartitionManifest,
             MANIFEST_VERSION,
         };
+        use image_delta_core::partitions::PartitionHandle;
         use image_delta_core::routing::RouterEncoder;
         use image_delta_core::{Storage, Xdelta3Encoder};
         use sha2::{Digest, Sha256};
