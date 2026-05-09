@@ -274,8 +274,8 @@ impl Compressor for DefaultCompressor {
             }
 
             // ── 5. Pack and upload the combined patches archive ───────────────────
-            //   • One archive for all FS partitions in the image.
-            //   • Binary partitions did not write anything to all_patches_dir.
+            //    * One archive for all FS partitions in the image.
+            //    * Binary partitions did not write anything to all_patches_dir.
             let (archive_stored_bytes, patches_compressed) =
                 pack_and_upload_patches(all_patches_dir.path(), self.storage.as_ref(), image_id)
                     .await?;
@@ -425,8 +425,9 @@ impl Compressor for DefaultCompressor {
             };
 
             // ── 5. Create output image — format-agnostic via Image::create(). ─
-            //   • qcow2  → qemu-img create + NBD RW + sgdisk (write GPT)
-            //   • directory → create_dir_all(output_root)
+            //    Examples:
+            //    * qcow2  → qemu-img create + NBD RW + sgdisk (write GPT)
+            //    * directory → create_dir_all(output_root)
             let output_open = self
                 .image_format
                 .create(output_root, &manifest.disk_layout)?;
