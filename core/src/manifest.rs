@@ -273,6 +273,26 @@ pub enum PartitionContent {
         /// GRUB and `fstab` entries that reference the UUID continue to work.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         fs_uuid: Option<String>,
+        /// Filesystem-specific mkfs parameters captured from the source
+        /// superblock at compression time.  These allow decompression to
+        /// reproduce the filesystem geometry and feature flags exactly
+        /// (block size, inode size, CRC, bigtime, finobt, …) rather than
+        /// relying on current mkfs defaults.
+        ///
+        /// Keys and values are filesystem-specific:
+        /// - XFS: `"block_size"`, `"inode_size"`, `"crc"`, `"finobt"`,
+        ///   `"sparse"`, `"rmapbt"`, `"reflink"`, `"bigtime"`,
+        ///   `"inobtcount"`, `"ftype"`, `"sector_size"` (all as decimal
+        ///   strings), `"label"`.
+        /// - ext4: `"block_size"`, `"inode_size"`, `"features"` (space-
+        ///   separated list of feature names as returned by `tune2fs -l`),
+        ///   `"label"`.
+        /// - FAT: `"sectors_per_cluster"`, `"label"`.
+        ///
+        /// Absent (old manifests or unsupported FS types) → `mkfs_partition`
+        /// falls back to current safe defaults.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        fs_mkfs_params: Option<std::collections::HashMap<String, String>>,
         records: Vec<Record>,
     },
     /// MBR boot-code area (bytes 0–439 of the raw disk).
@@ -669,6 +689,7 @@ mod tests {
         let c = PartitionContent::Fs {
             fs_type: "ext4".into(),
             fs_uuid: None,
+            fs_mkfs_params: None,
             records: vec![
                 make_record_added(),
                 make_record_deleted(),
@@ -708,6 +729,7 @@ mod tests {
                 content: PartitionContent::Fs {
                     fs_type: "ext4".into(),
                     fs_uuid: None,
+                    fs_mkfs_params: None,
                     records: vec![make_record_added()],
                 },
             }],

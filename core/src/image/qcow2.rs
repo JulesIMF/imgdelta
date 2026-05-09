@@ -823,9 +823,13 @@ impl OpenImage for OpenQcow2Image {
                 }
                 PartitionKind::Fs { fs_type } => {
                     let fs_uuid = blkid_uuid(&dev);
-                    PartitionHandle::Fs(FsHandle::new_with_uuid(desc, fs_uuid, move || {
-                        mount_partition_ro(&dev, &fs_type, Arc::clone(&nbd))
-                    }))
+                    let fs_mkfs_params = probe_fs_params(&dev, &fs_type);
+                    PartitionHandle::Fs(FsHandle::new_with_uuid(
+                        desc,
+                        fs_uuid,
+                        fs_mkfs_params,
+                        move || mount_partition_ro(&dev, &fs_type, Arc::clone(&nbd)),
+                    ))
                 }
                 PartitionKind::MbrBootCode => {
                     // MbrBootCode should never appear in part_infos (only in
@@ -919,14 +923,22 @@ impl OpenImage for OpenQcow2Image {
             }
 
             PartitionContent::Fs {
-                fs_type, fs_uuid, ..
+                fs_type,
+                fs_uuid,
+                fs_mkfs_params,
+                ..
             } => {
                 let part_num = desc.number;
                 let stable_dev =
                     wait_for_partition_stable(nbd_device, part_num, NBD_PARTITION_TIMEOUT)?;
                 // Format the partition before returning the handle — mkfs must
                 // happen before any attempt to mount.
-                mkfs_partition(&stable_dev, fs_type, fs_uuid.as_deref())?;
+                mkfs_partition(
+                    &stable_dev,
+                    fs_type,
+                    fs_uuid.as_deref(),
+                    fs_mkfs_params.as_ref(),
+                )?;
                 let dev = stable_dev;
                 let fs = fs_type.clone();
                 let fh = FsHandle::new(desc, move || {
@@ -1062,6 +1074,168 @@ fn blkid_uuid(device: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Probe filesystem geometry and feature flags from an existing block device.
+///
+/// Returns a `HashMap` suitable for storing in [`PartitionContent::Fs`] as
+/// `fs_mkfs_params` so that decompression can call `mkfs` with the exact same
+/// parameters.  Returns `None` if the filesystem type is unsupported or the
+/// probe tool is unavailable.
+///
+/// Supported:
+/// - `"xfs"` — reads `xfs_info <device>` (works on unmounted block devices)
+/// - `"ext4"` — reads `tune2fs -l <device>`
+/// - `"vfat"` / `"fat32"` / `"fat16"` — reads `fsstat <device>` when available
+fn probe_fs_params(
+    device: &str,
+    fs_type: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    match fs_type {
+        "xfs" => probe_xfs_params(device),
+        "ext4" => probe_ext4_params(device),
+        "vfat" | "fat32" | "fat16" => probe_fat_params(device),
+        _ => None,
+    }
+}
+
+/// Parse `xfs_info <device>` output into mkfs-reproducible parameters.
+///
+/// Example xfs_info output:
+/// ```text
+/// meta-data=/dev/nbd0p2  isize=512    agcount=4, agsize=655360 blks
+///          =             sectsz=512   attr=2, projid32bit=1
+///          =             crc=1        finobt=1, sparse=1, rmapbt=0
+///          =             reflink=1    bigtime=1 inobtcount=1 nrext64=0
+/// data     =             bsize=4096   blocks=2621440, imaxpct=25
+///          =             sunit=0      swidth=0 blks
+/// naming   =version 2   bsize=4096   ascii-ci=0, ftype=1
+/// log      =internal log bsize=4096  blocks=16384, version=2
+///          =             sectsz=512   sunit=0 blks, lazy-count=1
+/// realtime =none         extsz=4096   blocks=0, rtextents=0
+/// ```
+fn probe_xfs_params(device: &str) -> Option<std::collections::HashMap<String, String>> {
+    let out = Command::new("xfs_info").arg(device).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut p: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for line in text.lines() {
+        // Split on whitespace; each key=value token (or key=value, with trailing
+        // comma) is parsed independently.
+        for token in line.split_ascii_whitespace() {
+            let token = token.trim_end_matches(',');
+            if let Some((k, v)) = token.split_once('=') {
+                match k {
+                    "isize" => {
+                        p.insert("inode_size".into(), v.into());
+                    }
+                    "bsize" => {
+                        // bsize appears in multiple sections; only take the
+                        // one from the "data" section (first occurrence).
+                        p.entry("block_size".into()).or_insert_with(|| v.into());
+                    }
+                    "sectsz" => {
+                        p.entry("sector_size".into()).or_insert_with(|| v.into());
+                    }
+                    "crc" => {
+                        p.insert("crc".into(), v.into());
+                    }
+                    "finobt" => {
+                        p.insert("finobt".into(), v.into());
+                    }
+                    "sparse" => {
+                        p.insert("sparse".into(), v.into());
+                    }
+                    "rmapbt" => {
+                        p.insert("rmapbt".into(), v.into());
+                    }
+                    "reflink" => {
+                        p.insert("reflink".into(), v.into());
+                    }
+                    "bigtime" => {
+                        p.insert("bigtime".into(), v.into());
+                    }
+                    "inobtcount" => {
+                        p.insert("inobtcount".into(), v.into());
+                    }
+                    "ftype" => {
+                        p.insert("ftype".into(), v.into());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if p.is_empty() {
+        None
+    } else {
+        Some(p)
+    }
+}
+
+/// Parse `tune2fs -l <device>` output into mkfs-reproducible parameters.
+fn probe_ext4_params(device: &str) -> Option<std::collections::HashMap<String, String>> {
+    let out = Command::new("tune2fs").args(["-l", device]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut p: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Block size:") {
+            p.insert("block_size".into(), rest.trim().into());
+        } else if let Some(rest) = line.strip_prefix("Inode size:") {
+            p.insert("inode_size".into(), rest.trim().into());
+        } else if let Some(rest) = line.strip_prefix("Filesystem features:") {
+            p.insert("features".into(), rest.trim().into());
+        } else if let Some(rest) = line.strip_prefix("Filesystem volume name:") {
+            let label = rest.trim();
+            if label != "<none>" {
+                p.insert("label".into(), label.into());
+            }
+        }
+    }
+
+    if p.is_empty() {
+        None
+    } else {
+        Some(p)
+    }
+}
+
+/// Probe FAT filesystem metadata (sectors-per-cluster, label).
+///
+/// Tries `fsstat` (from The Sleuth Kit); silently returns `None` if
+/// unavailable so that decompression falls back to safe defaults.
+fn probe_fat_params(device: &str) -> Option<std::collections::HashMap<String, String>> {
+    let out = Command::new("fsstat").arg(device).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut p: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Sectors Per Cluster:") {
+            p.insert("sectors_per_cluster".into(), rest.trim().into());
+        } else if let Some(rest) = line.strip_prefix("Volume Label (Boot Sector):") {
+            let label = rest.trim();
+            if !label.is_empty() {
+                p.insert("label".into(), label.into());
+            }
+        }
+    }
+
+    if p.is_empty() {
+        None
+    } else {
+        Some(p)
+    }
 }
 
 /// Extract the partition number from a node path like `/dev/nbd3p2` → 2.
@@ -1529,14 +1703,43 @@ fn write_gpt(nbd_device: &str, layout: &DiskLayout) -> crate::Result<()> {
 }
 
 /// Format a partition with the appropriate `mkfs` tool.
-fn mkfs_partition(part_dev: &str, fs_type: &str, fs_uuid: Option<&str>) -> crate::Result<()> {
+fn mkfs_partition(
+    part_dev: &str,
+    fs_type: &str,
+    fs_uuid: Option<&str>,
+    fs_mkfs_params: Option<&std::collections::HashMap<String, String>>,
+) -> crate::Result<()> {
     match fs_type {
         "ext4" => {
             let mut cmd = Command::new("mkfs.ext4");
-            // Disable features not supported by GRUB 2.06's embedded ext2 driver:
-            //   - orphan_file: added in e2fsprogs 1.46.2+
-            //   - metadata_csum_seed: added in e2fsprogs 1.46.4+, only GRUB 2.12+ handles it
-            cmd.args(["-F", "-O", "^orphan_file,^metadata_csum_seed"]);
+            // Start from the features stored at compression time.  If none are
+            // recorded fall back to the safe GRUB-compatible defaults.
+            if let Some(features) = fs_mkfs_params.and_then(|p| p.get("features")) {
+                // tune2fs -l lists features separated by spaces; mkfs.ext4 -O
+                // accepts a comma-separated list.
+                let comma_features = features
+                    .split_ascii_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(",");
+                cmd.args(["-F", "-O", &comma_features]);
+            } else {
+                // Disable features not supported by GRUB 2.06's embedded ext2
+                // driver when no stored params are available:
+                //   - orphan_file: added in e2fsprogs 1.46.2+
+                //   - metadata_csum_seed: added in e2fsprogs 1.46.4+
+                cmd.args(["-F", "-O", "^orphan_file,^metadata_csum_seed"]);
+            }
+            if let Some(params) = fs_mkfs_params {
+                if let Some(bs) = params.get("block_size") {
+                    cmd.args(["-b", bs]);
+                }
+                if let Some(is) = params.get("inode_size") {
+                    cmd.args(["-I", is]);
+                }
+                if let Some(label) = params.get("label") {
+                    cmd.args(["-L", label]);
+                }
+            }
             if let Some(uuid) = fs_uuid {
                 cmd.args(["-U", uuid]);
             }
@@ -1546,10 +1749,52 @@ fn mkfs_partition(part_dev: &str, fs_type: &str, fs_uuid: Option<&str>) -> crate
         "xfs" => {
             let mut cmd = Command::new("mkfs.xfs");
             cmd.arg("-f");
+            // Build the -m metadata suboption string from stored params.
+            let mut m_opts: Vec<String> = Vec::new();
             if let Some(uuid) = fs_uuid {
                 // Pass UUID via metadata section so GRUB's `search --fs-uuid`
                 // finds the correct partition after decompression.
-                cmd.args(["-m", &format!("uuid={uuid}")]);
+                m_opts.push(format!("uuid={uuid}"));
+            }
+            if let Some(params) = fs_mkfs_params {
+                for key in &[
+                    "crc",
+                    "finobt",
+                    "rmapbt",
+                    "reflink",
+                    "bigtime",
+                    "inobtcount",
+                ] {
+                    if let Some(val) = params.get(*key) {
+                        m_opts.push(format!("{key}={val}"));
+                    }
+                }
+                let mut i_opts: Vec<String> = Vec::new();
+                if let Some(bs) = params.get("block_size") {
+                    cmd.args(["-b", &format!("size={bs}")]);
+                }
+                if let Some(is) = params.get("inode_size") {
+                    i_opts.push(format!("size={is}"));
+                }
+                if let Some(sparse) = params.get("sparse") {
+                    // sparse is an inode suboption in mkfs.xfs >= 5.x
+                    i_opts.push(format!("sparse={sparse}"));
+                }
+                if !i_opts.is_empty() {
+                    cmd.args(["-i", &i_opts.join(",")]);
+                }
+                if let Some(ss) = params.get("sector_size") {
+                    cmd.args(["-s", &format!("size={ss}")]);
+                }
+                if let Some(ftype) = params.get("ftype") {
+                    cmd.args(["-n", &format!("ftype={ftype}")]);
+                }
+                if let Some(label) = params.get("label") {
+                    cmd.args(["-L", label]);
+                }
+            }
+            if !m_opts.is_empty() {
+                cmd.args(["-m", &m_opts.join(",")]);
             }
             cmd.arg(part_dev);
             run_command(&mut cmd, "mkfs.xfs")
@@ -1567,6 +1812,14 @@ fn mkfs_partition(part_dev: &str, fs_type: &str, fs_uuid: Option<&str>) -> crate
                     .collect();
                 if !vol_id.is_empty() {
                     cmd.args(["-i", &vol_id]);
+                }
+            }
+            if let Some(params) = fs_mkfs_params {
+                if let Some(spc) = params.get("sectors_per_cluster") {
+                    cmd.args(["-s", spc]);
+                }
+                if let Some(label) = params.get("label") {
+                    cmd.args(["-n", label]);
                 }
             }
             cmd.arg(part_dev);

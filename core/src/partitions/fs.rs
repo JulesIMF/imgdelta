@@ -63,6 +63,9 @@ pub struct FsHandle {
     pub descriptor: PartitionDescriptor,
     /// Filesystem UUID (e.g. ext4 superblock UUID), if known at open time.
     pub fs_uuid: Option<String>,
+    /// Filesystem geometry and feature flags read from the source superblock.
+    /// Stored in the manifest so decompression can recreate the FS exactly.
+    pub fs_mkfs_params: Option<std::collections::HashMap<String, String>>,
     mount_fn: MountFn,
     /// Optional: mount function for the corresponding base-image partition.
     ///
@@ -82,6 +85,7 @@ impl FsHandle {
         Self {
             descriptor,
             fs_uuid: uuid_str,
+            fs_mkfs_params: None,
             mount_fn: Arc::new(mount_fn),
             base_mount_fn: None,
         }
@@ -91,11 +95,13 @@ impl FsHandle {
     pub fn new_with_uuid(
         descriptor: PartitionDescriptor,
         fs_uuid: Option<String>,
+        fs_mkfs_params: Option<std::collections::HashMap<String, String>>,
         mount_fn: impl Fn() -> crate::Result<Box<dyn MountHandle>> + Send + Sync + 'static,
     ) -> Self {
         Self {
             descriptor,
             fs_uuid,
+            fs_mkfs_params,
             mount_fn: Arc::new(mount_fn),
             base_mount_fn: None,
         }

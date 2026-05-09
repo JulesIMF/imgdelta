@@ -74,6 +74,7 @@ pub fn collect_fs_content(
     mut draft: FsDraft,
     fs_type: &str,
     fs_uuid: Option<String>,
+    fs_mkfs_params: Option<std::collections::HashMap<String, String>>,
     patches_dir: &Path,
 ) -> Result<PartitionContent> {
     for (key, bytes) in draft.patch_bytes.drain() {
@@ -91,6 +92,7 @@ pub fn collect_fs_content(
     Ok(PartitionContent::Fs {
         fs_type: fs_type.to_string(),
         fs_uuid,
+        fs_mkfs_params,
         records,
     })
 }
@@ -134,7 +136,7 @@ pub async fn pack_and_upload_archive_fn(
 ) -> Result<(PartitionContent, bool, u64)> {
     let tmp = tempfile::TempDir::new()
         .map_err(|e| crate::Error::Other(format!("tempdir for patches: {e}")))?;
-    let content = collect_fs_content(draft, fs_type, fs_uuid, tmp.path())?;
+    let content = collect_fs_content(draft, fs_type, fs_uuid, None, tmp.path())?;
     let (stored_bytes, compressed) = pack_and_upload_patches(tmp.path(), storage, image_id).await?;
     Ok((content, compressed, stored_bytes))
 }

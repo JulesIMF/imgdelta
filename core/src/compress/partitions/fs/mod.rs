@@ -104,6 +104,7 @@ impl PartitionCompressor for FsPartitionCompressor {
         };
 
         let fs_uuid = fs_handle.fs_uuid.clone();
+        let fs_mkfs_params = fs_handle.fs_mkfs_params.clone();
 
         compress_fs_partition(
             &base_root_path,
@@ -115,6 +116,7 @@ impl PartitionCompressor for FsPartitionCompressor {
             Arc::clone(&ctx.router),
             &partition_fs_type,
             fs_uuid,
+            fs_mkfs_params,
             ctx.workers,
             ctx.debug_dir.as_deref(),
             &ctx.patches_dir,
@@ -141,6 +143,7 @@ pub async fn compress_fs_partition(
     router: Arc<RouterEncoder>,
     fs_type: &str,
     fs_uuid: Option<String>,
+    fs_mkfs_params: Option<std::collections::HashMap<String, String>>,
     workers: usize,
     debug_dir: Option<&Path>,
     patches_dir: &Path,
@@ -175,7 +178,7 @@ pub async fn compress_fs_partition(
     let pipeline = CompressPipeline::default_fs();
     let draft = pipeline.run(&ctx, draft, debug_dir).await?;
 
-    let content = collect_fs_content(draft, fs_type, fs_uuid, patches_dir)?;
+    let content = collect_fs_content(draft, fs_type, fs_uuid, fs_mkfs_params, patches_dir)?;
 
     Ok(PartitionManifest {
         descriptor: descriptor.clone(),
@@ -217,6 +220,7 @@ pub async fn compress_fs_partition_and_upload(
         Arc::clone(&router),
         fs_type,
         fs_uuid,
+        None, // fs_mkfs_params not available in this test-facing wrapper
         workers,
         debug_dir,
         patches_tmp.path(),
