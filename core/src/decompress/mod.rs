@@ -14,8 +14,10 @@
 //! The public entry point [`decompress_fs_partition`] is a re-export from
 //! [`partitions::fs::decompress_fs_partition`].
 
+pub mod context;
 pub mod partitions;
 
+pub use context::DecompressContext;
 pub use partitions::fs::decompress_fs_partition;
 pub use partitions::{
     BiosBootDecompressor, FsPartitionDecompressor, MbrDecompressor, PartitionDecompressor,

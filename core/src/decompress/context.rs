@@ -2,19 +2,22 @@
 // Copyright (c) 2026 JulesIMF
 //
 // image-delta — incremental disk-image compression toolkit
-// Decompress pipeline: stage context
+// decompress/context — shared decompress context passed to all partition decompressors
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::encoding::RouterEncoder;
-use crate::manifest::Record;
 use crate::storage::Storage;
 
 // ── DecompressContext ─────────────────────────────────────────────────────────
 
-/// Immutable inputs shared across all decompress pipeline stages.
+/// Immutable inputs shared across all [`PartitionDecompressor`] impls for one
+/// decompression run.
+///
+/// Mirrors [`crate::compress::context::CompressContext`] on the decompress side.
+///
+/// [`PartitionDecompressor`]: crate::decompress::PartitionDecompressor
 pub struct DecompressContext {
     /// Object storage for blobs and manifests.
     pub storage: Arc<dyn Storage>,
@@ -22,12 +25,8 @@ pub struct DecompressContext {
     pub router: Arc<RouterEncoder>,
     /// Rayon worker count.
     pub workers: usize,
-    /// Root of the base (previous) filesystem tree.
-    pub base_root: Arc<Path>,
-    /// Root of the output filesystem tree (written by the pipeline).
-    pub output_root: Arc<Path>,
-    /// Partition records from the manifest.
-    pub records: Arc<[Record]>,
-    /// Pre-extracted patch files keyed by archive entry name (e.g. `"000000.patch"`).
+    /// Patch files extracted from the patches tar archive before the partition
+    /// loop.  Keyed by archive entry name (e.g. `"000000.patch"`).
+    /// Empty when there is no base image.
     pub patch_map: Arc<HashMap<String, Vec<u8>>>,
 }

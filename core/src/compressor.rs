@@ -360,14 +360,12 @@ impl Compressor for DefaultCompressor {
         output_root: &Path,
         options: DecompressOptions,
     ) -> Result<DecompressionStats> {
+        use crate::decompress::partitions::fs::stages::extract_archive_fn;
         use crate::decompress::{
-            BiosBootDecompressor, FsPartitionDecompressor, MbrDecompressor, PartitionDecompressor,
-            RawPartitionDecompressor,
+            BiosBootDecompressor, DecompressContext, FsPartitionDecompressor, MbrDecompressor,
+            PartitionDecompressor, RawPartitionDecompressor,
         };
-        use crate::manifest::{PartitionContent, MANIFEST_VERSION};
         use crate::partitions::FsHandle;
-        use std::collections::HashMap;
-        use tempfile::TempDir;
 
         let started_at = Instant::now();
         let image_id = &options.image_id;
@@ -386,32 +384,21 @@ impl Compressor for DefaultCompressor {
                 )));
             }
 
-            // ── 2. Chain detection ────────────────────────────────────────────
-            if let Some(ref base_id) = manifest.header.base_image_id {
-                if let Some(base_meta) = self.storage.get_image(base_id).await? {
-                    if base_meta.base_image_id.is_some() {
-                        return Err(crate::Error::Other(format!(
-                            "chained decompression is not supported: \
-                             '{image_id}' → '{base_id}' → '{}'. \
-                             Decompress '{base_id}' first to obtain a full image, \
-                             then decompress '{image_id}' against it.",
-                            base_meta.base_image_id.as_deref().unwrap_or("?")
-                        )));
-                    }
-                }
-            }
-
-            // ── 3. Download patches archive (once for all partitions) ─────────
+            // ── 2. Download and extract patches archive once ──────────────────
             let archive_bytes = self.storage.download_patches(image_id).await?;
+            let patch_map = if archive_bytes.is_empty() {
+                HashMap::new()
+            } else {
+                extract_archive_fn(&archive_bytes, manifest.header.patches_compressed)?
+            };
 
-            // ── 4. Open base image via the same driver — completely format-agnostic.
+            // ── 3. Open base image, index base Fs-partition handles ───────────
             let base_open =
                 if options.base_root.as_os_str().is_empty() || !options.base_root.exists() {
                     None
                 } else {
                     Some(self.image_format.open(&options.base_root)?)
                 };
-            // Index base Fs-partition handles by partition number.
             let base_fs_handles: HashMap<u32, FsHandle> = if let Some(ref b) = base_open {
                 b.partitions()?
                     .into_iter()
@@ -424,50 +411,33 @@ impl Compressor for DefaultCompressor {
                 HashMap::new()
             };
 
-            // ── 5. Create output image — format-agnostic via Image::create(). ─
-            //    Examples:
-            //    * qcow2  → qemu-img create + NBD RW + sgdisk (write GPT)
-            //    * directory → create_dir_all(output_root)
+            // ── 4. Create output image ────────────────────────────────────────
             let output_open = self
                 .image_format
                 .create(output_root, &manifest.disk_layout)?;
 
-            let patches_compressed = manifest.header.patches_compressed;
+            // ── 5. Build shared decompress context ────────────────────────────
+            let ctx = DecompressContext {
+                storage: Arc::clone(&self.storage),
+                router: Arc::clone(&self.router),
+                workers: options.workers,
+                patch_map: Arc::new(patch_map),
+            };
+
             let mut total_files: usize = 0;
             let mut patches_verified: usize = 0;
             let mut total_bytes: u64 = 0;
 
             // ── 6. For each partition: create_partition() → PartitionDecompressor ──
             for pm in &manifest.partitions {
-                // For Fs partitions we need a mounted base directory.
-                // Binary partitions receive an empty path and ignore it.
-                let _base_mount: Option<Box<dyn crate::partitions::MountHandle>>;
-                let _base_tmpdir: Option<TempDir>;
-                let base_root: std::path::PathBuf =
-                    if matches!(&pm.content, PartitionContent::Fs { .. }) {
-                        if let Some(fh) = base_fs_handles.get(&pm.descriptor.number) {
-                            let mount = fh.mount()?;
-                            let path = mount.root().to_path_buf();
-                            _base_mount = Some(mount);
-                            _base_tmpdir = None;
-                            path
-                        } else {
-                            let dir = TempDir::new()
-                                .map_err(|e| crate::Error::Other(format!("TempDir: {e}")))?;
-                            let path = dir.path().to_path_buf();
-                            _base_mount = None;
-                            _base_tmpdir = Some(dir);
-                            path
-                        }
-                    } else {
-                        _base_mount = None;
-                        _base_tmpdir = None;
-                        std::path::PathBuf::new()
-                    };
+                let mut output_ph = output_open.create_partition(pm)?;
 
-                // create_partition prepares the partition (mkfs for Fs, noop for
-                // binary types) and returns a writable handle.
-                let output_ph = output_open.create_partition(pm)?;
+                // Inject base mount fn into output Fs handle (mirrors compress).
+                if let PartitionHandle::Fs(ref mut fsh) = output_ph {
+                    if let Some(base_fh) = base_fs_handles.get(&pm.descriptor.number) {
+                        fsh.set_base(base_fh);
+                    }
+                }
 
                 let decompressor: Box<dyn PartitionDecompressor> = match &pm.content {
                     PartitionContent::Fs { .. } => Box::new(FsPartitionDecompressor),
@@ -476,30 +446,13 @@ impl Compressor for DefaultCompressor {
                     PartitionContent::Raw { .. } => Box::new(RawPartitionDecompressor),
                 };
 
-                let part_stats = decompressor
-                    .decompress(
-                        pm,
-                        &base_root,
-                        &output_ph,
-                        Arc::clone(&self.storage),
-                        &archive_bytes,
-                        patches_compressed,
-                        Arc::clone(&self.router),
-                        options.workers,
-                    )
-                    .await?;
-                // _base_mount / _base_tmpdir drop here → umount / tmpdir cleanup.
+                let part_stats = decompressor.decompress(&ctx, pm, &output_ph).await?;
 
                 total_files += part_stats.files_written;
                 patches_verified += part_stats.patches_verified;
                 total_bytes += part_stats.bytes_written;
             }
             // output_open drops here → for qcow2: NbdConn drops → qemu-nbd --disconnect.
-
-            // ── 7. Update status ───────────────────────────────────────────────
-            self.storage
-                .update_status(image_id, ImageStatus::Compressed)
-                .await?;
 
             let elapsed = started_at.elapsed();
             let decompression_stats = DecompressionStats {

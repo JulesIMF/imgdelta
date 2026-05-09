@@ -46,7 +46,7 @@ impl DecompressStage for ApplyRecords {
             &ctx.records,
             &ctx.base_root,
             &ctx.output_root,
-            &draft.patch_map,
+            &ctx.patch_map,
             Arc::clone(&ctx.storage),
             &ctx.router,
             ctx.workers,

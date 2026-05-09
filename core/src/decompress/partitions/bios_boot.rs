@@ -4,17 +4,13 @@
 // image-delta — incremental disk-image compression toolkit
 // decompress/partitions/bios_boot — BiosBootDecompressor
 
-use std::path::Path;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 
+use crate::decompress::context::DecompressContext;
 use crate::decompress::partitions::PartitionDecompressor;
 use crate::decompress::PartitionDecompressStats;
-use crate::encoding::RouterEncoder;
 use crate::manifest::{PartitionContent, PartitionManifest};
 use crate::partitions::PartitionHandle;
-use crate::storage::Storage;
 use crate::Result;
 
 /// Decompresses a BIOS-boot partition by downloading the verbatim blob and
@@ -25,14 +21,9 @@ pub struct BiosBootDecompressor;
 impl PartitionDecompressor for BiosBootDecompressor {
     async fn decompress(
         &self,
+        ctx: &DecompressContext,
         pm: &PartitionManifest,
-        _base_root: &Path,
         output_ph: &PartitionHandle,
-        storage: Arc<dyn Storage>,
-        _archive_bytes: &[u8],
-        _patches_compressed: bool,
-        _router: Arc<RouterEncoder>,
-        _workers: usize,
     ) -> Result<PartitionDecompressStats> {
         let handle = match output_ph {
             PartitionHandle::BiosBoot(h) => h,
@@ -42,7 +33,7 @@ impl PartitionDecompressor for BiosBootDecompressor {
             PartitionContent::BiosBoot { blob_id, .. } => *blob_id,
             _ => unreachable!("BiosBootDecompressor called with non-BiosBoot manifest"),
         };
-        let data = storage.download_blob(blob_id).await?;
+        let data = ctx.storage.download_blob(blob_id).await?;
         let bytes_written = data.len() as u64;
         handle.write_raw(&data)?;
         Ok(PartitionDecompressStats {

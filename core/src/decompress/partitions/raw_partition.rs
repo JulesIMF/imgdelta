@@ -4,17 +4,13 @@
 // image-delta — incremental disk-image compression toolkit
 // decompress/partitions/raw_partition — RawPartitionDecompressor
 
-use std::path::Path;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 
+use crate::decompress::context::DecompressContext;
 use crate::decompress::partitions::PartitionDecompressor;
 use crate::decompress::PartitionDecompressStats;
-use crate::encoding::RouterEncoder;
 use crate::manifest::{PartitionContent, PartitionManifest};
 use crate::partitions::PartitionHandle;
-use crate::storage::Storage;
 use crate::Result;
 
 /// Decompresses a raw (unformatted) partition by downloading the verbatim blob
@@ -25,14 +21,9 @@ pub struct RawPartitionDecompressor;
 impl PartitionDecompressor for RawPartitionDecompressor {
     async fn decompress(
         &self,
+        ctx: &DecompressContext,
         pm: &PartitionManifest,
-        _base_root: &Path,
         output_ph: &PartitionHandle,
-        storage: Arc<dyn Storage>,
-        _archive_bytes: &[u8],
-        _patches_compressed: bool,
-        _router: Arc<RouterEncoder>,
-        _workers: usize,
     ) -> Result<PartitionDecompressStats> {
         let handle = match output_ph {
             PartitionHandle::Raw(h) => h,
@@ -46,7 +37,7 @@ impl PartitionDecompressor for RawPartitionDecompressor {
             // Empty raw partition — nothing to write.
             return Ok(PartitionDecompressStats::default());
         };
-        let data = storage.download_blob(bref.blob_id).await?;
+        let data = ctx.storage.download_blob(bref.blob_id).await?;
         let bytes_written = data.len() as u64;
         handle.write_raw(&data)?;
         Ok(PartitionDecompressStats {

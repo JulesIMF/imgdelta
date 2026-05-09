@@ -11,25 +11,26 @@ use tracing::info;
 use super::context::DecompressContext;
 use super::draft::DecompressDraft;
 use super::stage::DecompressStage;
-use super::stages::{ApplyRecords, CopyUnchanged, ExtractArchive};
+use super::stages::{ApplyRecords, CopyUnchanged};
 use crate::Result;
 
-/// Runs stages 1–3 of the decompress pipeline in order.
+/// Runs stages 1–2 of the decompress pipeline in order.
 ///
-/// Order: ExtractArchive → CopyUnchanged → ApplyRecords.
+/// Order: CopyUnchanged → ApplyRecords.
+///
+/// Patch extraction from the archive is performed once before the partition loop
+/// (in the orchestrator) and the resulting [`patch_map`] is passed in via context.
+///
+/// [`patch_map`]: super::context::DecompressContext::patch_map
 pub struct DecompressPipeline {
     stages: Vec<Box<dyn DecompressStage>>,
 }
 
 impl DecompressPipeline {
-    /// Construct the default 3-stage pipeline.
+    /// Construct the default 2-stage pipeline.
     pub fn default_fs() -> Self {
         Self {
-            stages: vec![
-                Box::new(ExtractArchive),
-                Box::new(CopyUnchanged),
-                Box::new(ApplyRecords),
-            ],
+            stages: vec![Box::new(CopyUnchanged), Box::new(ApplyRecords)],
         }
     }
 

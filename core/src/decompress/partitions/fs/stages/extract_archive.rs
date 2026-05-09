@@ -2,46 +2,23 @@
 // Copyright (c) 2026 JulesIMF
 //
 // image-delta — incremental disk-image compression toolkit
-// Decompress stage 1: extract patches archive
+// Decompress: extract patches archive utility
 
 use std::collections::HashMap;
 use std::io::Read;
 
-use async_trait::async_trait;
-
-use crate::decompress::partitions::fs::context::DecompressContext;
-use crate::decompress::partitions::fs::draft::DecompressDraft;
-use crate::decompress::partitions::fs::stage::DecompressStage;
 use crate::{Error, Result};
-
-// ── Stage struct ──────────────────────────────────────────────────────────────
-
-/// Stage 1: Extract the patches tar (or tar.gz) archive into `draft.patch_map`.
-///
-/// If `ctx.archive_bytes` is empty the patch map is left empty (fast path).
-pub struct ExtractArchive;
-
-#[async_trait]
-impl DecompressStage for ExtractArchive {
-    fn name(&self) -> &'static str {
-        "extract_archive"
-    }
-
-    async fn run(
-        &self,
-        ctx: &DecompressContext,
-        mut draft: DecompressDraft,
-    ) -> Result<DecompressDraft> {
-        if !ctx.archive_bytes.is_empty() {
-            draft.patch_map = extract_archive_fn(&ctx.archive_bytes, ctx.patches_compressed)?;
-        }
-        Ok(draft)
-    }
-}
 
 // ── Implementation ────────────────────────────────────────────────────────────
 
 /// Extract a patches tar (or tar.gz) archive into a map of `entry_name → bytes`.
+///
+/// Called once before the partition loop so that the resulting `patch_map` can
+/// be shared across all [`PartitionDecompressor`] instances via
+/// [`DecompressContext`].
+///
+/// [`PartitionDecompressor`]: crate::decompress::PartitionDecompressor
+/// [`DecompressContext`]: crate::decompress::DecompressContext
 pub fn extract_archive_fn(
     archive_bytes: &[u8],
     compressed: bool,
