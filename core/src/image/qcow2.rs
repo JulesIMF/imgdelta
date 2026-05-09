@@ -1543,11 +1543,35 @@ fn mkfs_partition(part_dev: &str, fs_type: &str, fs_uuid: Option<&str>) -> crate
             cmd.arg(part_dev);
             run_command(&mut cmd, "mkfs.ext4")
         }
-        "xfs" => run_command(Command::new("mkfs.xfs").args(["-f", part_dev]), "mkfs.xfs"),
-        "vfat" | "fat32" | "fat16" => run_command(
-            Command::new("mkfs.fat").args(["-F", "32", part_dev]),
-            "mkfs.fat",
-        ),
+        "xfs" => {
+            let mut cmd = Command::new("mkfs.xfs");
+            cmd.arg("-f");
+            if let Some(uuid) = fs_uuid {
+                // Pass UUID via metadata section so GRUB's `search --fs-uuid`
+                // finds the correct partition after decompression.
+                cmd.args(["-m", &format!("uuid={uuid}")]);
+            }
+            cmd.arg(part_dev);
+            run_command(&mut cmd, "mkfs.xfs")
+        }
+        "vfat" | "fat32" | "fat16" => {
+            let mut cmd = Command::new("mkfs.fat");
+            cmd.args(["-F", "32"]);
+            if let Some(uuid) = fs_uuid {
+                // mkfs.fat accepts the volume-id as a 32-bit hex value;
+                // take the first 8 hex digits of the filesystem UUID.
+                let vol_id: String = uuid
+                    .chars()
+                    .filter(|c| c.is_ascii_hexdigit())
+                    .take(8)
+                    .collect();
+                if !vol_id.is_empty() {
+                    cmd.args(["-i", &vol_id]);
+                }
+            }
+            cmd.arg(part_dev);
+            run_command(&mut cmd, "mkfs.fat")
+        }
         other => Err(crate::Error::Format(format!(
             "mkfs_partition: unsupported fs_type '{other}'"
         ))),
