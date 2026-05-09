@@ -18,7 +18,7 @@ mod common;
 use common::{
     compress_opts, decompress_opts, make_compressor, save_root_meta_for_storage, write_file,
 };
-use image_delta_core::{Compressor, ImageMeta, Storage};
+use image_delta_core::{ImageMeta, Storage};
 use tempfile::tempdir;
 
 // ── 1. test_decompress_status_after_success ───────────────────────────────────

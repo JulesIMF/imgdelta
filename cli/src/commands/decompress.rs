@@ -8,9 +8,7 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use image_delta_core::{
-    Compressor, DecompressOptions, DefaultCompressor, DirectoryImage, Qcow2Image,
-};
+use image_delta_core::{DecompressOptions, DirectoryImage, Qcow2Image};
 
 use crate::commands::compress::load_config;
 
@@ -56,17 +54,20 @@ pub async fn run(args: DecompressArgs, config_path: Option<&Path>) -> anyhow::Re
         }
     };
 
-    let compressor = DefaultCompressor::new(image_format, Arc::clone(&storage), router);
+    let base_root: std::path::PathBuf = args.base_image.unwrap_or_default();
 
-    let base_root: PathBuf = args.base_image.unwrap_or_default();
-
-    let opts = DecompressOptions {
-        image_id: args.image_id.clone(),
-        base_root,
-        workers: args.workers.unwrap_or(config.compressor.workers),
-    };
-
-    let stats = compressor.decompress(&args.output, opts).await?;
+    let stats = image_delta_core::operations::decompress(
+        image_format,
+        Arc::clone(&storage),
+        router,
+        &args.output,
+        DecompressOptions {
+            image_id: args.image_id.clone(),
+            base_root,
+            workers: args.workers.unwrap_or(config.compressor.workers),
+        },
+    )
+    .await?;
 
     eprintln!(
         "Decompressed {} → {}\n  files={}, bytes={}, elapsed={:.2}s",

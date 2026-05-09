@@ -12,7 +12,6 @@ use common::{
     compare_dirs, compress_opts_workers, decompress_opts_workers, make_compressor,
     save_root_meta_for_storage, verify_manifest_records, CategoryMetrics, ManifestCheckResult,
 };
-use image_delta_core::Compressor;
 use image_delta_core::{Manifest, PartitionContent};
 use image_delta_synthetic_fs::mutator::{MutationConfig, MutationLog};
 use image_delta_synthetic_fs::{FsMutator, FsTreeBuilder};
@@ -105,7 +104,7 @@ async fn build_chain(
     chain: usize,
     cfg: StressConfig,
     workers: usize,
-    compressor: &image_delta_core::DefaultCompressor,
+    compressor: &common::TestOps,
 ) -> ChainState {
     // Unique seed per (iter, chain), derived from the master seed.
     let seed = cfg.base_seed

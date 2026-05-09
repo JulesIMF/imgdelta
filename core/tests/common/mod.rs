@@ -327,28 +327,68 @@ pub fn set_mode(root: &Path, rel_path: &str, mode: u32) {
     std::fs::set_permissions(&full, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
-/// Build a [`FakeStorage`] + [`PassthroughEncoder`] + [`DefaultCompressor`] triple.
+/// Thin test helper that bundles image_format + storage + router so that
+/// test call sites can write `compressor.compress(...)` / `compressor.decompress(...)`
+/// after migrating from the removed `DefaultCompressor` struct.
+pub struct TestOps {
+    image_format: std::sync::Arc<dyn image_delta_core::Image>,
+    storage: std::sync::Arc<FakeStorage>,
+    router: std::sync::Arc<image_delta_core::RouterEncoder>,
+}
+
+impl TestOps {
+    pub async fn compress(
+        &self,
+        source: &std::path::Path,
+        target: &std::path::Path,
+        opts: image_delta_core::CompressOptions,
+    ) -> image_delta_core::Result<image_delta_core::CompressionStats> {
+        image_delta_core::operations::compress(
+            std::sync::Arc::clone(&self.image_format),
+            std::sync::Arc::clone(&self.storage) as _,
+            std::sync::Arc::clone(&self.router),
+            source,
+            target,
+            opts,
+        )
+        .await
+    }
+
+    pub async fn decompress(
+        &self,
+        output: &std::path::Path,
+        opts: image_delta_core::DecompressOptions,
+    ) -> image_delta_core::Result<image_delta_core::DecompressionStats> {
+        image_delta_core::operations::decompress(
+            std::sync::Arc::clone(&self.image_format),
+            std::sync::Arc::clone(&self.storage) as _,
+            std::sync::Arc::clone(&self.router),
+            output,
+            opts,
+        )
+        .await
+    }
+}
+
+/// Build a [`FakeStorage`] + [`TestOps`] pair for round-trip integration tests.
 ///
 /// Uses `PassthroughEncoder` as the router fallback so that both regular files
 /// and symlink/hardlink patches (which always use `Passthrough`) can be decoded
 /// during decompress.  Tests that need a particular encoder can build their own
 /// compressor.
-pub fn make_compressor() -> (
-    std::sync::Arc<FakeStorage>,
-    std::sync::Arc<image_delta_core::DefaultCompressor>,
-) {
+pub fn make_compressor() -> (std::sync::Arc<FakeStorage>, TestOps) {
     use image_delta_core::encoding::PassthroughEncoder;
-    use image_delta_core::DefaultCompressor;
     use std::sync::Arc;
 
     let storage = Arc::new(FakeStorage::new());
     let encoder = Arc::new(PassthroughEncoder::new());
-    let compressor = Arc::new(DefaultCompressor::with_encoder(
-        Arc::new(image_delta_core::DirectoryImage::new()),
-        Arc::clone(&storage) as _,
-        Arc::clone(&encoder) as _,
-    ));
-    (storage, compressor)
+    let router = Arc::new(image_delta_core::RouterEncoder::new(vec![], encoder as _));
+    let ops = TestOps {
+        image_format: Arc::new(image_delta_core::DirectoryImage::new()),
+        storage: Arc::clone(&storage),
+        router,
+    };
+    (storage, ops)
 }
 
 /// Default [`CompressOptions`] for tests.

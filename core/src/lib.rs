@@ -26,12 +26,12 @@
 mod error;
 
 pub mod compress;
-pub mod compressor;
 pub mod decompress;
 pub mod encoding;
 pub mod fs_diff;
 pub mod image;
 pub mod manifest;
+pub mod operations;
 pub mod partitions;
 pub mod path_match;
 pub mod storage;
@@ -40,10 +40,6 @@ pub mod storage;
 
 pub use error::{Error, Result};
 
-pub use compressor::{
-    CompressOptions, CompressionStats, Compressor, DecompressOptions, DecompressionStats,
-    DefaultCompressor, DeleteOptions, DeleteStats,
-};
 pub use encoding::router::{
     ElfRule, FileInfo, GlobRule, MagicRule, RouterEncoder, RoutingRule, SizeRule,
 };
@@ -54,6 +50,10 @@ pub use image::{Image, OpenImage};
 pub use manifest::{
     BlobRef, Data, DataRef, EntryType, Manifest, ManifestHeader, Metadata, PartitionContent,
     PartitionManifest, Patch, PatchRef, Record, MANIFEST_VERSION,
+};
+pub use operations::{
+    CompressOptions, CompressionStats, DecompressOptions, DecompressionStats, DeleteOptions,
+    DeleteStats,
 };
 pub use partitions::{
     BiosBootHandle, FsHandle, MbrHandle, MountHandle, PartitionHandle, RawHandle, SimpleMountHandle,

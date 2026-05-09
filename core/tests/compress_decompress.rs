@@ -12,7 +12,7 @@ use common::{
     make_compressor, save_root_meta_for_storage, set_mode, set_mtime_old, write_file,
     write_symlink,
 };
-use image_delta_core::{Compressor, ImageMeta, Storage};
+use image_delta_core::{ImageMeta, Storage};
 use tempfile::tempdir;
 
 // ── Helper: save root image meta so chain-check passes ────────────────────────

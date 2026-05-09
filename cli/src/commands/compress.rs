@@ -8,7 +8,7 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use image_delta_core::{Compressor, DefaultCompressor, DirectoryImage, Qcow2Image};
+use image_delta_core::{DirectoryImage, Qcow2Image};
 
 use crate::config::{CompressorConfig, Config, EncoderKind, StorageConfig};
 
@@ -66,22 +66,24 @@ pub async fn run(args: CompressArgs, config_path: Option<&Path>) -> anyhow::Resu
         _ => Arc::new(DirectoryImage::new()),
     };
 
-    let compressor = DefaultCompressor::new(image_format, Arc::clone(&storage), router);
-
-    // When no base is provided, use an empty temp directory as source so the
-    // compressor stores all files as "added" blobs (first-image bootstrap).
-    let base_root: &Path = &args.base_image;
-
-    let opts = image_delta_core::CompressOptions {
-        image_id: args.image_id.clone(),
-        base_image_id: Some(args.base_image_id.clone()),
-        workers: args.workers.unwrap_or(config.compressor.workers),
-        passthrough_threshold: config.compressor.passthrough_threshold,
-        overwrite: args.overwrite,
-        debug_dir: args.debug_dir.clone(),
-    };
-
-    let stats = compressor.compress(base_root, &args.image, opts).await?;
+    let stats = image_delta_core::operations::compress(
+        image_format,
+        Arc::clone(&storage),
+        router,
+        // When no base is provided, use the base_image path as-is; the function
+        // will treat a missing/empty directory as "no base".
+        &args.base_image,
+        &args.image,
+        image_delta_core::CompressOptions {
+            image_id: args.image_id.clone(),
+            base_image_id: Some(args.base_image_id.clone()),
+            workers: args.workers.unwrap_or(config.compressor.workers),
+            passthrough_threshold: config.compressor.passthrough_threshold,
+            overwrite: args.overwrite,
+            debug_dir: args.debug_dir.clone(),
+        },
+    )
+    .await?;
 
     let base_label = &args.base_image_id;
     eprintln!(

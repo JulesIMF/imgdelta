@@ -19,7 +19,7 @@ use common::FakeStorage;
 use filetime::FileTime;
 use image_delta_core::encoding::Xdelta3Encoder;
 use image_delta_core::manifest::{Data, Manifest, PartitionContent, Patch};
-use image_delta_core::{CompressOptions, Compressor, DefaultCompressor, DirectoryImage, Storage};
+use image_delta_core::{CompressOptions, DirectoryImage, Storage};
 use tempfile::TempDir;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -39,12 +39,39 @@ fn copy_mtime(src: &std::path::Path, dst: &std::path::Path) {
     filetime::set_file_mtime(dst, FileTime::from_system_time(mtime)).unwrap();
 }
 
-fn make_compressor(storage: &FakeStorage) -> impl Compressor {
-    DefaultCompressor::with_encoder(
-        Arc::new(DirectoryImage::new()),
-        Arc::new(storage.clone()),
-        Arc::new(Xdelta3Encoder::new()),
-    )
+/// Thin helper so test call sites stay as `compressor.compress(...)`.
+struct TestOps {
+    storage: Arc<FakeStorage>,
+    router: Arc<image_delta_core::RouterEncoder>,
+}
+
+impl TestOps {
+    async fn compress(
+        &self,
+        source: &std::path::Path,
+        target: &std::path::Path,
+        opts: CompressOptions,
+    ) -> image_delta_core::Result<image_delta_core::CompressionStats> {
+        image_delta_core::operations::compress(
+            Arc::new(DirectoryImage::new()),
+            Arc::clone(&self.storage) as _,
+            Arc::clone(&self.router),
+            source,
+            target,
+            opts,
+        )
+        .await
+    }
+}
+
+fn make_compressor(storage: &FakeStorage) -> TestOps {
+    TestOps {
+        storage: Arc::new(storage.clone()),
+        router: Arc::new(image_delta_core::RouterEncoder::new(
+            vec![],
+            Arc::new(Xdelta3Encoder::new()),
+        )),
+    }
 }
 
 fn base_options(image_id: &str, base_image_id: Option<&str>) -> CompressOptions {

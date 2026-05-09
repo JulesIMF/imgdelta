@@ -6,10 +6,9 @@
 
 use clap::{Args, Subcommand};
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::commands::compress::load_config;
-use image_delta_core::{Compressor, DefaultCompressor, DeleteOptions, DirectoryImage};
+use image_delta_core::DeleteOptions;
 
 #[derive(Subcommand, Debug)]
 pub enum ImageCommands {
@@ -126,16 +125,14 @@ pub async fn run(cmd: ImageCommands, config_path: Option<&Path>) -> anyhow::Resu
                 }
             }
 
-            let router = config.compressor.build_router()?;
-            let image_format = Arc::new(DirectoryImage::new());
-            let compressor = DefaultCompressor::new(image_format, storage, router);
-
-            let stats = compressor
-                .delete_image(DeleteOptions {
+            let stats = image_delta_core::operations::delete_image(
+                storage,
+                DeleteOptions {
                     image_id: args.image_id.clone(),
                     dry_run: args.dry_run,
-                })
-                .await?;
+                },
+            )
+            .await?;
 
             if args.dry_run {
                 println!(

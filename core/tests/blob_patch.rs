@@ -9,7 +9,7 @@ mod common;
 use common::{compress_opts, decompress_opts, make_compressor, set_mtime_old, write_file};
 use image_delta_core::{
     manifest::{Manifest, PartitionContent, Record},
-    Compressor, ImageMeta, Storage,
+    ImageMeta, Storage,
 };
 use tempfile::tempdir;
 use uuid::Uuid;
