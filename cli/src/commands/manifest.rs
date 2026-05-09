@@ -111,6 +111,7 @@ async fn inspect(args: InspectArgs, config_path: Option<&Path>) -> anyhow::Resul
                 fs_type,
                 fs_uuid,
                 records,
+                ..
             } => {
                 let n_added = records
                     .iter()

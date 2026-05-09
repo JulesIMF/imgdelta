@@ -1161,6 +1161,15 @@ fn probe_xfs_params(device: &str) -> Option<std::collections::HashMap<String, St
                     "inobtcount" => {
                         p.insert("inobtcount".into(), v.into());
                     }
+                    "nrext64" => {
+                        p.insert("nrext64".into(), v.into());
+                    }
+                    "exchange" => {
+                        p.insert("exchange".into(), v.into());
+                    }
+                    "metadir" => {
+                        p.insert("metadir".into(), v.into());
+                    }
                     "ftype" => {
                         p.insert("ftype".into(), v.into());
                     }
@@ -1764,6 +1773,7 @@ fn mkfs_partition(
                     "reflink",
                     "bigtime",
                     "inobtcount",
+                    "metadir",
                 ] {
                     if let Some(val) = params.get(*key) {
                         m_opts.push(format!("{key}={val}"));
@@ -1779,6 +1789,15 @@ fn mkfs_partition(
                 if let Some(sparse) = params.get("sparse") {
                     // sparse is an inode suboption in mkfs.xfs >= 5.x
                     i_opts.push(format!("sparse={sparse}"));
+                }
+                // nrext64 and exchange are -i suboptions; must be set
+                // explicitly so newer mkfs.xfs does not enable them by
+                // default when the source image was built without them.
+                if let Some(v) = params.get("nrext64") {
+                    i_opts.push(format!("nrext64={v}"));
+                }
+                if let Some(v) = params.get("exchange") {
+                    i_opts.push(format!("exchange={v}"));
                 }
                 if !i_opts.is_empty() {
                     cmd.args(["-i", &i_opts.join(",")]);
