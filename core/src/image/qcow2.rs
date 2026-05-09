@@ -345,7 +345,11 @@ fn mount_block_device(candidates: &[String], mount_point: &Path) -> Result<()> {
             // Both ext4 and XFS need `norecovery` when mounted read-only with a
             // dirty journal: without it the kernel tries to replay the journal but
             // cannot write, returning EROFS ("Read-only file system").
-            let data: Option<&str> = if *fstype == "ext4" || *fstype == "xfs" {
+            // XFS also needs `nouuid` to allow mounting multiple XFS filesystems
+            // with the same UUID (base and target partitions share UUID).
+            let data: Option<&str> = if *fstype == "xfs" {
+                Some("norecovery,nouuid")
+            } else if *fstype == "ext4" {
                 Some("norecovery")
             } else {
                 None
@@ -1004,7 +1008,11 @@ fn mount_partition_ro(
     // ext4 and XFS need `norecovery` when mounted read-only with a dirty
     // journal; without it the kernel tries to replay the journal but cannot
     // write, returning EROFS ("Read-only file system").
-    let extra: Option<&str> = if fs_type == "xfs" || fs_type == "ext4" {
+    // XFS also needs `nouuid` to allow mounting multiple XFS filesystems with
+    // the same UUID simultaneously (base and target partitions share UUID).
+    let extra: Option<&str> = if fs_type == "xfs" {
+        Some("norecovery,nouuid")
+    } else if fs_type == "ext4" {
         Some("norecovery")
     } else {
         None
