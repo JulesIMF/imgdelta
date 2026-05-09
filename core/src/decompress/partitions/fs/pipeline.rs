@@ -11,26 +11,38 @@ use tracing::info;
 use super::context::DecompressContext;
 use super::draft::DecompressDraft;
 use super::stage::DecompressStage;
-use super::stages::{ApplyRecords, CopyUnchanged};
+use super::stages::{
+    AddRecords, ChangeRecords, CopyUnchanged, DeleteRecords, DownloadBlobs, RenameRecords,
+};
 use crate::Result;
 
-/// Runs stages 1–2 of the decompress pipeline in order.
+/// Runs all decompress pipeline stages in order.
 ///
-/// Order: CopyUnchanged → ApplyRecords.
+/// Order:
+///   `CopyUnchanged`
+///   → `DownloadBlobs`
+///   → `DeleteRecords`  (m^R)
+///   → `RenameRecords`  (m^N)
+///   → `ChangeRecords`  (m^C)
+///   → `AddRecords`     (m^A)
 ///
-/// Patch extraction from the archive is performed once before the partition loop
-/// (in the orchestrator) and the resulting [`patch_map`] is passed in via context.
-///
-/// [`patch_map`]: super::context::DecompressContext::patch_map
+/// Mirrors `decompress(a, m) = (((a \ a^R) \ a^N ∪ c^N) \ a^C ∪ c^C) ∪ c^A`.
 pub struct DecompressPipeline {
     stages: Vec<Box<dyn DecompressStage>>,
 }
 
 impl DecompressPipeline {
-    /// Construct the default 2-stage pipeline.
+    /// Construct the default pipeline matching the formal decompress model.
     pub fn default_fs() -> Self {
         Self {
-            stages: vec![Box::new(CopyUnchanged), Box::new(ApplyRecords)],
+            stages: vec![
+                Box::new(CopyUnchanged),
+                Box::new(DownloadBlobs),
+                Box::new(DeleteRecords),
+                Box::new(RenameRecords),
+                Box::new(ChangeRecords),
+                Box::new(AddRecords),
+            ],
         }
     }
 

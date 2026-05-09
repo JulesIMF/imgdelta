@@ -33,7 +33,7 @@ fn lchown_path(path: &Path, uid: u32, gid: u32) {
 
 // ── Stage struct ──────────────────────────────────────────────────────────────
 
-/// Stage 2: Copy all base-tree entries whose relative path is NOT listed as
+/// Copy all base-tree entries whose relative path is NOT listed as
 /// `old_path` in the manifest records into `output_root`.
 pub struct CopyUnchanged;
 

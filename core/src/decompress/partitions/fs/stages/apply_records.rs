@@ -2,15 +2,14 @@
 // Copyright (c) 2026 JulesIMF
 //
 // image-delta — incremental disk-image compression toolkit
-// Decompress stage 3: apply manifest records to output directory
+// Shared utilities for the 4 record-applying decompress stages.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use tokio::task::JoinSet;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -18,54 +17,11 @@ use crate::encoding::FilePatch;
 use crate::encoding::PatchEncoder;
 use crate::encoding::RouterEncoder;
 use crate::manifest::{Data, EntryType, Patch, Record};
-use crate::storage::Storage;
 use crate::{Error, Result};
 
-use crate::decompress::partitions::fs::context::DecompressContext;
-use crate::decompress::partitions::fs::draft::DecompressDraft;
-use crate::decompress::partitions::fs::stage::DecompressStage;
 use crate::decompress::PartitionDecompressStats;
 
-// ── Stage struct ──────────────────────────────────────────────────────────────
-
-/// Stage 3: Download blobs and apply all manifest records to the output tree.
-pub struct ApplyRecords;
-
-#[async_trait::async_trait]
-impl DecompressStage for ApplyRecords {
-    fn name(&self) -> &'static str {
-        "apply_records"
-    }
-
-    async fn run(
-        &self,
-        ctx: &DecompressContext,
-        mut draft: DecompressDraft,
-    ) -> Result<DecompressDraft> {
-        let record_stats = apply_records_fn(
-            &ctx.records,
-            &ctx.base_root,
-            &ctx.output_root,
-            &ctx.patch_map,
-            Arc::clone(&ctx.storage),
-            &ctx.router,
-            ctx.workers,
-        )
-        .await?;
-        draft.stats.files_written += record_stats.files_written;
-        draft.stats.patches_verified += record_stats.patches_verified;
-        draft.stats.bytes_written += record_stats.bytes_written;
-        Ok(draft)
-    }
-}
-
-#[cfg(unix)]
-use libc;
-
-#[cfg(unix)]
-fn linux_makedev(major: u32, minor: u32) -> u64 {
-    libc::makedev(major, minor)
-}
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn write_file(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -79,61 +35,53 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
     std::fs::read(path).map_err(|e| Error::Other(format!("read {}: {e}", path.display())))
 }
 
+#[cfg(unix)]
+use libc;
+
+#[cfg(unix)]
+fn linux_makedev(major: u32, minor: u32) -> u64 {
+    libc::makedev(major, minor)
+}
+
+// ── run_phase ─────────────────────────────────────────────────────────────────
+
+/// Apply a slice of manifest records to the output tree in the canonical order:
+///
+/// 1. **Directories** — sequential, preserving parent-before-child ordering.
+/// 2. **Files, symlinks, special devices** — parallel (`workers` threads).
+/// 3. **Hardlinks** — sequential, after their targets have been written.
 #[allow(clippy::too_many_arguments)]
-pub async fn apply_records_fn(
-    records: &[Record],
+pub fn run_phase(
+    records: &[&Record],
     base_root: &Path,
     output_root: &Path,
     patch_map: &HashMap<String, Vec<u8>>,
-    storage: Arc<dyn Storage>,
+    blob_cache: &HashMap<Uuid, Vec<u8>>,
     router: &RouterEncoder,
     workers: usize,
-) -> Result<PartitionDecompressStats> {
-    // Pre-download all blobs referenced as verbatim content.
-    let blob_ids: HashSet<Uuid> = records
-        .iter()
-        .filter(|r| matches!(r.entry_type, EntryType::File))
-        .filter_map(|r| {
-            if let Some(Data::BlobRef(bref)) = &r.data {
-                Some(bref.blob_id)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let mut join_set: JoinSet<Result<(Uuid, Vec<u8>)>> = JoinSet::new();
-    for id in blob_ids {
-        let s = Arc::clone(&storage);
-        join_set.spawn(async move {
-            let data = s.download_blob(id).await?;
-            Ok((id, data))
-        });
+    stats: &mut PartitionDecompressStats,
+) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
     }
-    let mut blob_cache: HashMap<Uuid, Vec<u8>> = HashMap::new();
-    while let Some(task_result) = join_set.join_next().await {
-        let (id, data) = task_result
-            .map_err(|e| Error::Other(format!("blob download task panicked: {e}")))??;
-        blob_cache.insert(id, data);
-    }
-    let blob_cache = Arc::new(blob_cache);
 
     let dir_records: Vec<&Record> = records
         .iter()
+        .copied()
         .filter(|r| matches!(r.entry_type, EntryType::Directory))
         .collect();
     let main_records: Vec<&Record> = records
         .iter()
+        .copied()
         .filter(|r| !matches!(r.entry_type, EntryType::Directory | EntryType::Hardlink))
         .collect();
     let hardlink_records: Vec<&Record> = records
         .iter()
+        .copied()
         .filter(|r| matches!(r.entry_type, EntryType::Hardlink))
         .collect();
 
-    let mut stats = PartitionDecompressStats::default();
-
-    // Phase 4a: Directories.
+    // Directories first: sequential so parents exist before children.
     for record in &dir_records {
         let mut local = PartitionDecompressStats::default();
         apply_record_sync(
@@ -141,7 +89,7 @@ pub async fn apply_records_fn(
             base_root,
             output_root,
             patch_map,
-            &blob_cache,
+            blob_cache,
             router,
             &mut local,
         )?;
@@ -150,40 +98,42 @@ pub async fn apply_records_fn(
         stats.patches_verified += local.patches_verified;
     }
 
-    // Phase 4b: Files, symlinks, specials — parallel.
-    let phase2_stats = Mutex::new(PartitionDecompressStats::default());
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(workers)
-        .build()
-        .map_err(|e| Error::Other(format!("failed to build rayon pool: {e}")))?;
-    let phase2_result: Result<()> = pool.install(|| {
-        main_records.par_iter().try_for_each(|record| {
-            let mut local = PartitionDecompressStats::default();
-            apply_record_sync(
-                record,
-                base_root,
-                output_root,
-                patch_map,
-                &blob_cache,
-                router,
-                &mut local,
-            )?;
-            let mut g = phase2_stats.lock().expect("phase2 stats mutex poisoned");
-            g.files_written += local.files_written;
-            g.bytes_written += local.bytes_written;
-            g.patches_verified += local.patches_verified;
-            Ok(())
-        })
-    });
-    phase2_result?;
-    let p2 = phase2_stats
-        .into_inner()
-        .expect("phase2 stats mutex poisoned");
-    stats.files_written += p2.files_written;
-    stats.bytes_written += p2.bytes_written;
-    stats.patches_verified += p2.patches_verified;
+    // Files, symlinks, specials: parallel.
+    if !main_records.is_empty() {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .map_err(|e| Error::Other(format!("failed to build rayon pool: {e}")))?;
+        let phase_stats = Mutex::new(PartitionDecompressStats::default());
+        let result: Result<()> = pool.install(|| {
+            main_records.par_iter().try_for_each(|record| {
+                let mut local = PartitionDecompressStats::default();
+                apply_record_sync(
+                    record,
+                    base_root,
+                    output_root,
+                    patch_map,
+                    blob_cache,
+                    router,
+                    &mut local,
+                )?;
+                let mut g = phase_stats.lock().expect("phase stats mutex poisoned");
+                g.files_written += local.files_written;
+                g.bytes_written += local.bytes_written;
+                g.patches_verified += local.patches_verified;
+                Ok(())
+            })
+        });
+        result?;
+        let p = phase_stats
+            .into_inner()
+            .expect("phase stats mutex poisoned");
+        stats.files_written += p.files_written;
+        stats.bytes_written += p.bytes_written;
+        stats.patches_verified += p.patches_verified;
+    }
 
-    // Phase 4c: Hardlinks.
+    // Hardlinks last: their link targets must already be written.
     for record in &hardlink_records {
         let mut local = PartitionDecompressStats::default();
         apply_record_sync(
@@ -191,15 +141,17 @@ pub async fn apply_records_fn(
             base_root,
             output_root,
             patch_map,
-            &blob_cache,
+            blob_cache,
             router,
             &mut local,
         )?;
         stats.files_written += local.files_written;
     }
 
-    Ok(stats)
+    Ok(())
 }
+
+// ── apply_record_sync ─────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
 fn apply_record_sync(
@@ -381,8 +333,6 @@ fn apply_record_sync(
     }
 
     // ── Restore metadata ──────────────────────────────────────────────────────
-    // Phase A: inherit base metadata for fields not overridden by the manifest.
-    // Phase B: apply explicit manifest overrides (including uid/gid).
     #[cfg(unix)]
     {
         use std::ffi::CString;
@@ -395,7 +345,6 @@ fn apply_record_sync(
             .as_ref()
             .and_then(|old| base_root.join(old).symlink_metadata().ok());
 
-        // 1. chown FIRST — lchown(2) clears suid/sgid bits, so chmod must come after.
         if manifest_meta.is_none_or(|m| m.uid.is_none() && m.gid.is_none()) {
             if let Some(ref bm) = base_meta_opt {
                 if let Ok(c) = CString::new(dst.as_os_str().as_bytes()) {
@@ -406,7 +355,6 @@ fn apply_record_sync(
             }
         }
 
-        // 2. chmod AFTER chown (so suid/sgid bits survive).
         if !matches!(record.entry_type, EntryType::Symlink) {
             if manifest_meta.is_none_or(|m| m.mode.is_none()) {
                 if let Some(ref bm) = base_meta_opt {
@@ -414,7 +362,6 @@ fn apply_record_sync(
                     let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode));
                 }
             }
-            // 3. mtime last
             if manifest_meta.is_none_or(|m| m.mtime.is_none()) {
                 if let Some(ref bm) = base_meta_opt {
                     let ft = filetime::FileTime::from_unix_time(bm.mtime(), 0);
@@ -424,7 +371,6 @@ fn apply_record_sync(
         }
     }
 
-    // Phase B: apply explicit manifest overrides (mode, uid, gid, mtime).
     apply_metadata(&dst, record.metadata.as_ref());
 
     Ok(())
@@ -436,8 +382,6 @@ fn apply_metadata(path: &Path, meta: Option<&crate::manifest::Metadata>) {
         None => return,
     };
 
-    // Detect symlinks once so we can skip operations that follow symlinks and
-    // would silently corrupt the link target instead of the link itself.
     #[cfg(unix)]
     let is_symlink = path
         .symlink_metadata()
@@ -446,8 +390,6 @@ fn apply_metadata(path: &Path, meta: Option<&crate::manifest::Metadata>) {
     #[cfg(not(unix))]
     let is_symlink = false;
 
-    // 1. chown FIRST: lchown(2) clears suid/sgid bits, so chmod must follow.
-    //    lchown is safe: it always operates on the symlink itself, not its target.
     #[cfg(unix)]
     if meta.uid.is_some() || meta.gid.is_some() {
         use std::ffi::CString;
@@ -464,19 +406,12 @@ fn apply_metadata(path: &Path, meta: Option<&crate::manifest::Metadata>) {
             unsafe { libc::lchown(c.as_ptr(), uid, gid) };
         }
     }
-    // 2. chmod AFTER chown so suid/sgid bits survive.
-    //    SKIP for symlinks: chmod(2) follows symlinks and would corrupt the
-    //    target file's mode instead of setting the symlink's own permissions
-    //    (Linux symlinks always have 0o777 anyway and can't be chmod-ed).
     if !is_symlink {
         if let Some(mode) = meta.mode {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
         }
     }
-    // 3. mtime LAST.
-    //    filetime::set_file_mtime also follows symlinks — skip for symlinks to
-    //    avoid touching the target's mtime.
     if !is_symlink {
         if let Some(mtime) = meta.mtime {
             let _ = filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(mtime, 0));
