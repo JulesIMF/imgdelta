@@ -155,7 +155,8 @@ impl PatchEncoder for RouterEncoder {
 ///
 /// ```
 /// use std::sync::Arc;
-/// use image_delta_core::{GlobRule, PassthroughEncoder};
+/// use image_delta_core::encoding::router::{GlobRule};
+/// use image_delta_core::encoding::PassthroughEncoder;
 ///
 /// let rule = GlobRule::new("**/*.gz", Arc::new(PassthroughEncoder::new())).unwrap();
 /// ```

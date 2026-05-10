@@ -57,7 +57,7 @@ impl PatchAlgorithm for PassthroughAlgorithm {
 /// # Examples
 ///
 /// ```
-/// use image_delta_core::{FileSnapshot, PatchEncoder, PassthroughEncoder};
+/// use image_delta_core::encoding::{FileSnapshot, PatchEncoder, PassthroughEncoder};
 ///
 /// let enc = PassthroughEncoder::new();
 /// let src = b"old content";

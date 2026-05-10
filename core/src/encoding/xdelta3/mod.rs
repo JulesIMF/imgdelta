@@ -120,7 +120,7 @@ impl PatchAlgorithm for Xdelta3Algorithm {
 /// # Example
 ///
 /// ```
-/// use image_delta_core::{FileSnapshot, PatchEncoder, Xdelta3Encoder};
+/// use image_delta_core::encoding::{FileSnapshot, PatchEncoder, Xdelta3Encoder};
 ///
 /// let encoder = Xdelta3Encoder::new();
 /// let source = b"hello world";
