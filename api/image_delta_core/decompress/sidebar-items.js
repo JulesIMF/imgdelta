@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["decompress_fs_partition"],"mod":["context","draft","pipeline","stage","stages"],"struct":["PartitionDecompressStats"]};
+window.SIDEBAR_ITEMS = {"mod":["context","partitions"],"struct":["PartitionDecompressStats"]};

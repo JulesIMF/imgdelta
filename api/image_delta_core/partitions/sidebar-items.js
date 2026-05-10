@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["DiskScheme","PartitionHandle","PartitionKind"],"mod":["bios_boot","fs","mbr","raw"],"struct":["DiskLayout","PartitionDescriptor"]};

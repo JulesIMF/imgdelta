@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["DiskScheme","PartitionKind"],"struct":["DiskLayout","PartitionDescriptor"]};

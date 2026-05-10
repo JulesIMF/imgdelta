@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Error"],"mod":["algorithm","compress","compressor","decompress","encoder","encoders","formats","fs_diff","image","manifest","partition","path_match","routing","storage"],"type":["Result"]};
+window.SIDEBAR_ITEMS = {"enum":["Error"],"mod":["compress","decompress","encoding","fs_diff","image","manifest","operations","partitions","path_match","storage"],"type":["Result"]};

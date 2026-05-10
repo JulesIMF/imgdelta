@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["add_records","apply_records","change_records","copy_unchanged","delete_records","download_blobs","extract_archive","rename_records"]};

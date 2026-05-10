@@ -266,7 +266,7 @@ compress run that produced this blob (i.e. <code>options.base_image_id</code>).
 It is <code>None</code> for root (no-base) compress runs.</p>
 <p><code>partition_number</code> is the 1-based partition number in the source image.
 <code>None</code> for single-partition (<code>DirectoryImage</code>) images.</p>
-<p>Called by <a href="../compressor/struct.DefaultCompressor.html" title="struct image_delta_core::compressor::DefaultCompressor"><code>DefaultCompressor</code></a> after each <code>upload_blob</code> so that future
+<p>Called by <a href="crate::DefaultCompressor"><code>DefaultCompressor</code></a> after each <code>upload_blob</code> so that future
 compress operations can use this blob as a delta base via
 <a href="trait.Storage.html#tymethod.find_blob_candidates" title="method image_delta_core::storage::Storage::find_blob_candidates"><code>find_blob_candidates</code></a>.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="tymethod.delete_manifest" class="method"><a class="src rightside" href="../../src/image_delta_core/storage.rs.html#164">Source</a><h4 class="code-header">fn <a href="#tymethod.delete_manifest" class="fn">delete_manifest</a>&lt;'life0, 'life1, 'async_trait&gt;(

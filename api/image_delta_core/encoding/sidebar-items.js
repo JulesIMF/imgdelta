@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AlgorithmCode"],"mod":["encoders","passthrough","router","text_diff","xdelta3"],"struct":["FilePatch","FileSnapshot"],"trait":["PatchEncoder"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["extract_archive_fn"],"struct":["ExtractArchive"]};

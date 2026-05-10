@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["apply_file_record_sync","apply_metadata","apply_record_sync","apply_records_fn"],"struct":["ApplyRecords"]};

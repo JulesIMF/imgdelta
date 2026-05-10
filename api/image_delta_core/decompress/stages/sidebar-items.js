@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["apply_records","copy_unchanged","extract_archive"]};

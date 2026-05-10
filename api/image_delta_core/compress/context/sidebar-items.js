@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["StageContext"]};
+window.SIDEBAR_ITEMS = {"struct":["CompressContext"]};

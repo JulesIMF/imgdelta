@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["passthrough","text_diff","vcdiff"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"struct":["BiosBootCompressor","FsPartitionCompressor","RawPartitionCompressor"],"trait":["PartitionCompressor"]};

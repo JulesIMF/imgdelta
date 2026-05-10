@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["PartitionHandle"],"struct":["BiosBootHandle","FsHandle","OpenDirectory","RawHandle","SimpleMountHandle"],"trait":["Image","MountHandle","OpenImage"]};
+window.SIDEBAR_ITEMS = {"mod":["directory"],"trait":["Image","OpenImage"]};

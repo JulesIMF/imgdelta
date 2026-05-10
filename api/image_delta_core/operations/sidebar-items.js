@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["compress","decompress","delete"],"struct":["CompressOptions","CompressionStats","DecompressOptions","DecompressionStats","DeleteOptions","DeleteStats"]};

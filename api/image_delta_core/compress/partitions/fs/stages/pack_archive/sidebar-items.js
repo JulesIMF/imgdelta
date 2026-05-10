@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["collect_fs_content","pack_and_upload_archive_fn","pack_and_upload_patches"],"struct":["PackAndUploadArchive"]};
