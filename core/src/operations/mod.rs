@@ -16,15 +16,66 @@ pub use delete::delete_image;
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default)]
+/// Per-stage timing breakdown for one `compress()` call.
+///
+/// All fields are wall-clock milliseconds.  Multiple Fs partitions are
+/// accumulated (summed) into a single `StageTimings` value.
+/// Non-Fs partitions (MBR, BIOS boot, raw) do not contribute to stage
+/// timings because they do not run the 8-stage pipeline.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct StageTimings {
+    pub walkdir_ms: u64,
+    pub blob_lookup_ms: u64,
+    pub match_renamed_ms: u64,
+    pub cleanup_ms: u64,
+    pub upload_blobs_ms: u64,
+    pub download_blobs_ms: u64,
+    pub compute_patches_ms: u64,
+    pub pack_archive_ms: u64,
+}
+
+impl std::ops::AddAssign for StageTimings {
+    fn add_assign(&mut self, rhs: Self) {
+        self.walkdir_ms += rhs.walkdir_ms;
+        self.blob_lookup_ms += rhs.blob_lookup_ms;
+        self.match_renamed_ms += rhs.match_renamed_ms;
+        self.cleanup_ms += rhs.cleanup_ms;
+        self.upload_blobs_ms += rhs.upload_blobs_ms;
+        self.download_blobs_ms += rhs.download_blobs_ms;
+        self.compute_patches_ms += rhs.compute_patches_ms;
+        self.pack_archive_ms += rhs.pack_archive_ms;
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CompressionStats {
+    // ── Legacy per-file counters (files only, directories excluded) ───────────
     pub files_patched: usize,
     pub files_added: usize,
     pub files_removed: usize,
     pub files_renamed: usize,
+    // ── Per-entity counters (files + dirs + symlinks + specials) ─────────────
+    /// Entities present in target but not in base (new_path set, old_path None).
+    pub entities_added: usize,
+    /// Entities deleted from base (old_path set, new_path None).
+    pub entities_removed: usize,
+    /// Entities renamed: old_path ≠ new_path (may also carry a content patch).
+    pub entities_renamed: usize,
+    /// Entities changed in-place: same path but content or metadata differs.
+    pub entities_changed: usize,
+    // ── Tree totals ───────────────────────────────────────────────────────────
+    /// Total number of entries (files + dirs + symlinks + specials) in the base
+    /// image across all Fs partitions.
+    pub entities_in_base: u64,
+    /// Total number of entries in the target image across all Fs partitions.
+    pub entities_in_target: u64,
+    // ── Byte stats ────────────────────────────────────────────────────────────
     pub total_source_bytes: u64,
     pub total_stored_bytes: u64,
     pub elapsed_secs: f64,
+    /// Per-stage timing breakdown.  `None` when the compress context did not
+    /// attach a timing sink (e.g. legacy test helpers).
+    pub stage_timings: Option<StageTimings>,
 }
 
 impl CompressionStats {
@@ -36,7 +87,7 @@ impl CompressionStats {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct DecompressionStats {
     pub total_files: usize,
     pub patches_verified: usize,

@@ -201,9 +201,18 @@ pub async fn upload_lazy_blobs_fn(
     }
 
     let mut uploaded = 0usize;
+    let mut blobs_stored_bytes = 0u64;
     while let Some(res) = upload_join.join_next().await {
         let (sha256, id) =
             res.map_err(|e| crate::Error::Other(format!("upload task panicked: {e}")))??;
+        // Count bytes for newly uploaded (non-deduped) blobs.
+        if let Some(group) = groups.get(&sha256) {
+            blobs_stored_bytes += group
+                .representative_path
+                .metadata()
+                .map(|m| m.len())
+                .unwrap_or(0);
+        }
         sha256_to_id.insert(sha256, id);
         uploaded += 1;
     }
@@ -234,7 +243,11 @@ pub async fn upload_lazy_blobs_fn(
     }
 
     let deduped = total - uploaded;
-    info!(total, uploaded, deduped, workers, "upload_blobs: done");
+    info!(
+        total,
+        uploaded, deduped, blobs_stored_bytes, workers, "upload_blobs: done"
+    );
+    draft.blobs_stored_bytes += blobs_stored_bytes;
     Ok(draft)
 }
 

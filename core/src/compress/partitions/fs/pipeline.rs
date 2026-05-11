@@ -58,26 +58,30 @@ impl CompressPipeline {
     ///
     /// If `debug_dir` is `Some`, calls [`CompressStage::dump_debug`] after each
     /// stage and writes a snapshot to `<debug_dir>/<NN>_<name>.json`.
+    /// Run all stages in order.  Returns `(draft, stage_ms)` where `stage_ms`
+    /// is wall-clock milliseconds for each stage in pipeline order (stages 2–7).
     pub async fn run(
         &self,
         ctx: &StageContext,
         initial: FsDraft,
         debug_dir: Option<&Path>,
-    ) -> Result<FsDraft> {
+    ) -> Result<(FsDraft, Vec<u64>)> {
         let mut draft = initial;
         let n = self.stages.len();
+        let mut stage_ms: Vec<u64> = Vec::with_capacity(n);
 
         for (i, stage) in self.stages.iter().enumerate() {
             let t0 = Instant::now();
             info!("[{}/{}] {}: starting", i + 1, n, stage.name());
             draft = stage.run(ctx, draft).await?;
-            let elapsed = t0.elapsed().as_secs_f64();
+            let elapsed_ms = t0.elapsed().as_millis() as u64;
+            stage_ms.push(elapsed_ms);
             info!(
                 "[{}/{}] {}: done in {:.2}s",
                 i + 1,
                 n,
                 stage.name(),
-                elapsed
+                elapsed_ms as f64 / 1000.0
             );
 
             if let Some(dir) = debug_dir {
@@ -86,6 +90,6 @@ impl CompressPipeline {
             }
         }
 
-        Ok(draft)
+        Ok((draft, stage_ms))
     }
 }

@@ -18,7 +18,7 @@ use crate::compress::partitions::{
     RawPartitionCompressor,
 };
 use crate::manifest::{
-    Data, Manifest, ManifestHeader, PartitionContent, PartitionManifest, Patch, MANIFEST_VERSION,
+    Manifest, ManifestHeader, PartitionContent, PartitionManifest, Patch, MANIFEST_VERSION,
 };
 use crate::partitions::PartitionHandle;
 use crate::storage::ImageStatus;
@@ -102,6 +102,15 @@ pub async fn compress(
             }
         }
 
+        // Timing sink shared across all Fs partitions.
+        let timing_sink: std::sync::Arc<std::sync::Mutex<crate::operations::StageTimings>> =
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::operations::StageTimings::default(),
+            ));
+
+        // Bytes uploaded to blob storage by BiosBoot / Raw / Mbr compressors.
+        let mut non_fs_blobs_stored_bytes: u64 = 0;
+
         // Shared directory for all FS partition patch files.
         let all_patches_dir = tempfile::TempDir::new()?;
 
@@ -128,6 +137,7 @@ pub async fn compress(
                 tmp_dir: Arc::from(tmp_dir.path()),
                 patches_dir: Arc::from(all_patches_dir.path()),
                 debug_dir: options.debug_dir.as_deref().map(Arc::from),
+                timing_sink: Some(Arc::clone(&timing_sink)),
             };
             _live_tmpdirs.push(tmp_dir);
 
@@ -138,13 +148,18 @@ pub async fn compress(
                 PartitionHandle::Mbr(_) => Box::new(MbrCompressor),
             };
 
-            let pm = compressor.compress(&ctx, target_ph).await?;
+            let (pm, part_blobs_stored) = compressor.compress(&ctx, target_ph).await?;
+            non_fs_blobs_stored_bytes += part_blobs_stored;
             partition_manifests.push(pm);
         }
 
         // ── 5. Pack and upload the combined patches archive ───────────────
+        let t_pack = std::time::Instant::now();
         let (archive_stored_bytes, patches_compressed) =
             pack_and_upload_patches(all_patches_dir.path(), storage.as_ref(), image_id).await?;
+        if let Ok(mut guard) = timing_sink.lock() {
+            guard.pack_archive_ms = t_pack.elapsed().as_millis() as u64;
+        }
 
         // ── 6. Build and upload the manifest ──────────────────────────────
         let created_at = std::time::SystemTime::now()
@@ -186,11 +201,18 @@ pub async fn compress(
         // ── 8. Compute stats from manifest ────────────────────────────────
         let elapsed = started_at.elapsed();
         let manifest_stored_bytes = manifest_bytes_gz.len() as u64;
-        let stats = stats_from_manifest(
+        // non_fs_blobs_stored_bytes: blobs from BiosBoot/Raw/Mbr partitions.
+        // Fs-partition blobs are tracked in PartitionContent::Fs.blobs_stored_bytes
+        // and summed inside stats_from_manifest — no double-counting.
+        let mut stats = stats_from_manifest(
             &manifest,
             elapsed,
-            archive_stored_bytes + manifest_stored_bytes,
+            archive_stored_bytes + manifest_stored_bytes + non_fs_blobs_stored_bytes,
         );
+        stats.stage_timings = timing_sink
+            .lock()
+            .ok()
+            .map(|g| g.clone() as crate::operations::StageTimings);
 
         info!(
             image_id,
@@ -198,6 +220,14 @@ pub async fn compress(
             patched = stats.files_patched,
             removed = stats.files_removed,
             renamed = stats.files_renamed,
+            entities_added = stats.entities_added,
+            entities_changed = stats.entities_changed,
+            entities_removed = stats.entities_removed,
+            entities_renamed = stats.entities_renamed,
+            entities_in_base = stats.entities_in_base,
+            entities_in_target = stats.entities_in_target,
+            blobs_stored_bytes =
+                stats.total_stored_bytes - archive_stored_bytes - manifest_stored_bytes,
             archive_stored_bytes,
             manifest_stored_bytes,
             total_stored_bytes = stats.total_stored_bytes,
@@ -245,26 +275,41 @@ fn stats_from_manifest(
         ..CompressionStats::default()
     };
     for pm in &manifest.partitions {
-        if let PartitionContent::Fs { records, .. } = &pm.content {
+        if let PartitionContent::Fs {
+            records,
+            base_entity_count,
+            target_entity_count,
+            blobs_stored_bytes,
+            ..
+        } = &pm.content
+        {
+            stats.total_stored_bytes += blobs_stored_bytes;
+            stats.entities_in_base += base_entity_count;
+            stats.entities_in_target += target_entity_count;
             for r in records {
-                if matches!(r.entry_type, crate::manifest::EntryType::Directory) {
-                    continue;
-                }
-                match (&r.old_path, &r.new_path) {
-                    (None, Some(_)) => stats.files_added += 1,
-                    (Some(_), None) => stats.files_removed += 1,
-                    (Some(old), Some(new)) if old != new => stats.files_renamed += 1,
-                    (Some(_), Some(_)) => {
-                        if matches!(r.patch, Some(Patch::Real(_))) {
-                            stats.files_patched += 1;
+                // ── Legacy file-only counters ─────────────────────────────────
+                if !matches!(r.entry_type, crate::manifest::EntryType::Directory) {
+                    match (&r.old_path, &r.new_path) {
+                        (None, Some(_)) => stats.files_added += 1,
+                        (Some(_), None) => stats.files_removed += 1,
+                        (Some(old), Some(new)) if old != new => stats.files_renamed += 1,
+                        (Some(_), Some(_)) => {
+                            if matches!(r.patch, Some(Patch::Real(_))) {
+                                stats.files_patched += 1;
+                            }
                         }
+                        _ => {}
                     }
+                }
+                // ── New entity counters (all types) ───────────────────────────
+                match (&r.old_path, &r.new_path) {
+                    (None, Some(_)) => stats.entities_added += 1,
+                    (Some(_), None) => stats.entities_removed += 1,
+                    (Some(old), Some(new)) if old != new => stats.entities_renamed += 1,
+                    (Some(_), Some(_)) => stats.entities_changed += 1,
                     _ => {}
                 }
                 stats.total_source_bytes += r.size;
-                if let Some(Data::BlobRef(b)) = &r.data {
-                    stats.total_stored_bytes += b.size;
-                }
             }
         }
     }

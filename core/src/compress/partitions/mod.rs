@@ -38,12 +38,13 @@ use crate::Result;
 #[async_trait]
 pub trait PartitionCompressor: Send + Sync {
     /// Compress one partition and return its manifest.
-    ///
-    /// FS compressors write patch files to `ctx.patches_dir`.
-    /// Binary compressors do not touch `patches_dir` at all.
+    /// The second element is the number of bytes actually written to blob storage
+    /// (deduped blobs already in storage are not counted).
+    /// For Fs partitions this is always 0 — their blobs are tracked inside
+    /// [`PartitionContent::Fs::blobs_stored_bytes`] and summed by the orchestrator.
     async fn compress(
         &self,
         ctx: &CompressContext,
         handle: PartitionHandle,
-    ) -> Result<PartitionManifest>;
+    ) -> Result<(PartitionManifest, u64)>;
 }

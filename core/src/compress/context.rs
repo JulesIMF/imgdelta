@@ -46,4 +46,8 @@ pub struct CompressContext {
     ///
     /// When `Some`, each stage writes a `<NN>_<name>.json` file after running.
     pub debug_dir: Option<Arc<Path>>,
+    /// When `Some`, each Fs partition compressor accumulates per-stage wall-clock
+    /// milliseconds into this sink.  The orchestrator reads it after all
+    /// partitions finish and stores it in `CompressionStats::stage_timings`.
+    pub timing_sink: Option<std::sync::Arc<std::sync::Mutex<crate::operations::StageTimings>>>,
 }

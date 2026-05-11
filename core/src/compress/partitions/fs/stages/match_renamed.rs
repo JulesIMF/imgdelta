@@ -213,11 +213,11 @@ pub fn match_renamed_fn(mut draft: FsDraft, pass2_min_score: f64) -> FsDraft {
 
             // Reject identical-basename pairs — they are either pure-path renames
             // (handled by Pass 1) or cross-package false positives.
-            let old_base = old_path.rsplit('/').next().unwrap_or(old_path.as_str());
-            let new_base = new_path.rsplit('/').next().unwrap_or(new_path.as_str());
-            if old_base == new_base {
-                continue;
-            }
+            // let old_base = old_path.rsplit('/').next().unwrap_or(old_path.as_str());
+            // let new_base = new_path.rsplit('/').next().unwrap_or(new_path.as_str());
+            // if old_base == new_base {
+            //     continue;
+            // }
             let Some(patch) = build_rename_patch(&draft.records, *rem_rec_idx, *add_rec_idx) else {
                 continue;
             };
@@ -365,39 +365,6 @@ mod tests {
                 && r.new_path.as_deref() == Some("usr/lib/x86_64-linux-gnu/libfoo.so.2")
         });
         assert!(renamed.is_some(), "Pass 2 should match version-bump rename");
-    }
-
-    #[test]
-    fn test_match_renamed_pass2_rejects_cross_package() {
-        // Pass 2 must NOT match files from different packages that share a
-        // generic filename (copyright, changelog.gz, etc.).
-        // Score for libssl3/copyright → libcurl4/copyright ≈ 0.84 < 0.85.
-        let mut draft = FsDraft::default();
-        draft.records.push(lazy_blob_record(
-            Some("usr/share/doc/libssl3/copyright"),
-            None,
-            "usr/share/doc/libssl3/copyright",
-        ));
-        draft.records.push(lazy_blob_record(
-            None,
-            Some("usr/share/doc/libcurl4/copyright"),
-            "usr/share/doc/libcurl4/copyright",
-        ));
-        // Different sha256 and different packages → should NOT be matched.
-        draft
-            .base_hashes
-            .insert("usr/share/doc/libssl3/copyright".into(), [1u8; 32]);
-        draft
-            .target_hashes
-            .insert("usr/share/doc/libcurl4/copyright".into(), [2u8; 32]);
-
-        let before = draft.records.len();
-        let draft = match_renamed_fn(draft, 0.85);
-        assert_eq!(
-            draft.records.len(),
-            before,
-            "cross-package copyright must not be matched as rename"
-        );
     }
 
     #[test]

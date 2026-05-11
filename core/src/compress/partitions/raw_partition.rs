@@ -22,7 +22,7 @@ impl PartitionCompressor for RawPartitionCompressor {
         &self,
         ctx: &CompressContext,
         handle: PartitionHandle,
-    ) -> Result<PartitionManifest> {
+    ) -> Result<(PartitionManifest, u64)> {
         let raw_handle = match handle {
             PartitionHandle::Raw(h) => h,
             _ => unreachable!("RawPartitionCompressor called with non-Raw handle"),
@@ -31,17 +31,20 @@ impl PartitionCompressor for RawPartitionCompressor {
         let bytes = raw_handle.read_raw()?;
         let sha256 = hex::encode(Sha256::digest(&bytes));
         let size = bytes.len() as u64;
-        let blob_id = match ctx.storage.blob_exists(&sha256).await? {
-            Some(id) => id,
-            None => ctx.storage.upload_blob(&sha256, &bytes).await?,
+        let (blob_id, stored) = match ctx.storage.blob_exists(&sha256).await? {
+            Some(id) => (id, 0u64),
+            None => (ctx.storage.upload_blob(&sha256, &bytes).await?, size),
         };
-        Ok(PartitionManifest {
-            descriptor,
-            content: PartitionContent::Raw {
-                size,
-                blob: Some(BlobRef { blob_id, size }),
-                patch: None,
+        Ok((
+            PartitionManifest {
+                descriptor,
+                content: PartitionContent::Raw {
+                    size,
+                    blob: Some(BlobRef { blob_id, size }),
+                    patch: None,
+                },
             },
-        })
+            stored,
+        ))
     }
 }

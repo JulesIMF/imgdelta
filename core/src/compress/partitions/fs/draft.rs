@@ -60,4 +60,17 @@ pub struct FsDraft {
     /// (in particular `upload_lazy_blobs`) can skip re-reading files from
     /// the NBD mount just to compute a content hash they already have.
     pub blob_sha256: HashMap<PathBuf, [u8; 32]>,
+
+    /// Total number of entries (files + dirs + symlinks + specials) found in
+    /// the base image during the walkdir stage.  Stored in the manifest so
+    /// that callers can compute delta statistics without re-walking the tree.
+    pub base_entity_count: usize,
+
+    /// Total number of entries found in the target image during the walkdir
+    /// stage.
+    pub target_entity_count: usize,
+
+    /// Total bytes actually written to storage by the `upload_blobs` stage
+    /// (deduped blobs that already existed in storage are NOT counted).
+    pub blobs_stored_bytes: u64,
 }

@@ -22,7 +22,7 @@ impl PartitionCompressor for MbrCompressor {
         &self,
         ctx: &CompressContext,
         handle: PartitionHandle,
-    ) -> Result<PartitionManifest> {
+    ) -> Result<(PartitionManifest, u64)> {
         let mbr_handle = match handle {
             PartitionHandle::Mbr(h) => h,
             _ => unreachable!("MbrCompressor called with non-Mbr handle"),
@@ -31,17 +31,20 @@ impl PartitionCompressor for MbrCompressor {
         let bytes = mbr_handle.read_raw()?;
         let sha256 = hex::encode(Sha256::digest(&bytes));
         let size = bytes.len() as u64;
-        let blob_id = match ctx.storage.blob_exists(&sha256).await? {
-            Some(id) => id,
-            None => ctx.storage.upload_blob(&sha256, &bytes).await?,
+        let (blob_id, stored) = match ctx.storage.blob_exists(&sha256).await? {
+            Some(id) => (id, 0u64),
+            None => (ctx.storage.upload_blob(&sha256, &bytes).await?, size),
         };
-        Ok(PartitionManifest {
-            descriptor,
-            content: PartitionContent::MbrBootCode {
-                blob_id,
-                sha256,
-                size,
+        Ok((
+            PartitionManifest {
+                descriptor,
+                content: PartitionContent::MbrBootCode {
+                    blob_id,
+                    sha256,
+                    size,
+                },
             },
-        })
+            stored,
+        ))
     }
 }

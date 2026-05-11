@@ -13,7 +13,6 @@ use tracing::debug;
 use crate::compress::partitions::fs::context::StageContext;
 use crate::compress::partitions::fs::draft::FsDraft;
 use crate::compress::partitions::fs::stage::CompressStage;
-use crate::encoding::router::FileInfo;
 use crate::encoding::FileSnapshot;
 use crate::encoding::PassthroughEncoder;
 use crate::encoding::PatchEncoder;
@@ -39,7 +38,7 @@ impl CompressStage for ComputePatches {
     }
 
     async fn run(&self, ctx: &StageContext, draft: FsDraft) -> Result<FsDraft> {
-        compute_patches_fn(draft, &ctx.router, ctx.workers)
+        compute_patches_fn(draft, Arc::clone(&ctx.router), ctx.workers)
     }
 }
 
@@ -47,7 +46,7 @@ impl CompressStage for ComputePatches {
 
 pub fn compute_patches_fn(
     mut draft: FsDraft,
-    router: &crate::encoding::RouterEncoder,
+    router: Arc<crate::encoding::RouterEncoder>,
     workers: usize,
 ) -> Result<FsDraft> {
     let needs_patch: Vec<usize> = draft
@@ -63,6 +62,7 @@ pub fn compute_patches_fn(
     }
 
     let passthrough: Arc<dyn PatchEncoder> = Arc::new(PassthroughEncoder::new());
+    let router_enc: Arc<dyn PatchEncoder> = router;
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
@@ -86,15 +86,11 @@ pub fn compute_patches_fn(
                 let new_path_str = record.new_path.as_deref().unwrap_or("");
                 let header_slice: &[u8] = &new_bytes[..new_bytes.len().min(16)];
 
-                let encoder: Arc<dyn PatchEncoder> =
+                let encoder: &dyn PatchEncoder =
                     if matches!(record.entry_type, EntryType::Symlink | EntryType::Hardlink) {
-                        Arc::clone(&passthrough)
+                        passthrough.as_ref()
                     } else {
-                        router.select(&FileInfo {
-                            path: new_path_str,
-                            size: new_bytes.len() as u64,
-                            header: header_slice,
-                        })
+                        router_enc.as_ref()
                     };
 
                 let base_snap = FileSnapshot {
@@ -210,8 +206,8 @@ mod tests {
             metadata: None,
         });
 
-        let router = make_xdelta3_router();
-        let draft = compute_patches_fn(draft, &router, 4).unwrap();
+        let router = Arc::new(make_xdelta3_router());
+        let draft = compute_patches_fn(draft, router, 4).unwrap();
 
         let record = &draft.records[0];
         assert!(
@@ -261,8 +257,8 @@ mod tests {
             metadata: None,
         });
 
-        let router = make_xdelta3_router();
-        let draft = compute_patches_fn(draft, &router, 4).unwrap();
+        let router = Arc::new(make_xdelta3_router());
+        let draft = compute_patches_fn(draft, router, 4).unwrap();
 
         let pref = match &draft.records[0].patch {
             Some(Patch::Real(p)) => p,
@@ -293,8 +289,8 @@ mod tests {
             metadata: None,
         });
 
-        let router = make_xdelta3_router();
-        let result = compute_patches_fn(draft, &router, 1).unwrap();
+        let router = Arc::new(make_xdelta3_router());
+        let result = compute_patches_fn(draft, router, 1).unwrap();
 
         assert!(result.patch_bytes.is_empty());
     }

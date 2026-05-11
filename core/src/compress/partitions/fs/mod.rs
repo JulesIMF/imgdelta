@@ -47,7 +47,7 @@ impl PartitionCompressor for FsPartitionCompressor {
         &self,
         ctx: &CompressContext,
         handle: PartitionHandle,
-    ) -> Result<PartitionManifest> {
+    ) -> Result<(PartitionManifest, u64)> {
         let fs_handle = match handle {
             PartitionHandle::Fs(h) => h,
             _ => unreachable!("FsPartitionCompressor called with non-Fs handle"),
@@ -120,8 +120,10 @@ impl PartitionCompressor for FsPartitionCompressor {
             ctx.workers,
             ctx.debug_dir.as_deref(),
             &ctx.patches_dir,
+            ctx.timing_sink.clone(),
         )
         .await
+        .map(|pm| (pm, 0u64))
     }
 }
 
@@ -147,6 +149,7 @@ pub async fn compress_fs_partition(
     workers: usize,
     debug_dir: Option<&Path>,
     patches_dir: &Path,
+    timing_sink: Option<std::sync::Arc<std::sync::Mutex<crate::operations::StageTimings>>>,
 ) -> Result<PartitionManifest> {
     let tmp_dir = tempfile::TempDir::new()?;
 
@@ -173,12 +176,31 @@ pub async fn compress_fs_partition(
         tmp_dir: Arc::from(tmp_dir.path()),
         patches_dir: Arc::from(patches_dir),
         debug_dir: debug_dir.map(Arc::from),
+        timing_sink: None,
     };
 
+    let walkdir_ms = t0.elapsed().as_millis() as u64;
     let pipeline = CompressPipeline::default_fs();
-    let draft = pipeline.run(&ctx, draft, debug_dir).await?;
+    let (draft, stage_ms) = pipeline.run(&ctx, draft, debug_dir).await?;
 
     let content = collect_fs_content(draft, fs_type, fs_uuid, fs_mkfs_params, patches_dir)?;
+
+    // ── Feed timing sink (stages 1–7; pack_archive is stage 8 done outside) ─
+    if let Some(sink) = &timing_sink {
+        let s = crate::operations::StageTimings {
+            walkdir_ms,
+            blob_lookup_ms: stage_ms.first().copied().unwrap_or(0),
+            match_renamed_ms: stage_ms.get(1).copied().unwrap_or(0),
+            cleanup_ms: stage_ms.get(2).copied().unwrap_or(0),
+            upload_blobs_ms: stage_ms.get(3).copied().unwrap_or(0),
+            download_blobs_ms: stage_ms.get(4).copied().unwrap_or(0),
+            compute_patches_ms: stage_ms.get(5).copied().unwrap_or(0),
+            pack_archive_ms: 0, // filled by orchestrator after pack_and_upload_patches
+        };
+        if let Ok(mut guard) = sink.lock() {
+            *guard += s;
+        }
+    }
 
     Ok(PartitionManifest {
         descriptor: descriptor.clone(),
@@ -224,6 +246,7 @@ pub async fn compress_fs_partition_and_upload(
         workers,
         debug_dir,
         patches_tmp.path(),
+        None, // no timing sink in test helper
     )
     .await?;
     let (stored_bytes, compressed) =
