@@ -20,8 +20,9 @@
 //! ```
 //!
 //! The library crate contains all algorithm implementations and trait
-//! definitions.  The binary crate (`image-delta-cli`) adds the S3/PostgreSQL
-//! [`Storage`] implementation and the CLI entry point.
+//! definitions, including the [`storage::local::LocalStorage`] reference
+//! implementation.  The binary crate (`image-delta-cli`) adds the CLI
+//! entry point; cloud providers implement [`Storage`] for their own backend.
 
 mod error;
 
@@ -59,4 +60,5 @@ pub use partitions::{
     BiosBootHandle, FsHandle, MbrHandle, MountHandle, PartitionHandle, RawHandle, SimpleMountHandle,
 };
 pub use partitions::{DiskLayout, DiskScheme, PartitionDescriptor, PartitionKind};
+pub use storage::local::LocalStorage;
 pub use storage::{BlobCandidate, ImageMeta, ImageStatus, Storage};

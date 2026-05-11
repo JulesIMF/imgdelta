@@ -2,7 +2,7 @@
 // Copyright (c) 2026 JulesIMF
 //
 // image-delta — incremental disk-image compression toolkit
-// Compress pipeline: Stage 2 — s3_lookup
+// Compress pipeline: Stage 2 — blob_lookup
 
 use std::collections::HashMap;
 
@@ -24,12 +24,12 @@ use crate::Result;
 /// Files that find a match are upgraded to delta candidates:
 /// `data = BlobRef(uuid)` and `patch = Lazy { old: BlobRef(uuid), new: FilePath(...) }`.
 /// The patch will be computed in stage 7 with the blob as the delta base.
-pub struct S3Lookup;
+pub struct BlobLookup;
 
 #[async_trait]
-impl CompressStage for S3Lookup {
+impl CompressStage for BlobLookup {
     fn name(&self) -> &'static str {
-        "s3_lookup"
+        "blob_lookup"
     }
 
     async fn run(&self, ctx: &StageContext, draft: FsDraft) -> Result<FsDraft> {
@@ -37,7 +37,7 @@ impl CompressStage for S3Lookup {
             Some(id) => id.as_ref(),
             None => return Ok(draft),
         };
-        s3_lookup_fn(
+        blob_lookup_fn(
             draft,
             ctx.storage.as_ref(),
             base_image_id,
@@ -49,7 +49,7 @@ impl CompressStage for S3Lookup {
 
 // ── Implementation ────────────────────────────────────────────────────────────
 
-pub async fn s3_lookup_fn(
+pub async fn blob_lookup_fn(
     mut draft: FsDraft,
     storage: &dyn crate::storage::Storage,
     base_image_id: &str,

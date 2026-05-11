@@ -29,7 +29,7 @@ use crate::Result;
 /// a path-similarity score ≥ `pass2_min_score` (default 0.85) is required.
 /// Identical-basename pairs are rejected to avoid cross-package false positives.
 ///
-/// Only `LazyBlob` files (not matched by s3_lookup) are eligible as targets.
+/// Only `LazyBlob` files (not matched by blob_lookup) are eligible as targets.
 pub struct MatchRenamed {
     /// Minimum path-similarity score for Pass 2 matches.
     pub pass2_min_score: f64,
@@ -72,7 +72,7 @@ pub fn match_renamed_fn(mut draft: FsDraft, pass2_min_score: f64) -> FsDraft {
         .collect();
 
     // A file is a rename target only if it still has a LazyBlob —
-    // i.e. it was not matched by s3_lookup.  Files already upgraded to
+    // i.e. it was not matched by blob_lookup.  Files already upgraded to
     // BlobRef + Lazy belong to m_{S3} and are off-limits for match_renamed.
     let added: Vec<(usize, String)> = draft
         .records
@@ -249,7 +249,7 @@ pub fn match_renamed_fn(mut draft: FsDraft, pass2_min_score: f64) -> FsDraft {
 
 /// Build the [`Patch`] for a rename record.
 ///
-/// The added record must still be a `LazyBlob`; s3_lookup-matched files are
+/// The added record must still be a `LazyBlob`; blob_lookup-matched files are
 /// excluded from the rename pool so this invariant holds.
 fn build_rename_patch(records: &[Record], rem_idx: usize, add_idx: usize) -> Option<Patch> {
     let new_local = match &records[add_idx].data {

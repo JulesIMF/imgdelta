@@ -243,12 +243,16 @@ fn snapshot_fast(root: &Path) -> Result<HashMap<String, EntrySnapshot>> {
         if entry.path() == root {
             continue;
         }
-        let rel = entry
+        let mut rel = entry
             .path()
             .strip_prefix(root)
             .map_err(|e| std::io::Error::other(e.to_string()))?
             .to_string_lossy()
-            .replace('\\', "/");
+            .into_owned();
+        // Keep backslashes intact on Unix where they are valid filename chars.
+        if std::path::MAIN_SEPARATOR == '\\' {
+            rel = rel.replace('\\', "/");
+        }
         if rel.is_empty() {
             continue;
         }

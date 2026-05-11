@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use common::FakeStorage;
 use image_delta_core::compress::partitions::fs::stages::{
-    compute_patches_fn as compute_patches,
+    blob_lookup_fn as s3_lookup, compute_patches_fn as compute_patches,
     download_blobs_for_patches_fn as download_blobs_for_patches,
-    pack_and_upload_archive_fn as pack_and_upload_archive, s3_lookup_fn as s3_lookup,
+    pack_and_upload_archive_fn as pack_and_upload_archive,
     upload_lazy_blobs_fn as upload_lazy_blobs, walkdir_fn as walkdir,
 };
 use image_delta_core::compress::partitions::fs::FsDraft;

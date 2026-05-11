@@ -20,7 +20,7 @@ image-delta-core = { path = "../core", features = ["qcow2"] }
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 serde_json = "1"
 hex = "0.4"
 anyhow = "1"
@@ -30,19 +30,6 @@ indicatif = "0.17"
 tracing-indicatif = "0.3"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-async-trait = "0.1"
-flate2 = "1"
-
-# Storage: S3 + PostgreSQL
-aws-sdk-s3 = "1"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-sqlx = { version = "0.8", features = [
-  "postgres",
-  "runtime-tokio-rustls",
-  "migrate",
-  "uuid",
-] }
-sha2 = "0.10"
 tempfile = "3"
 
 [dev-dependencies]

@@ -2,11 +2,11 @@
 // Copyright (c) 2026 JulesIMF
 //
 // image-delta — incremental disk-image compression toolkit
-// LocalStorage: filesystem-backed Storage implementation for local testing
+// LocalStorage: filesystem-backed Storage implementation
 
-/// File-based [`Storage`] implementation for local testing and single-machine use.
+/// File-based [`Storage`] implementation for local use and testing.
 ///
-/// No S3 or PostgreSQL required.  All data lives under a single `base_dir`:
+/// No external services required.  All data lives under a single `base_dir`:
 ///
 /// ```text
 /// {base_dir}/
@@ -27,10 +27,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use image_delta_core::storage::{BlobCandidate, ImageMeta, ImageStatus, Storage};
-use image_delta_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::storage::{BlobCandidate, ImageMeta, ImageStatus, Storage};
+use crate::{Error, Result};
 
 /// Persisted form of image metadata (includes status).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,12 +104,12 @@ impl LocalStorage {
     ///
     /// The directory (and required sub-directories) are created if they do not
     /// already exist.  Any existing index files are loaded into memory.
-    pub fn new(base_dir: impl Into<PathBuf>) -> anyhow::Result<Self> {
+    pub fn new(base_dir: impl Into<PathBuf>) -> Result<Self> {
         let base_dir = base_dir.into();
         std::fs::create_dir_all(base_dir.join("blobs"))
-            .map_err(|e| anyhow::anyhow!("cannot create blobs dir: {e}"))?;
+            .map_err(|e| Error::Storage(format!("cannot create blobs dir: {e}")))?;
         std::fs::create_dir_all(base_dir.join("images"))
-            .map_err(|e| anyhow::anyhow!("cannot create images dir: {e}"))?;
+            .map_err(|e| Error::Storage(format!("cannot create images dir: {e}")))?;
 
         let sha256_index = Self::load_sha256_index(&base_dir);
         // Derive compressed_blobs from the index — no separate file needed.

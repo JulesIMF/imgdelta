@@ -12,7 +12,7 @@ use tracing::info;
 use super::context::StageContext;
 use super::stage::CompressStage;
 use super::stages::{
-    Cleanup, ComputePatches, DownloadBlobsForPatches, MatchRenamed, S3Lookup, UploadLazyBlobs,
+    BlobLookup, Cleanup, ComputePatches, DownloadBlobsForPatches, MatchRenamed, UploadLazyBlobs,
 };
 use crate::compress::partitions::fs::draft::FsDraft;
 use crate::Result;
@@ -42,7 +42,7 @@ impl CompressPipeline {
     pub fn default_fs() -> Self {
         Self {
             stages: vec![
-                Box::new(S3Lookup),
+                Box::new(BlobLookup),
                 Box::new(MatchRenamed::default()),
                 Box::new(Cleanup),
                 Box::new(UploadLazyBlobs),

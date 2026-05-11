@@ -10,7 +10,6 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 mod commands;
 mod config;
-mod impls;
 
 #[derive(Parser, Debug)]
 #[command(

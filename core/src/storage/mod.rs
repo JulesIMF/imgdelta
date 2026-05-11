@@ -4,6 +4,8 @@
 // image-delta — incremental disk-image compression toolkit
 // Storage trait: async blob CAS, manifest upload/download, image registry
 
+pub mod local;
+
 use async_trait::async_trait;
 use uuid::Uuid;
 
@@ -53,20 +55,17 @@ pub enum ImageStatus {
 
 /// Persistent storage backend abstraction.
 ///
-/// S3 + PostgreSQL is the production implementation (in `image-delta-cli`).
-/// [`FakeStorage`] (in-memory) is used for L1 unit/integration tests.
+/// ## Implementing a custom backend
+///
+/// A cloud provider integrating with imgdelta must implement this trait.
+/// The built-in [`local::LocalStorage`] (filesystem-backed) serves as the
+/// reference implementation and is suitable for single-machine use and testing.
 ///
 /// # Contract for implementors
 ///
 /// - All methods must be safe to call concurrently from multiple threads.
 /// - `upload_blob` must be idempotent: uploading the same bytes twice (same SHA-256)
 ///   must return the same UUID and not store a duplicate.
-///
-/// # Note
-///
-/// `save_stats` from the original design is intentionally omitted here to avoid a
-/// circular dependency with `compressor::CompressionStats`.  It will be added in
-/// Phase 5 via a separate `StoredStats` type.
 #[async_trait]
 pub trait Storage: Send + Sync {
     // ── Blob CAS ─────────────────────────────────────────────────────────────

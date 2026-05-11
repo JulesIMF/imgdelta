@@ -39,7 +39,7 @@ pub struct FsDraft {
     /// path (same key space as `new_path` on added records).
     pub target_hashes: HashMap<String, [u8; 32]>,
 
-    /// Temporary files downloaded from S3 for patch computation.
+    /// Temporary files downloaded from storage for patch computation.
     ///
     /// All paths in this list must be removed by the caller after
     /// [`compute_patches`] completes.

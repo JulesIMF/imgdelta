@@ -4,8 +4,6 @@
 // image-delta — incremental disk-image compression toolkit
 // Configuration file loading and validation (TOML → typed structs)
 
-// Config structs are wired in Phase 5/6 CLI commands.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,10 +13,9 @@ use serde::Deserialize;
 use image_delta_core::encoding::{
     PassthroughEncoder, PatchEncoder, RouterEncoder, TextDiffEncoder, Xdelta3Encoder,
 };
-use image_delta_core::{ElfRule, GlobRule, MagicRule, RoutingRule, SizeRule, Storage};
-
-use crate::impls::local_storage::LocalStorage;
-use crate::impls::s3_storage::S3Storage;
+use image_delta_core::{
+    ElfRule, GlobRule, LocalStorage, MagicRule, RoutingRule, SizeRule, Storage,
+};
 
 /// Which delta encoder to use (fixed set — no runtime string lookup).
 #[derive(Debug, Clone, Deserialize)]
@@ -102,36 +99,15 @@ impl Default for LoggingConfig {
 
 /// Storage backend configuration.
 ///
-/// Two backends are supported:
-/// - `local` — file-based storage in a local directory (no S3/PostgreSQL needed)
-/// - `s3` — S3 + PostgreSQL (production; implemented in Phase 5)
-///
 /// ```toml
 /// [storage]
 /// type = "local"
 /// local_dir = "/var/lib/imgdelta"
-///
-/// # — or —
-///
-/// [storage]
-/// type = "s3"
-/// s3_bucket = "my-images"
-/// database_url = "postgres://user:pass@localhost/imgdelta"
 /// ```
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StorageConfig {
-    Local {
-        local_dir: PathBuf,
-    },
-    S3 {
-        s3_bucket: String,
-        s3_region: Option<String>,
-        /// Override S3 endpoint URL (useful for MinIO / YC Object Storage).
-        s3_endpoint: Option<String>,
-        /// PostgreSQL DSN, e.g. `postgres://user:pass@localhost/imgdelta`.
-        database_url: String,
-    },
+    Local { local_dir: PathBuf },
 }
 
 impl StorageConfig {
@@ -140,10 +116,6 @@ impl StorageConfig {
         match self {
             StorageConfig::Local { local_dir } => {
                 let s = LocalStorage::new(local_dir.clone())?;
-                Ok(Arc::new(s))
-            }
-            StorageConfig::S3 { .. } => {
-                let s = S3Storage::new(self).await?;
                 Ok(Arc::new(s))
             }
         }
