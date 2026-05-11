@@ -10,7 +10,7 @@ Rust API.  Input pointers are valid for the duration of each FFI call, and
 output buffers are allocated by Rust and checked for correctness before
 returning to callers.</p>
 <h2 id="example"><a class="doc-anchor" href="#example">§</a>Example</h2>
-<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>image_delta_core::{FileSnapshot, PatchEncoder, Xdelta3Encoder};
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>image_delta_core::encoding::{FileSnapshot, PatchEncoder, Xdelta3Encoder};
 
 <span class="kw">let </span>encoder = Xdelta3Encoder::new();
 <span class="kw">let </span>source = <span class="string">b"hello world"</span>;

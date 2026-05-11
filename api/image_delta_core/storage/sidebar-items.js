@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ImageStatus"],"struct":["BlobCandidate","ImageMeta"],"trait":["Storage"]};
+window.SIDEBAR_ITEMS = {"enum":["ImageStatus"],"mod":["local"],"struct":["BlobCandidate","ImageMeta"],"trait":["Storage"]};

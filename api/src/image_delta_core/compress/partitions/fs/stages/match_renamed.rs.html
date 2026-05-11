@@ -29,7 +29,7 @@
 <a href=#29 id=29 data-nosnippet>29</a>/// a path-similarity score ≥ `pass2_min_score` (default 0.85) is required.
 <a href=#30 id=30 data-nosnippet>30</a>/// Identical-basename pairs are rejected to avoid cross-package false positives.
 <a href=#31 id=31 data-nosnippet>31</a>///
-<a href=#32 id=32 data-nosnippet>32</a>/// Only `LazyBlob` files (not matched by s3_lookup) are eligible as targets.
+<a href=#32 id=32 data-nosnippet>32</a>/// Only `LazyBlob` files (not matched by blob_lookup) are eligible as targets.
 <a href=#33 id=33 data-nosnippet>33</a></span><span class="kw">pub struct </span>MatchRenamed {
 <a href=#34 id=34 data-nosnippet>34</a>    <span class="doccomment">/// Minimum path-similarity score for Pass 2 matches.
 <a href=#35 id=35 data-nosnippet>35</a>    </span><span class="kw">pub </span>pass2_min_score: f64,
@@ -72,7 +72,7 @@
 <a href=#72 id=72 data-nosnippet>72</a>        .collect();
 <a href=#73 id=73 data-nosnippet>73</a>
 <a href=#74 id=74 data-nosnippet>74</a>    <span class="comment">// A file is a rename target only if it still has a LazyBlob —
-<a href=#75 id=75 data-nosnippet>75</a>    // i.e. it was not matched by s3_lookup.  Files already upgraded to
+<a href=#75 id=75 data-nosnippet>75</a>    // i.e. it was not matched by blob_lookup.  Files already upgraded to
 <a href=#76 id=76 data-nosnippet>76</a>    // BlobRef + Lazy belong to m_{S3} and are off-limits for match_renamed.
 <a href=#77 id=77 data-nosnippet>77</a>    </span><span class="kw">let </span>added: Vec&lt;(usize, String)&gt; = draft
 <a href=#78 id=78 data-nosnippet>78</a>        .records
@@ -249,7 +249,7 @@
 <a href=#249 id=249 data-nosnippet>249</a>
 <a href=#250 id=250 data-nosnippet>250</a><span class="doccomment">/// Build the [`Patch`] for a rename record.
 <a href=#251 id=251 data-nosnippet>251</a>///
-<a href=#252 id=252 data-nosnippet>252</a>/// The added record must still be a `LazyBlob`; s3_lookup-matched files are
+<a href=#252 id=252 data-nosnippet>252</a>/// The added record must still be a `LazyBlob`; blob_lookup-matched files are
 <a href=#253 id=253 data-nosnippet>253</a>/// excluded from the rename pool so this invariant holds.
 <a href=#254 id=254 data-nosnippet>254</a></span><span class="kw">fn </span>build_rename_patch(records: <span class="kw-2">&amp;</span>[Record], rem_idx: usize, add_idx: usize) -&gt; <span class="prelude-ty">Option</span>&lt;Patch&gt; {
 <a href=#255 id=255 data-nosnippet>255</a>    <span class="kw">let </span>new_local = <span class="kw">match </span><span class="kw-2">&amp;</span>records[add_idx].data {

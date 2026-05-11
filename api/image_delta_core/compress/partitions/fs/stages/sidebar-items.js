@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["cleanup","compute_patches","download_blobs","match_renamed","pack_archive","s3_lookup","upload_blobs","walkdir"]};
+window.SIDEBAR_ITEMS = {"mod":["blob_lookup","cleanup","compute_patches","download_blobs","match_renamed","pack_archive","upload_blobs","walkdir"]};

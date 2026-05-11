@@ -19,7 +19,7 @@ patch and falls back to <code>PassthroughEncoder</code>.</p>
 <li><code>algorithm_id()</code> → <code>"passthrough"</code>.</li>
 </ul>
 <h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2>
-<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>image_delta_core::{FileSnapshot, PatchEncoder, PassthroughEncoder};
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>image_delta_core::encoding::{FileSnapshot, PatchEncoder, PassthroughEncoder};
 
 <span class="kw">let </span>enc = PassthroughEncoder::new();
 <span class="kw">let </span>src = <span class="string">b"old content"</span>;
