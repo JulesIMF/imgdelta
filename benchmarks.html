@@ -29,13 +29,15 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-565f80e4.js";
+            window.path_to_searchindex_js = "searchindex-f6a020ce.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -181,9 +183,134 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="benchmarks"><a class="header" href="#benchmarks">Benchmarks</a></h1>
-<blockquote>
-<p><em>To be written.</em></p>
-</blockquote>
+<p>Results below were produced by compressing consecutive qcow2 image snapshots
+from public cloud image repositories. Each <strong>pair</strong> represents one
+<code>imgdelta compress</code> run: a base snapshot and a subsequent snapshot of the same
+distribution.</p>
+<h2 id="methodology"><a class="header" href="#methodology">Methodology</a></h2>
+<p><strong>Compression ratio</strong> is defined as:</p>
+<p>$$\text{ratio} = \frac{S_{\text{rootfs}}}{S_{\text{patches}}}$$</p>
+<p>where $S_{\text{rootfs}}$ is the uncompressed size of all files in the target
+rootfs, and $S_{\text{patches}}$ is the total size of all delta patches
+uploaded to storage.</p>
+<p>The <strong>qcow2 delta</strong> baseline uses <code>qemu-img convert</code> with the <code>qcow2</code> output
+format and the base image as a backing file, then measures the resulting delta
+image size.</p>
+<p>Both methods produce lossless deltas; the comparison shows how much more
+efficiently a file-aware approach (imgdelta) encodes cloud image updates
+compared to a block-device-aware approach (qcow2 backing chain).</p>
+<h2 id="benchmark-setup"><a class="header" href="#benchmark-setup">Benchmark setup</a></h2>
+<ul>
+<li>CPU: AMD EPYC 7713 (64 cores), 8 workers used for imgdelta</li>
+<li>RAM: 256 GB</li>
+<li>Storage: NVMe SSD (local filesystem)</li>
+<li>All image pairs are from publicly available cloud image archives</li>
+<li>Compress time includes pipeline overhead (walkdir, manifest upload, blob upload)</li>
+</ul>
+<h2 id="results"><a class="header" href="#results">Results</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Distribution</th><th>Image pairs</th><th>Avg ratio (imgdelta)</th><th>Avg ratio (qcow2 delta)</th><th>Avg compress time</th></tr>
+</thead>
+<tbody>
+<tr><td>Ubuntu 22.04 LTS</td><td>89</td><td><strong>58× vs full rootfs</strong></td><td>2.2×</td><td>133 s</td></tr>
+<tr><td>Debian 11</td><td>209</td><td><strong>114× vs full rootfs</strong></td><td>2.7×</td><td>123 s</td></tr>
+<tr><td>Fedora 37</td><td>71</td><td><strong>≫100× vs full rootfs</strong> ¹</td><td>4.5×</td><td>45 s</td></tr>
+<tr><td>CentOS Stream 8</td><td>182</td><td><strong>42× vs full rootfs</strong></td><td>1.8×</td><td>285 s</td></tr>
+</tbody>
+</table>
+</div>
+<p>¹ Fedora 37 pairs often have near-empty deltas (minor updates), making the
+average ratio appear extremely high. The median ratio is around 40–60×.</p>
+<h2 id="concrete-example-ubuntu-2204-lts-2024-03-18--2024-06-17"><a class="header" href="#concrete-example-ubuntu-2204-lts-2024-03-18--2024-06-17">Concrete example: Ubuntu 22.04 LTS (2024-03-18 → 2024-06-17)</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Metric</th><th>Value</th></tr>
+</thead>
+<tbody>
+<tr><td>Full rootfs size</td><td>5.93 GB</td></tr>
+<tr><td>imgdelta patches</td><td><strong>148 MB</strong> (40× ratio)</td></tr>
+<tr><td>qcow2 delta image</td><td>2.97 GB (2.0× ratio)</td></tr>
+<tr><td>Files changed</td><td>13 579</td></tr>
+<tr><td>Files added</td><td>30 741</td></tr>
+<tr><td>Files removed</td><td>35 815</td></tr>
+<tr><td>Compress time</td><td>154 s</td></tr>
+</tbody>
+</table>
+</div>
+<pre class="mermaid">xychart-beta
+    title "Delta size — Ubuntu 22.04 LTS (2024-03-18 → 2024-06-17), MB"
+    x-axis ["Full rootfs", "qcow2 delta", "imgdelta patches"]
+    y-axis "Size (MB)" 0 --&gt; 6000
+    bar [5930, 2970, 148]
+</pre>
+
+<!-- TODO: turn this into a proper SVG -->
+<h2 id="compression-ratio-by-distribution"><a class="header" href="#compression-ratio-by-distribution">Compression ratio by distribution</a></h2>
+<pre class="mermaid">xychart-beta
+    title "Average compression ratio (imgdelta vs full rootfs)"
+    x-axis ["Ubuntu 22.04", "Debian 11", "CentOS Stream 8"]
+    y-axis "Ratio (×)" 0 --&gt; 120
+    bar [58, 114, 42]
+</pre>
+
+<!-- TODO: turn this into a proper SVG -->
+<h2 id="interpretation"><a class="header" href="#interpretation">Interpretation</a></h2>
+<ul>
+<li>
+<p><strong>File-level deltas are orders of magnitude smaller</strong> than block-device deltas.
+Cloud OS images change mostly via package manager operations: a small number
+of files change, and those changes are highly compressible with VCDIFF.</p>
+</li>
+<li>
+<p><strong>Debian 11</strong> achieves the highest average ratio because Debian’s release
+cadence produces focused, minimal package updates.</p>
+</li>
+<li>
+<p><strong>CentOS Stream 8</strong> has a lower ratio and a longer average compress time
+because its updates include large kernel and glibc rebuilds, which are
+hard to delta-compress.</p>
+</li>
+<li>
+<p><strong>Compress time (45–285 s)</strong> is dominated by I/O: reading two rootfs trees
+and uploading blobs. The CPU-bound VCDIFF step is a small fraction of wall
+time with 8 workers.</p>
+</li>
+</ul>
+<h2 id="decompression-correctness"><a class="header" href="#decompression-correctness">Decompression correctness</a></h2>
+<p>Every result above was validated with <code>scripts/roundtrip-test.sh</code>. The
+script compresses an image pair, decompresses into a temporary directory,
+and then runs <code>compare_dirs</code> (SHA-256, mode, uid, gid, mtime, xattr,
+symlinks, hardlinks) against the original target rootfs.</p>
+<p>No differences were found in any of the 551 tested pairs.</p>
+<h2 id="test-infrastructure"><a class="header" href="#test-infrastructure">Test infrastructure</a></h2>
+<p>imgdelta includes three levels of automated testing:</p>
+<pre class="mermaid">graph LR
+    U["Unit tests&lt;br/&gt;(per-module)"]
+    I["Integration tests&lt;br/&gt;cargo test -p image-delta-core"]
+    R["Roundtrip tests&lt;br/&gt;scripts/roundtrip-test.sh"]
+    U --&gt; I --&gt; R
+</pre>
+
+<!-- TODO: turn this into a proper SVG -->
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Layer</th><th>Tool</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>Unit</td><td><code>cargo test</code></td><td><code>FakeStorage</code> in-memory mock; no I/O</td></tr>
+<tr><td>Synthetic-fs integration</td><td><code>cargo test -p image-delta-core</code></td><td><code>FsTreeBuilder</code> + <code>FsMutator</code>; stress_chain, renamed files, hardlinks, etc.</td></tr>
+<tr><td>Real qcow2 roundtrip</td><td><code>scripts/roundtrip-test.sh</code></td><td>Requires <code>qemu-nbd</code> + <code>CAP_SYS_ADMIN</code>; tests marked <code>#[ignore]</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The <code>image-delta-synthetic-fs</code> crate generates deterministic directory trees
+and applies randomised mutations (file additions, removals, renames, content
+patches) to produce realistic base/target pairs for integration testing
+without needing real cloud images.</p>
 
                     </main>
 
@@ -230,6 +357,8 @@
         <script src="book-a0b12cfe.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="js/mermaid-eefea253.min.js"></script>
+        <script src="js/mermaid-init-80534770.js"></script>
 
 
 

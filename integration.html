@@ -29,13 +29,15 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-565f80e4.js";
+            window.path_to_searchindex_js = "searchindex-f6a020ce.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -181,136 +183,254 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="provider-integration"><a class="header" href="#provider-integration">Provider Integration</a></h1>
-<p>This chapter shows how to embed <code>image-delta-core</code> as a library in your
-own Rust codebase, bypassing the CLI and <code>S3Storage</code>.</p>
+<p>This chapter shows how to embed <code>image-delta-core</code> directly in your own Rust
+codebase, bypassing the <code>imgdelta</code> CLI.</p>
 <h2 id="add-the-dependency"><a class="header" href="#add-the-dependency">Add the dependency</a></h2>
 <pre><code class="language-toml"># Cargo.toml
 [dependencies]
 image-delta-core = { git = "https://github.com/JulesIMF/imgdelta" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4", "v5"] }
+anyhow = "1"
 </code></pre>
 <h2 id="implement-storage"><a class="header" href="#implement-storage">Implement <code>Storage</code></a></h2>
+<p><code>Storage</code> is an async trait. All methods must be safe to call concurrently
+from multiple threads.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use image_delta_core::{Storage, BlobCandidate, ImageMeta, ImageStatus, Result};
+</span>use async_trait::async_trait;
+use image_delta_core::{
+    Storage, BlobCandidate, ImageMeta, ImageStatus, Result,
+};
 use uuid::Uuid;
 
 pub struct MyStorage {
-    // your S3 client, DB pool, …
+    // your S3 client, DB pool, or any other backend
 }
 
+#[async_trait]
 impl Storage for MyStorage {
-    fn upload_blob(&amp;self, data: &amp;[u8]) -&gt; Result&lt;Uuid&gt; {
-        let id = Uuid::new_v4();
-        // store data in your object store under id.to_string()
-        Ok(id)
-    }
+    // ── Blob CAS ──────────────────────────────────────────────────────────
 
-    fn download_blob(&amp;self, blob_id: Uuid) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {
-        // fetch from your object store
+    async fn blob_exists(&amp;self, sha256: &amp;str) -&gt; Result&lt;Option&lt;Uuid&gt;&gt; {
+        // look up sha256 in your index; return Some(uuid) if found
         todo!()
     }
 
-    fn upload_manifest(&amp;self, image_id: &amp;str, bytes: &amp;[u8]) -&gt; Result&lt;()&gt; {
+    async fn upload_blob(&amp;self, sha256: &amp;str, data: &amp;[u8]) -&gt; Result&lt;Uuid&gt; {
+        // must be idempotent: same sha256 → same uuid, no duplicate write
+        let uuid = Uuid::new_v5(&amp;Uuid::NAMESPACE_OID, sha256.as_bytes());
+        // store data in your object store under uuid.to_string()
+        Ok(uuid)
+    }
+
+    async fn download_blob(&amp;self, blob_id: Uuid) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {
         todo!()
     }
 
-    fn download_manifest(&amp;self, image_id: &amp;str) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {
+    // ── Manifest / patches ────────────────────────────────────────────────
+
+    async fn upload_manifest(&amp;self, image_id: &amp;str, bytes: &amp;[u8]) -&gt; Result&lt;()&gt; {
+        todo!()
+    }
+    async fn download_manifest(&amp;self, image_id: &amp;str) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {
+        todo!()
+    }
+    async fn upload_patches(&amp;self, image_id: &amp;str, data: &amp;[u8], _compressed: bool) -&gt; Result&lt;()&gt; {
+        todo!()
+    }
+    async fn download_patches(&amp;self, image_id: &amp;str) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {
         todo!()
     }
 
-    fn find_blob_candidates(&amp;self, base_image_id: &amp;str) -&gt; Result&lt;Vec&lt;BlobCandidate&gt;&gt; {
-        // return BlobCandidate { blob_id, path, size } for each file
-        // stored during the base image's compression
+    // ── Image metadata ────────────────────────────────────────────────────
+
+    async fn register_image(&amp;self, meta: &amp;ImageMeta) -&gt; Result&lt;()&gt; { todo!() }
+    async fn get_image(&amp;self, image_id: &amp;str) -&gt; Result&lt;Option&lt;ImageMeta&gt;&gt; { todo!() }
+    async fn update_status(&amp;self, image_id: &amp;str, status: ImageStatus) -&gt; Result&lt;()&gt; { todo!() }
+    async fn list_images(&amp;self) -&gt; Result&lt;Vec&lt;ImageMeta&gt;&gt; { todo!() }
+
+    // ── Blob origins (needed for cross-image delta reuse) ─────────────────
+
+    async fn find_blob_candidates(
+        &amp;self,
+        base_image_id: &amp;str,
+        partition_number: Option&lt;i32&gt;,
+    ) -&gt; Result&lt;Vec&lt;BlobCandidate&gt;&gt; {
+        // Return BlobCandidate { uuid, sha256, original_path } for each
+        // file stored during the base image's compression.
+        // Used by blob_lookup stage to find delta bases for new files.
         todo!()
     }
 
-    fn save_image_meta(&amp;self, meta: &amp;ImageMeta) -&gt; Result&lt;()&gt; { todo!() }
-    fn get_image_meta(&amp;self, image_id: &amp;str) -&gt; Result&lt;Option&lt;ImageMeta&gt;&gt; { todo!() }
-    fn set_image_status(&amp;self, image_id: &amp;str, status: ImageStatus) -&gt; Result&lt;()&gt; { todo!() }
-    fn list_images(&amp;self) -&gt; Result&lt;Vec&lt;ImageMeta&gt;&gt; { todo!() }
-    fn upload_patches(&amp;self, image_id: &amp;str, data: &amp;[u8]) -&gt; Result&lt;()&gt; { todo!() }
-    fn download_patches(&amp;self, image_id: &amp;str) -&gt; Result&lt;Vec&lt;u8&gt;&gt; { todo!() }
+    async fn record_blob_origin(
+        &amp;self,
+        blob_uuid: Uuid,
+        orig_image_id: &amp;str,
+        base_image_id: Option&lt;&amp;str&gt;,
+        partition_number: Option&lt;i32&gt;,
+        file_path: &amp;str,
+    ) -&gt; Result&lt;()&gt; {
+        todo!()
+    }
+
+    // ── Delete ────────────────────────────────────────────────────────────
+
+    async fn delete_manifest(&amp;self, image_id: &amp;str) -&gt; Result&lt;()&gt; { todo!() }
+    async fn delete_patches(&amp;self, image_id: &amp;str) -&gt; Result&lt;()&gt; { todo!() }
+    async fn delete_blob(&amp;self, blob_id: Uuid) -&gt; Result&lt;()&gt; { todo!() }
+    async fn delete_blob_origins(&amp;self, image_id: &amp;str) -&gt; Result&lt;()&gt; { todo!() }
+    async fn delete_image_meta(&amp;self, image_id: &amp;str) -&gt; Result&lt;()&gt; { todo!() }
 }
 <span class="boring">}</span></code></pre>
-<h2 id="wire-up-a-compressor"><a class="header" href="#wire-up-a-compressor">Wire up a compressor</a></h2>
+<h2 id="build-a-routerencoder"><a class="header" href="#build-a-routerencoder">Build a <code>RouterEncoder</code></a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use std::sync::Arc;
 use image_delta_core::{
-    DefaultCompressor, Xdelta3Encoder, PassthroughEncoder,
-    RouterEncoder, GlobRule, ElfRule,
-    CompressOptions, DecompressOptions,
+    encoding::{PassthroughEncoder, PatchEncoder},
+    ElfRule, GlobRule, RouterEncoder, RoutingRule,
+    encoding::Xdelta3Encoder,
 };
-use std::path::Path;
 
-fn make_compressor(storage: Arc&lt;dyn image_delta_core::Storage&gt;)
-    -&gt; Arc&lt;DefaultCompressor&gt;
-{
-    // Build routing: already-compressed → passthrough, ELF → xdelta3, default → xdelta3
+fn make_router() -&gt; Arc&lt;RouterEncoder&gt; {
     let passthrough = Arc::new(PassthroughEncoder::new());
     let xdelta3     = Arc::new(Xdelta3Encoder::new());
 
-    let rules: Vec&lt;Box&lt;dyn image_delta_core::RoutingRule&gt;&gt; = vec![
-        Box::new(GlobRule::new("**/*.{gz,zst,xz}", Arc::clone(&amp;passthrough))),
-        Box::new(ElfRule::new(Arc::clone(&amp;xdelta3))),
+    let rules: Vec&lt;Box&lt;dyn RoutingRule&gt;&gt; = vec![
+        // Already-compressed → passthrough
+        Box::new(GlobRule::new(
+            "**/*.{gz,zst,xz,bz2}",
+            Arc::clone(&amp;passthrough) as Arc&lt;dyn PatchEncoder&gt;,
+        )),
+        // ELF binaries → xdelta3
+        Box::new(ElfRule::new(
+            Arc::clone(&amp;xdelta3) as Arc&lt;dyn PatchEncoder&gt;,
+        )),
     ];
-    let router = Arc::new(RouterEncoder::new(rules, Arc::clone(&amp;xdelta3)));
 
-    Arc::new(DefaultCompressor::new(storage, router))
-}
-
-fn compress_image(
-    storage:       Arc&lt;dyn image_delta_core::Storage&gt;,
-    base_root:     &amp;Path,
-    target_root:   &amp;Path,
-    image_id:      &amp;str,
-    base_image_id: Option&lt;&amp;str&gt;,
-) -&gt; image_delta_core::Result&lt;image_delta_core::CompressionStats&gt; {
-    let compressor = make_compressor(Arc::clone(&amp;storage));
-
-    let opts = CompressOptions {
-        image_id:              image_id.to_string(),
-        base_image_id:         base_image_id.map(str::to_string),
-        workers:               8,
-        passthrough_threshold: 1.0,
-    };
-
-    use image_delta_core::Compressor; // bring trait into scope
-    compressor.compress(base_root, target_root, opts)
-}
-
-fn decompress_image(
-    storage:    Arc&lt;dyn image_delta_core::Storage&gt;,
-    image_id:   &amp;str,
-    base_root:  &amp;Path,
-    output_dir: &amp;Path,
-) -&gt; image_delta_core::Result&lt;image_delta_core::DecompressionStats&gt; {
-    let compressor = make_compressor(Arc::clone(&amp;storage));
-
-    let opts = DecompressOptions {
-        image_id:  image_id.to_string(),
-        base_root: base_root.to_path_buf(),
-        workers:   8,
-    };
-
-    use image_delta_core::Compressor;
-    compressor.decompress(output_dir, opts)
+    // Fallback: xdelta3 for everything else
+    Arc::new(RouterEncoder::new(rules, xdelta3))
 }
 <span class="boring">}</span></code></pre>
-<h2 id="verify-correctness"><a class="header" href="#verify-correctness">Verify correctness</a></h2>
-<p>After decompression, use <code>compare_dirs</code> from the test helpers to assert
-that the output matches the original target:</p>
+<h2 id="compress-an-image"><a class="header" href="#compress-an-image">Compress an image</a></h2>
+<pre class="playground"><code class="language-rust">use std::sync::Arc;
+use std::path::Path;
+use image_delta_core::{
+    DirectoryImage, Image,
+    operations::compress,
+    operations::CompressOptions,
+};
+
+#[tokio::main]
+async fn main() -&gt; anyhow::Result&lt;()&gt; {
+    let storage = Arc::new(MyStorage { /* … */ });
+    let router  = make_router();
+    let image_format: Arc&lt;dyn Image&gt; = Arc::new(DirectoryImage);
+
+    let stats = compress(
+        Arc::clone(&amp;image_format),
+        Arc::clone(&amp;storage),
+        Arc::clone(&amp;router),
+        Path::new("/mnt/base-image"),    // source root
+        Path::new("/mnt/target-image"),  // target root
+        CompressOptions {
+            image_id:             "debian-11-20260502".into(),
+            base_image_id:        Some("debian-11-20260401".into()),
+            workers:              8,
+            passthrough_threshold: 1.0,
+            overwrite:            false,
+            debug_dir:            None,
+        },
+    ).await?;
+
+    println!(
+        "patched={} added={} removed={} ratio={:.3}",
+        stats.files_patched,
+        stats.files_added,
+        stats.files_removed,
+        stats.ratio(),
+    );
+    Ok(())
+}</code></pre>
+<h2 id="decompress-an-image"><a class="header" href="#decompress-an-image">Decompress an image</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>// in your integration test — copy compare_dirs from tests/common/mod.rs
-// or use the assertion helpers from fs_diff_integration.rs as a template
+</span>use image_delta_core::{
+    operations::decompress,
+    operations::DecompressOptions,
+};
 
-let diffs = compare_dirs(&amp;target_root, &amp;output_dir);
-assert!(diffs.is_empty(), "decompression introduced differences: {diffs:#?}");
+let stats = decompress(
+    Arc::clone(&amp;image_format),
+    Arc::clone(&amp;storage),
+    Arc::clone(&amp;router),
+    DecompressOptions {
+        image_id:  "debian-11-20260502".into(),
+        base_root: "/mnt/base-image".into(),
+        workers:   8,
+    },
+    Path::new("/mnt/restored"),   // output directory
+).await?;
 <span class="boring">}</span></code></pre>
-<p>The comparison checks: file content (SHA-256), Unix mode, uid, gid, mtime
-(±1 s tolerance), file type, symlink targets, hardlink relationships, and
-extended attributes (<code>xattr</code>).</p>
+<h2 id="verify-correctness-after-decompression"><a class="header" href="#verify-correctness-after-decompression">Verify correctness after decompression</a></h2>
+<p>The integration test helpers in <code>core/tests/common/</code> include a <code>compare_dirs</code>
+function that checks:</p>
+<ul>
+<li>File content (SHA-256)</li>
+<li>Unix mode, uid, gid</li>
+<li>Modification time (±1 s tolerance)</li>
+<li>Symlink targets</li>
+<li>Hardlink relationships <code>(dev, ino)</code></li>
+<li>Extended attributes (<code>xattr</code>)</li>
+</ul>
+<p>Copy or adapt it for your own integration tests:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let diffs = compare_dirs(&amp;target_root, &amp;output_dir);
+assert!(
+    diffs.is_empty(),
+    "decompression introduced differences: {diffs:#?}"
+);
+<span class="boring">}</span></code></pre>
+<h2 id="custom-image-format"><a class="header" href="#custom-image-format">Custom image format</a></h2>
+<p>If your images use a format other than plain directories or qcow2, implement
+<code>Image</code> and <code>OpenImage</code>:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use image_delta_core::{Image, OpenImage, partitions::{DiskLayout, PartitionHandle}};
+
+pub struct MyImageFormat;
+
+impl Image for MyImageFormat {
+    fn format_name(&amp;self) -&gt; &amp;'static str { "my-format" }
+
+    fn open(&amp;self, path: &amp;std::path::Path)
+        -&gt; image_delta_core::Result&lt;Box&lt;dyn OpenImage&gt;&gt;
+    {
+        // mount / parse the image; return an OpenImage that keeps
+        // OS resources alive until dropped
+        todo!()
+    }
+}
+
+struct MyOpenImage {
+    layout: DiskLayout,
+    // NBD connection, loop device, FUSE handle, …
+}
+
+impl OpenImage for MyOpenImage {
+    fn disk_layout(&amp;self) -&gt; &amp;DiskLayout { &amp;self.layout }
+
+    fn partitions(&amp;self)
+        -&gt; image_delta_core::Result&lt;Vec&lt;PartitionHandle&gt;&gt;
+    {
+        // return one PartitionHandle per partition
+        todo!()
+    }
+}
+<span class="boring">}</span></code></pre>
 
                     </main>
 
@@ -363,6 +483,8 @@ extended attributes (<code>xattr</code>).</p>
         <script src="book-a0b12cfe.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="js/mermaid-eefea253.min.js"></script>
+        <script src="js/mermaid-init-80534770.js"></script>
 
 
 

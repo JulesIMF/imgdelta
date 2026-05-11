@@ -29,13 +29,15 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-565f80e4.js";
+            window.path_to_searchindex_js = "searchindex-f6a020ce.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -181,25 +183,112 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p><strong>imgdelta</strong> is a delta compression tool for cloud OS images.</p>
-<p>Instead of storing each image version in full, imgdelta computes per-file binary
-deltas between filesystem snapshots. Patches are stored in S3; metadata is
-indexed in PostgreSQL. Decompression is offline and fully in-process (no
-daemon, no FUSE).</p>
+<blockquote>
+<p><strong>Academic project</strong> — imgdelta is a diploma project designed from the ground
+up with industrial applicability in mind. This documentation is written for
+anyone who finds the project and wants to understand the architecture,
+integrate the library, or extend it to fit their own infrastructure.</p>
+</blockquote>
+<p><strong>imgdelta</strong> is a file-level delta compression toolkit for cloud OS images.</p>
+<p>Instead of storing every image version in full, imgdelta computes per-file
+binary patches between filesystem snapshots. Patches and blobs are stored in
+an object store of your choice; image metadata lives in any backend that
+implements the <code>Storage</code> trait. Decompression runs fully in-process —
+no daemons, no FUSE, no kernel modules required on the client side.</p>
+<p><strong>ubuntu-22.04</strong>, <strong>debian-11</strong>, and <strong>fedora-37</strong> qcow2 images already
+compress and decompress correctly end-to-end.</p>
+<hr>
+<h2 id="problem-and-motivation"><a class="header" href="#problem-and-motivation">Problem and motivation</a></h2>
+<p>Cloud providers store thousands of OS images: public distribution images,
+user snapshots, nightly CI builds. The naive approach — store every version
+in full — causes storage costs to grow linearly even when successive versions
+differ by only 2–5 % of their files.</p>
+<p>imgdelta exploits that redundancy:</p>
+<ol>
+<li>Walk both filesystem trees, compare SHA-256 hashes, detect added /
+removed / changed / renamed files.</li>
+<li>For each changed file, select the optimal encoding algorithm (VCDIFF,
+text-diff, verbatim) based on file path, type, and magic bytes.</li>
+<li>Upload patches + manifest to object storage.</li>
+<li>On decompress, download manifest and patches, apply them to the base
+image, and reconstruct the target filesystem.</li>
+</ol>
+<h3 id="mathematical-sketch"><a class="header" href="#mathematical-sketch">Mathematical sketch</a></h3>
+<p>Let $I_0, I_1, \ldots, I_n$ be successive image versions. Full storage cost:</p>
+<p>$$S_{\text{full}} = \sum_{k=0}^{n} |I_k|$$</p>
+<p>Delta storage cost (imgdelta):</p>
+<p>$$S_{\text{delta}} = |I_0| + \sum_{k=1}^{n} \delta(I_{k-1}, I_k)$$</p>
+<p>where $\delta(I_{k-1}, I_k)$ is the total compressed size of <strong>only the
+changed files</strong>. For typical Linux distribution images
+$\delta \approx 3\text{–}10%$ of $|I_k|$, yielding a $10\text{–}30\times$
+reduction compared to full storage.</p>
+<p>A patch for file $f$ is encoded as a VCDIFF:</p>
+<p>$$\text{patch}(f) = \text{VCDIFF}(f_{\text{base}},; f_{\text{target}})$$</p>
+<p>and reconstructed as:</p>
+<p>$$f_{\text{target}} = \text{apply}(f_{\text{base}},; \text{patch}(f))$$</p>
+<hr>
+<h2 id="who-can-use-imgdelta"><a class="header" href="#who-can-use-imgdelta">Who can use imgdelta</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Scenario</th><th>Benefit</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Cloud provider</strong> storing public OS distribution images</td><td>Thousands of versions at the cost of a few full images</td></tr>
+<tr><td><strong>Cloud provider</strong> managing per-user VM snapshots</td><td>Savings on frequent restore-point workloads</td></tr>
+<tr><td><strong>CI/CD infrastructure</strong> building images on every commit</td><td>Version history storage stays flat</td></tr>
+<tr><td><strong>Edge provider</strong> with limited uplink bandwidth</td><td>Ship only deltas; reconstruct on-device</td></tr>
+<tr><td><strong>Embedded OS developer</strong> with frequent firmware builds</td><td>Version firmware with minimal storage overhead</td></tr>
+<tr><td><strong>Corporate IT</strong> maintaining a golden-image tree with branches</td><td>Each branch stores only its delta from the base</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="advantages"><a class="header" href="#advantages">Advantages</a></h3>
+<ul>
+<li><strong>Maximum efficiency</strong> — file-level content-addressed deduplication; files
+with identical SHA-256 are never uploaded twice.</li>
+<li><strong>Modularity</strong> — image format, partition type, encoder, and storage backend
+are fully independent and replaceable without touching algorithm code.</li>
+<li><strong>No read-time overhead</strong> — decompression happens once before VM boot; the
+running system is unaware of imgdelta.</li>
+<li><strong>Integrity verification</strong> — every patch stores a SHA-256 digest checked at
+decompress time.</li>
+<li><strong>Composable encoders</strong> — <code>RouterEncoder</code> is itself a <code>PatchEncoder</code>, so
+sub-routers and nested routing trees are possible.</li>
+</ul>
+<h3 id="limitations"><a class="header" href="#limitations">Limitations</a></h3>
+<ul>
+<li><strong>Deep integration required</strong> — maximum efficiency demands a custom <code>Storage</code>
+implementation and familiarity with the partition/image model. There is no
+“plug in and forget” mode.</li>
+<li><strong>No base image → no delta</strong> — the first image in any chain is always stored
+in full.</li>
+<li><strong>qcow2 requires <code>qemu-nbd</code></strong> — mounting qcow2 images depends on
+<code>qemu-utils</code> and Linux kernel NBD support.</li>
+<li><strong>File-level, not block-level</strong> — does not benefit workloads with encrypted
+or non-mountable filesystems.</li>
+</ul>
+<hr>
 <h2 id="key-properties"><a class="header" href="#key-properties">Key properties</a></h2>
 <ul>
-<li><strong>Per-file deltas</strong> — operates on the filesystem level, not on raw disk blocks</li>
+<li><strong>File-level diff</strong> — operates on mounted filesystems, not raw disk blocks</li>
 <li><strong>Pluggable encoders</strong> — xdelta3 (VCDIFF), text-diff (Myers), passthrough;
-routed per file type via TOML configuration</li>
-<li><strong>Parallel</strong> — configurable worker threads for both compression and decompression</li>
+new encoders implement <code>PatchEncoder</code></li>
+<li><strong>Composable router</strong> — <code>RouterEncoder</code> is a <code>PatchEncoder</code>; nested
+sub-routers are supported</li>
+<li><strong>Parallel</strong> — configurable rayon worker pool for compress and decompress</li>
 <li><strong>Library + CLI</strong> — <code>image-delta-core</code> is a reusable Rust library;
-<code>imgdelta</code> is the CLI binary</li>
-<li><strong>Offline decompression</strong> — full reconstruction before VM creation; no lazy loading</li>
+<code>imgdelta</code> CLI builds on top of it</li>
+<li><strong>Offline decompression</strong> — full reconstruction before VM start; no lazy loading</li>
+<li><strong>Custom Storage</strong> — implement <code>Storage</code> for your own backend; all imgdelta
+algorithms work transparently</li>
+<li><strong><code>compress</code> and <code>decompress</code> are free functions</strong> — not methods on <code>Image</code>.
+This is deliberate: compressing an image is a heavy, multi-variable operation
+(image format, partition types, filesystem types, storage backend, routing
+config, worker count, …). A method like <code>image.compress_from(base, storage)</code>
+would hide that complexity. The free-function signatures make every parameter
+explicit and visible at the call site.</li>
 </ul>
-<h2 id="when-to-use"><a class="header" href="#when-to-use">When to use</a></h2>
-<p>imgdelta is designed for cloud providers who store many similar OS image versions
-(e.g. nightly Debian builds) in cold/archive object storage and need to reduce
-storage costs without sacrificing decompression throughput.</p>
 
                     </main>
 
@@ -246,6 +335,8 @@ storage costs without sacrificing decompression throughput.</p>
         <script src="book-a0b12cfe.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="js/mermaid-eefea253.min.js"></script>
+        <script src="js/mermaid-init-80534770.js"></script>
 
 
 

@@ -29,13 +29,15 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-565f80e4.js";
+            window.path_to_searchindex_js = "searchindex-f6a020ce.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -181,34 +183,36 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="configuration-reference"><a class="header" href="#configuration-reference">Configuration Reference</a></h1>
-<p>imgdelta is configured via a TOML file (passed with <code>--config imgdelta.toml</code>).
-All fields have documented defaults.</p>
+<p>imgdelta is configured via a TOML file, passed with <code>--config imgdelta.toml</code>.</p>
 <h2 id="storage"><a class="header" href="#storage"><code>[storage]</code></a></h2>
-<p>S3 + PostgreSQL backend.</p>
+<p>Storage backend selection. Currently one built-in type is supported; cloud
+providers implement the <code>Storage</code> trait directly in their own Rust code.</p>
+<h3 id="type--local-built-in-reference-backend"><a class="header" href="#type--local-built-in-reference-backend"><code>type = "local"</code> (built-in reference backend)</a></h3>
 <pre><code class="language-toml">[storage]
-s3_bucket    = "my-images"          # required
-s3_region    = "us-east-1"          # optional, defaults to AWS_REGION env var
-s3_endpoint  = "https://s3.yandexcloud.net"  # optional, override for non-AWS
-database_url = "postgres://user:pass@localhost/imgdelta"  # required
+type      = "local"
+local_dir = "/var/lib/imgdelta"
 </code></pre>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
-</thead>
-<tbody>
-<tr><td><code>s3_bucket</code></td><td>string</td><td>—</td><td>S3 bucket name</td></tr>
-<tr><td><code>s3_region</code></td><td>string</td><td>env <code>AWS_REGION</code></td><td>AWS region</td></tr>
-<tr><td><code>s3_endpoint</code></td><td>string</td><td>AWS default</td><td>Override endpoint (MinIO, YC)</td></tr>
-<tr><td><code>database_url</code></td><td>string</td><td>—</td><td>PostgreSQL connection string</td></tr>
-</tbody>
-</table>
-</div>
+<p>All blobs, manifests, and patch archives are stored as regular files under
+<code>local_dir</code>:</p>
+<pre><code>{local_dir}/
+  blobs/{uuid}                   — blob bytes (gzip-compressed when smaller)
+  images/{image_id}/manifest     — MessagePack manifest
+  images/{image_id}/patches.tar  — patches tar archive
+  images/{image_id}/meta.json    — ImageMeta + status
+  sha256_index.json              — sha256 hex → {uuid, compressed} (dedup)
+  blobs.json                     — blob origin records
+</code></pre>
+<p>Blob UUIDs are deterministic (UUID v5 over SHA-256) so re-uploading the same
+content is idempotent.</p>
+<blockquote>
+<p><strong>For providers</strong>: do not use <code>LocalStorage</code> in production at scale.
+Implement <code>Storage</code> for your own object store and metadata service.
+See <a href="integration.html">Provider Integration</a>.</p>
+</blockquote>
 <h2 id="compressor"><a class="header" href="#compressor"><code>[compressor]</code></a></h2>
-<p>Controls parallelism, fallback behaviour, default encoder, and routing rules.</p>
 <pre><code class="language-toml">[compressor]
-workers               = 8       # default: number of logical CPUs
-passthrough_threshold = 1.0     # store verbatim if delta &gt;= original * threshold
+workers               = 8       # default: logical CPU count
+passthrough_threshold = 1.0     # store verbatim if delta_size &gt;= source_size * threshold
 default_encoder       = "xdelta3"
 </code></pre>
 <div class="table-wrapper">
@@ -217,9 +221,9 @@ default_encoder       = "xdelta3"
 <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>workers</code></td><td>integer</td><td><code>num_cpus</code></td><td>Parallel worker threads</td></tr>
+<tr><td><code>workers</code></td><td>integer</td><td><code>num_cpus</code></td><td>Parallel rayon worker threads</td></tr>
 <tr><td><code>passthrough_threshold</code></td><td>float</td><td><code>1.0</code></td><td>Delta/original size ratio cutoff</td></tr>
-<tr><td><code>default_encoder</code></td><td>enum</td><td><code>"xdelta3"</code></td><td>Fallback when no routing rule matches</td></tr>
+<tr><td><code>default_encoder</code></td><td>enum</td><td><code>"xdelta3"</code></td><td>Encoder when no routing rule matches</td></tr>
 </tbody>
 </table>
 </div>
@@ -230,51 +234,42 @@ default_encoder       = "xdelta3"
 <tr><th>Value</th><th>Algorithm</th></tr>
 </thead>
 <tbody>
-<tr><td><code>"xdelta3"</code></td><td>VCDIFF binary delta (vendored xdelta3)</td></tr>
-<tr><td><code>"text_diff"</code></td><td>Myers line-level diff (pure Rust)</td></tr>
-<tr><td><code>"passthrough"</code></td><td>Verbatim blob (no delta)</td></tr>
+<tr><td><code>"xdelta3"</code></td><td>VCDIFF binary delta (vendored xdelta3 C library)</td></tr>
+<tr><td><code>"text_diff"</code></td><td>Myers line-level diff (pure Rust, <code>diffy</code> crate)</td></tr>
+<tr><td><code>"passthrough"</code></td><td>Verbatim blob (no delta, stores the file as-is)</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="compressorrouting"><a class="header" href="#compressorrouting"><code>[[compressor.routing]]</code></a></h2>
-<p>An ordered list of rules. The first rule whose predicate matches a file wins.
-Files that match no rule use <code>default_encoder</code>.</p>
+<p>An ordered list of routing rules. The first rule whose predicate matches a
+file wins. Files matching no rule use <code>default_encoder</code>.</p>
 <h3 id="type--glob"><a class="header" href="#type--glob"><code>type = "glob"</code></a></h3>
 <pre><code class="language-toml">[[compressor.routing]]
 type    = "glob"
-pattern = "**/*.{gz,zst,xz,bz2,lz4,br,zip}"
+pattern = "**/*.{gz,zst,xz,bz2,lz4,br}"
 encoder = "passthrough"
 </code></pre>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Field</th><th>Description</th></tr>
-</thead>
-<tbody>
-<tr><td><code>pattern</code></td><td>Glob pattern matched against the relative file path</td></tr>
-<tr><td><code>encoder</code></td><td>Encoder to use for matching files</td></tr>
-</tbody>
-</table>
-</div>
+<p><code>pattern</code> is a glob matched against the relative file path (forward-slash
+separated).</p>
 <h3 id="type--elf"><a class="header" href="#type--elf"><code>type = "elf"</code></a></h3>
-<p>Matches files whose first 4 bytes are <code>\x7fELF</code> (Linux ELF binaries and shared libraries).</p>
+<p>Matches files whose first 4 bytes are <code>\x7fELF</code>.</p>
 <pre><code class="language-toml">[[compressor.routing]]
 type    = "elf"
 encoder = "xdelta3"
 </code></pre>
 <h3 id="type--size"><a class="header" href="#type--size"><code>type = "size"</code></a></h3>
-<p>Matches files smaller than <code>max_bytes</code>.</p>
+<p>Matches files strictly smaller than <code>max_bytes</code>.</p>
 <pre><code class="language-toml">[[compressor.routing]]
 type      = "size"
 max_bytes = 512
 encoder   = "passthrough"
 </code></pre>
 <h3 id="type--magic"><a class="header" href="#type--magic"><code>type = "magic"</code></a></h3>
-<p>Matches files whose bytes at <code>offset</code> start with the given hex sequence.</p>
+<p>Matches files whose bytes at <code>offset</code> (default <code>0</code>) start with the given
+hex sequence.</p>
 <pre><code class="language-toml">[[compressor.routing]]
-type    = "magic"
-offset  = 0
-hex     = "89504e47"   # PNG magic bytes
+type   = "magic"
+hex    = "89504e47"    # PNG magic bytes
 encoder = "passthrough"
 </code></pre>
 <div class="table-wrapper">
@@ -283,49 +278,35 @@ encoder = "passthrough"
 <tr><th>Field</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>offset</code></td><td>Byte offset from file start (default <code>0</code>)</td></tr>
 <tr><td><code>hex</code></td><td>Hex-encoded byte sequence to match</td></tr>
+<tr><td><code>offset</code></td><td>Byte offset from file start (default <code>0</code>)</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="logging"><a class="header" href="#logging"><code>[logging]</code></a></h2>
 <pre><code class="language-toml">[logging]
-level = "info"   # error | warn | info | debug | trace
-file  = "/var/log/imgdelta/compress.log"  # optional
+level = "info"              # error | warn | info | debug | trace
+file  = "/var/log/imgdelta/compress.log"   # optional
 
 [logging.targets]
 "image_delta_core::fs_diff"    = "debug"
 "image_delta_core::path_match" = "debug"
-"image_delta_core::scheduler"  = "warn"
 </code></pre>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Field</th><th>Default</th><th>Description</th></tr>
-</thead>
-<tbody>
-<tr><td><code>level</code></td><td><code>"info"</code></td><td>Global log level</td></tr>
-<tr><td><code>file</code></td><td>—</td><td>Write logs to file in addition to stderr</td></tr>
-<tr><td><code>targets</code></td><td><code>{}</code></td><td>Per-module overrides (tracing target syntax)</td></tr>
-</tbody>
-</table>
-</div>
-<p><code>RUST_LOG</code> environment variable overrides <code>[logging]</code> when set.</p>
+<p><code>RUST_LOG</code> overrides <code>[logging]</code> when set.</p>
 <h2 id="full-example"><a class="header" href="#full-example">Full example</a></h2>
 <pre><code class="language-toml">[storage]
-s3_bucket    = "acme-images"
-s3_region    = "eu-central-1"
-database_url = "postgres://imgdelta:secret@db.internal/imgdelta"
+type      = "local"
+local_dir = "/var/lib/imgdelta"
 
 [compressor]
 workers               = 16
 passthrough_threshold = 1.0
 default_encoder       = "xdelta3"
 
-# Already-compressed formats → no delta
+# Already-compressed and media formats → no delta
 [[compressor.routing]]
 type    = "glob"
-pattern = "**/*.{gz,zst,xz,bz2,lz4,br,zip,png,jpg,mp4,webm}"
+pattern = "**/*.{gz,zst,xz,bz2,lz4,br,zip,png,jpg,jpeg,mp4,webm}"
 encoder = "passthrough"
 
 # ELF binaries → xdelta3
@@ -339,12 +320,17 @@ type    = "glob"
 pattern = "**/*.{conf,cfg,ini,yaml,toml,json,py,sh,rb,pl}"
 encoder = "text_diff"
 
+# Tiny files → not worth the delta overhead
+[[compressor.routing]]
+type      = "size"
+max_bytes = 512
+encoder   = "passthrough"
+
 [logging]
 level = "info"
-file  = "/var/log/imgdelta/last.log"
 
 [logging.targets]
-"image_delta_core::compressor" = "debug"
+"image_delta_core::compress" = "debug"
 </code></pre>
 
                     </main>
@@ -398,6 +384,8 @@ file  = "/var/log/imgdelta/last.log"
         <script src="book-a0b12cfe.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="js/mermaid-eefea253.min.js"></script>
+        <script src="js/mermaid-init-80534770.js"></script>
 
 
 

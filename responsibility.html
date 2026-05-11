@@ -29,13 +29,15 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-565f80e4.js";
+            window.path_to_searchindex_js = "searchindex-f6a020ce.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -184,61 +186,87 @@
 <p>imgdelta is designed so that a cloud provider can embed <code>image-delta-core</code>
 as a library and supply their own storage backend, without modifying any
 algorithm code.</p>
-<h2 id="what-imgdelta-owns"><a class="header" href="#what-imgdelta-owns">What imgdelta owns</a></h2>
+<h2 id="what-image-delta-core-owns"><a class="header" href="#what-image-delta-core-owns">What <code>image-delta-core</code> owns</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Concern</th><th>Where</th></tr>
+<tr><th>Concern</th><th>Module</th></tr>
 </thead>
 <tbody>
-<tr><td>Filesystem walk and diff</td><td><code>image-delta-core::fs_diff</code></td></tr>
-<tr><td>Path similarity / rename detection</td><td><code>image-delta-core::path_match</code></td></tr>
-<tr><td>Binary delta encoding (xdelta3 FFI)</td><td><code>image-delta-core::encoders::vcdiff</code></td></tr>
-<tr><td>Text diff encoding (pure Rust Myers)</td><td><code>image-delta-core::encoders::text_diff</code></td></tr>
-<tr><td>Verbatim blob fallback</td><td><code>image-delta-core::encoders::passthrough</code></td></tr>
-<tr><td>File-type routing</td><td><code>image-delta-core::routing</code></td></tr>
-<tr><td>Manifest serialisation (MessagePack)</td><td><code>image-delta-core::manifest</code></td></tr>
-<tr><td>Compress/decompress orchestration</td><td><code>image-delta-core::compressor</code></td></tr>
-<tr><td><code>DirectoryImage</code> (plain directory mount)</td><td><code>image-delta-core::formats::directory</code></td></tr>
-<tr><td><code>Qcow2Image</code> (qemu-nbd mount, feature-gated)</td><td><code>image-delta-core::formats::qcow2</code></td></tr>
-<tr><td>CLI binary <code>imgdelta</code></td><td><code>image-delta-cli</code></td></tr>
-<tr><td>S3 + PostgreSQL <code>Storage</code> impl</td><td><code>image-delta-cli::impls::s3_storage</code></td></tr>
+<tr><td>Filesystem walk and hash comparison</td><td><code>fs_diff</code></td></tr>
+<tr><td>Path similarity / rename detection</td><td><code>path_match</code></td></tr>
+<tr><td>VCDIFF encoding (xdelta3 FFI)</td><td><code>encoding::xdelta3</code></td></tr>
+<tr><td>Text line-diff encoding (Myers, pure Rust)</td><td><code>encoding::text_diff</code></td></tr>
+<tr><td>Verbatim blob fallback</td><td><code>encoding::passthrough</code></td></tr>
+<tr><td>File-type routing</td><td><code>encoding::router</code></td></tr>
+<tr><td>Manifest serialisation (MessagePack v4)</td><td><code>manifest</code></td></tr>
+<tr><td>Compress orchestration (8-stage pipeline)</td><td><code>compress</code></td></tr>
+<tr><td>Decompress orchestration</td><td><code>decompress</code></td></tr>
+<tr><td>Delete orchestration</td><td><code>operations::delete</code></td></tr>
+<tr><td><code>DirectoryImage</code> (plain directory, no mount)</td><td><code>image::directory</code></td></tr>
+<tr><td><code>Qcow2Image</code> (qemu-nbd mount, feature-gated)</td><td><code>image::qcow2</code></td></tr>
+<tr><td><code>LocalStorage</code> reference implementation</td><td><code>storage::local</code></td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="what-the-provider-owns"><a class="header" href="#what-the-provider-owns">What the provider owns</a></h2>
-<p>A provider who embeds <code>image-delta-core</code> directly must supply:</p>
+<p>A provider embedding <code>image-delta-core</code> must supply:</p>
 <ol>
-<li><strong><code>impl Storage</code></strong> — plugs into any object store + metadata DB of their choice.</li>
-<li><strong><code>impl Image</code></strong> (optional) — if images use a format other than plain
-directories or qcow2, implement <code>mount()</code> and <code>pack()</code> accordingly.</li>
-<li><strong>Routing config</strong> — TOML rules or a programmatic <code>Vec&lt;Box&lt;dyn RoutingRule&gt;&gt;</code>
-passed to <code>RouterEncoder::new(rules, fallback)</code>.</li>
+<li><strong><code>impl Storage</code></strong> — connects imgdelta to their own object store and
+metadata index. This is the primary integration point.</li>
+<li><strong><code>impl Image</code></strong> <em>(optional)</em> — if images use a format other than plain
+directories or qcow2, implement <code>open()</code> (and optionally <code>mount()</code>).</li>
+<li><strong>Routing configuration</strong> — either TOML rules (via the CLI) or a
+programmatic <code>Vec&lt;Box&lt;dyn RoutingRule&gt;&gt;</code> passed to
+<code>RouterEncoder::new(rules, fallback)</code>.</li>
 </ol>
-<p>Everything else — the diff algorithm, xdelta3 FFI, path matching, manifest
-format, decompression order — is handled by the library.</p>
+<p>Everything else — the diff algorithm, VCDIFF FFI, path matching, manifest
+format, partition layout, decompression order — is handled by the library.</p>
 <h2 id="trait-boundaries"><a class="header" href="#trait-boundaries">Trait boundaries</a></h2>
-<pre><code>             ┌─────────────────────────────────┐
-             │       image-delta-core           │
-             │                                 │
-  Storage ◀──┤ DefaultCompressor               │
-  (yours) ───▶  + diff_dirs                    │
-             │  + path_match                   │
-             │  + RouterEncoder → DeltaEncoder │
-             │  + Manifest serde               │
-             └─────────────────────────────────┘
-             ┌─────────────────────────────────┐
-             │       image-delta-cli            │
-             │                                 │
-             │  S3Storage (impl Storage)        │
-             │  CLI argument parsing            │
-             │  TOML config → RouterEncoder     │
-             └─────────────────────────────────┘
-</code></pre>
+<pre class="mermaid">graph TB
+    subgraph core["image-delta-core"]
+        DC["DefaultCompressor&lt;br/&gt;(compress / decompress)"]
+        FD["fs_diff"]
+        PM["path_match"]
+        RE["RouterEncoder"]
+        MA["Manifest serde"]
+        DC --&gt; FD
+        DC --&gt; PM
+        DC --&gt; RE
+        DC --&gt; MA
+    end
+
+    subgraph provider["Provider / CLI"]
+        PS["impl Storage&lt;br/&gt;(your object store)"]
+        PI["impl Image&lt;br/&gt;(optional: custom format)"]
+        RC["Routing config&lt;br/&gt;(TOML or programmatic)"]
+    end
+
+    PS --&gt;|"Storage trait"| DC
+    PI --&gt;|"Image trait"| DC
+    RC --&gt; RE
+</pre>
+
+<!-- TODO: turn this into a proper SVG -->
+<h2 id="why-compress-and-decompress-are-free-functions"><a class="header" href="#why-compress-and-decompress-are-free-functions">Why <code>compress</code> and <code>decompress</code> are free functions</a></h2>
+<p>imgdelta deliberately <strong>does not</strong> expose compression as a method on <code>Image</code>
+(e.g. <code>image.compress_from(base, storage)</code>).</p>
+<p>Reasons:</p>
+<ul>
+<li>Compression is a heavy, multi-variable operation. The parameters include
+the image format, partition scheme, filesystem types, storage backend,
+routing configuration, worker count, debug options, and passthrough
+threshold. A method signature cannot express this without introducing a
+large options struct anyway.</li>
+<li>Making it a free function with explicit arguments (<code>compress(image_format, storage, router, source_root, target_root, options)</code>) makes the dependency
+on each component visible at the call site.</li>
+<li>It also means <code>Image</code>, <code>Storage</code>, and <code>PatchEncoder</code> remain narrow,
+single-responsibility traits with no cross-trait dependencies.</li>
+</ul>
 <h2 id="provider-integration-example"><a class="header" href="#provider-integration-example">Provider integration example</a></h2>
 <p>See the <a href="integration.html">Provider Integration</a> chapter for a complete Rust
-example showing how to instantiate <code>DefaultCompressor</code> with a custom
-<code>Storage</code> implementation.</p>
+example showing how to instantiate and call <code>compress</code> / <code>decompress</code> with a
+custom <code>Storage</code> implementation.</p>
 
                     </main>
 
@@ -291,6 +319,8 @@ example showing how to instantiate <code>DefaultCompressor</code> with a custom
         <script src="book-a0b12cfe.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="js/mermaid-eefea253.min.js"></script>
+        <script src="js/mermaid-init-80534770.js"></script>
 
 
 

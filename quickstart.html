@@ -29,13 +29,15 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-565f80e4.js";
+            window.path_to_searchindex_js = "searchindex-f6a020ce.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9258d3bf.js"></script>
@@ -190,29 +192,26 @@
 <tbody>
 <tr><td>Rust</td><td>stable</td><td><code>rustup toolchain install stable</code></td></tr>
 <tr><td>C compiler</td><td>any</td><td><code>gcc</code> or <code>clang</code> — for vendored <code>xdelta3.c</code></td></tr>
-<tr><td>S3-compatible storage</td><td>—</td><td>AWS S3, Yandex Cloud Object Storage, or MinIO</td></tr>
-<tr><td>PostgreSQL</td><td>≥ 14</td><td>image metadata index</td></tr>
+<tr><td><code>qemu-utils</code></td><td>—</td><td>Required <strong>only</strong> for qcow2 images (<code>qemu-nbd</code>)</td></tr>
 </tbody>
 </table>
 </div>
-<p>For L1 tests only (no S3/DB): just Rust + C compiler.</p>
-<h2 id="install"><a class="header" href="#install">Install</a></h2>
+<p>For directory-format images (or L1 unit tests): only Rust + C compiler needed.</p>
+<h2 id="build-from-source"><a class="header" href="#build-from-source">Build from source</a></h2>
 <pre><code class="language-sh">git clone https://github.com/JulesIMF/imgdelta
 cd imgdelta
 cargo build --release --all
-# add ./target/release to PATH or copy imgdelta to /usr/local/bin
+# binary: ./target/release/imgdelta
 </code></pre>
 <h2 id="minimal-configuration"><a class="header" href="#minimal-configuration">Minimal configuration</a></h2>
-<p>Create <code>imgdelta.toml</code>:</p>
+<p>Copy <code>examples/imgdelta.toml</code> and adjust:</p>
 <pre><code class="language-toml">[storage]
-s3_bucket    = "my-images"
-s3_region    = "us-east-1"
-database_url = "postgres://user:pass@localhost/imgdelta"
+type      = "local"
+local_dir = "/var/lib/imgdelta"   # any writable directory
 
 [compressor]
-workers               = 8
-default_encoder       = "xdelta3"
-passthrough_threshold = 1.0
+workers         = 8
+default_encoder = "xdelta3"
 
 # Already-compressed formats → store verbatim
 [[compressor.routing]]
@@ -225,19 +224,26 @@ encoder = "passthrough"
 type    = "elf"
 encoder = "xdelta3"
 </code></pre>
-<h2 id="compress-a-new-image"><a class="header" href="#compress-a-new-image">Compress a new image</a></h2>
+<blockquote>
+<p>The <code>local</code> storage backend stores all data under <code>local_dir</code> as ordinary
+files — no S3, no PostgreSQL. It is the built-in reference implementation
+and suitable for single-machine use and development. Providers running at
+scale should implement a custom <code>Storage</code> backed by their own object store.</p>
+</blockquote>
+<h2 id="compress-an-image"><a class="header" href="#compress-an-image">Compress an image</a></h2>
 <pre><code class="language-sh">imgdelta compress \
   --image         /mnt/new-image \
   --image-id      debian-11-20260502 \
   --base-image-id debian-11-20260401 \
   --config        imgdelta.toml
 </code></pre>
-<p>On completion, imgdelta prints a summary:</p>
+<p>On completion imgdelta prints a summary:</p>
 <pre><code>Compressed debian-11-20260502 (base: debian-11-20260401)
-  patched:  4 312 files  (87.3 MiB → 3.1 MiB, ratio 0.035)
-  added:      127 files  (12.4 MiB verbatim)
-  removed:     89 files
-  elapsed:   14.2 s
+  patched:    4 312 files  (87.3 MiB → 3.1 MiB, ratio 0.035)
+  added:        127 files  (12.4 MiB verbatim)
+  removed:       89 files
+  renamed:       14 files
+  elapsed:     14.2 s
 </code></pre>
 <h2 id="decompress-reconstruct"><a class="header" href="#decompress-reconstruct">Decompress (reconstruct)</a></h2>
 <pre><code class="language-sh">imgdelta decompress \
@@ -246,49 +252,59 @@ encoder = "xdelta3"
   --output    /mnt/restored \
   --config    imgdelta.toml
 </code></pre>
-<p>After decompression the directory <code>/mnt/restored</code> contains an exact
-replica of the target filesystem with all file attributes (mode, uid/gid,
-mtime, symlinks, hardlinks, xattrs) preserved.</p>
+<p>After decompression <code>/mnt/restored</code> contains an exact replica of the target
+filesystem with all attributes preserved (mode, uid/gid, mtime, symlinks,
+hardlinks, xattrs).</p>
+<h2 id="compress-a-qcow2-image"><a class="header" href="#compress-a-qcow2-image">Compress a qcow2 image</a></h2>
+<pre><code class="language-sh">imgdelta compress \
+  --image-format  qcow2 \
+  --image         /images/fedora-37-new.qcow2 \
+  --image-id      fedora-37-20260502 \
+  --base-image-id fedora-37-20260401 \
+  --config        imgdelta.toml
+</code></pre>
+<p>Requires <code>qemu-nbd</code> and <code>CAP_SYS_ADMIN</code> (or run as root).</p>
 <h2 id="inspect-a-manifest"><a class="header" href="#inspect-a-manifest">Inspect a manifest</a></h2>
 <pre><code class="language-sh"># Pretty-print as JSON
 imgdelta manifest inspect --image-id debian-11-20260502 --format json | jq .
 
-# Check image status
+# Check image lifecycle status
 imgdelta image status --image-id debian-11-20260502
 
 # List all known images
 imgdelta image list
 </code></pre>
-<h2 id="debug-development-builds"><a class="header" href="#debug-development-builds">Debug (development builds)</a></h2>
-<p>Debug builds include the <code>debug</code> subcommand for inspecting real directory
-pairs without running a full compress cycle:</p>
+<h2 id="debug-walkdir-development-builds-only"><a class="header" href="#debug-walkdir-development-builds-only">Debug walkdir (development builds only)</a></h2>
+<p>Inspect a directory pair without running a full compress cycle:</p>
 <pre><code class="language-sh">cargo build   # debug profile
 ./target/debug/imgdelta debug walkdir /mnt/base /mnt/new
 </code></pre>
-<p>Example output:</p>
-<pre><code>~ usr/bin/grep
-+ usr/lib/systemd/system/systemd-resolved.service
-- usr/lib/systemd/system/ifupdown.service
-M etc/sudoers
+<p>Output:</p>
+<pre><code>+ usr/bin/new-tool
+- usr/bin/old-tool
+~ etc/resolv.conf
+M etc/hostname
 
 ─── diff summary ────────────────────────
-  +  added:          1
-  -  removed:        1
-  ~  changed:        1
-  M  metadata-only:  1
-  ─────────────────────────────────────────
-     total diffs:    4
+  +  added:         1
+  -  removed:       1
+  ~  changed:       1
+  M  metadata-only: 1
+     total diffs:   4
 
 ─── tree stats ──────────────────────────
   old (base)    45 231 files    2.1 GiB    3 812 dirs    1 024 symlinks
   new (target)  45 267 files    2.1 GiB    3 815 dirs    1 025 symlinks
 </code></pre>
-<h2 id="run-tests"><a class="header" href="#run-tests">Run tests</a></h2>
-<pre><code class="language-sh"># All 85 L1 tests (no external deps)
+<h2 id="run-the-test-suite"><a class="header" href="#run-the-test-suite">Run the test suite</a></h2>
+<pre><code class="language-sh"># All tests (no external dependencies required)
 cargo test --all
 
 # Specific integration file
 cargo test --test compress_decompress -- --nocapture
+
+# Roundtrip test on real qcow2 images (requires mounted images)
+scripts/roundtrip-test.sh
 </code></pre>
 
                     </main>
@@ -342,6 +358,8 @@ cargo test --test compress_decompress -- --nocapture
         <script src="book-a0b12cfe.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="js/mermaid-eefea253.min.js"></script>
+        <script src="js/mermaid-init-80534770.js"></script>
 
 
 
