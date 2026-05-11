@@ -8,7 +8,7 @@ pub mod experiment;
 pub mod families;
 
 #[allow(unused_imports)]
-pub use experiment::{ExperimentKind, ExperimentSpec};
+pub use experiment::ExperimentSpec;
 #[allow(unused_imports)]
 pub use families::{load_family_file, FamiliesConfig, FamilySpec, ImageSpec};
 

@@ -76,6 +76,7 @@ pub struct ExperimentResult {
     pub timing_json: Option<String>,
     pub archive_bytes: Option<i64>,
     pub base_qcow2_bytes: Option<i64>,
+    pub target_qcow2_bytes: Option<i64>,
     pub cstar: Option<f64>,
 }
 
@@ -181,11 +182,11 @@ pub async fn update_run_done(db: &Db, id: &str, error: Option<&str>) -> Result<(
 
 pub async fn insert_result(db: &Db, res: &ExperimentResult) -> Result<()> {
     sqlx::query(
-        "INSERT INTO results (id, run_id, image_id, base_image_id, compress_stats_json, decompress_stats_json, timing_json, archive_bytes, base_qcow2_bytes, cstar) VALUES (?,?,?,?,?,?,?,?,?,?)"
+        "INSERT INTO results (id, run_id, image_id, base_image_id, compress_stats_json, decompress_stats_json, timing_json, archive_bytes, base_qcow2_bytes, target_qcow2_bytes, cstar) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
     )
     .bind(&res.id).bind(&res.run_id).bind(&res.image_id).bind(&res.base_image_id)
     .bind(&res.compress_stats_json).bind(&res.decompress_stats_json).bind(&res.timing_json)
-    .bind(res.archive_bytes).bind(res.base_qcow2_bytes).bind(res.cstar)
+    .bind(res.archive_bytes).bind(res.base_qcow2_bytes).bind(res.target_qcow2_bytes).bind(res.cstar)
     .execute(db).await?;
     Ok(())
 }

@@ -47,6 +47,7 @@ pub enum ProgressEvent {
     },
     /// Generic log message.
     Log {
+        experiment_id: Option<String>,
         run_id: Option<String>,
         level: String,
         message: String,

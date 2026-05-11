@@ -2,30 +2,23 @@
 // Copyright (c) 2026 Jules IMF
 //
 // image-delta — incremental disk-image compression toolkit
-// ExperimentSpec TOML definition for chain and scalability benchmarks.
+// ExperimentSpec TOML definition for base-relative compression benchmarks.
 
 use serde::{Deserialize, Serialize};
 
 /// Experiment TOML submitted via the web UI or CLI.
 ///
-/// Example (Chain):
-/// ```toml
-/// name = "debian-12-chain"
-/// family = "debian-12"
-/// kind = "Chain"
-/// runs_per_pair = 1
-/// workers = [16]
-/// ```
+/// Each experiment compresses every selected image against `images[0]` (the
+/// earliest / base image).  Worker counts and run repetitions are configurable.
 ///
-/// Example (Scalability):
+/// Example:
 /// ```toml
-/// name = "debian-12-scalability"
-/// family = "debian-12"
-/// kind = "Scalability"
-/// base_image_id = "debian-12-v20260101"
-/// target_image_id = "debian-12-v20260201"
-/// workers = [1, 2, 3, 4, 6, 8, 12, 16]
+/// name = "centos-stream-8-baseline"
+/// family = "centos-stream-8"
+/// workers = [1, 2, 4, 8]
 /// runs_per_pair = 3
+/// # leave images empty to use all images in the family
+/// images = ["centos-stream-8-v20220613", "centos-stream-8-v20220620"]
 /// ```
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ExperimentSpec {
@@ -33,23 +26,17 @@ pub struct ExperimentSpec {
     pub name: String,
     /// Family name as defined in families.toml.
     pub family: String,
-    /// Experiment type.
-    pub kind: ExperimentKind,
     /// Worker counts to test.  Each count produces a separate set of runs.
     #[serde(default = "default_workers")]
     pub workers: Vec<usize>,
-    /// How many times to repeat compress+decompress for each (pair, workers) combo.
+    /// How many times to repeat compress for each (target, workers) combo.
     #[serde(default = "default_runs")]
     pub runs_per_pair: usize,
-    /// For Scalability: the base image ID within the family.
-    pub base_image_id: Option<String>,
-    /// For Scalability: the target image ID within the family.
-    pub target_image_id: Option<String>,
     /// Override passthrough threshold (default from teststand.toml).
     pub passthrough_threshold: Option<f64>,
-    /// For Chain: restrict to these image IDs from the family (in order).
+    /// Restrict to these image IDs from the family (in declaration order).
+    /// images[0] is used as the base; images[1..] are the targets.
     /// If omitted, all images in the family are used.
-    /// Example: `images = ["centos-stream-8-v20220613", "centos-stream-8-v20220620"]`
     pub images: Option<Vec<String>>,
     /// If true, downloaded qcow2 images are NOT deleted after the experiment.
     /// Default: false — images are evicted to save disk space.
@@ -58,28 +45,9 @@ pub struct ExperimentSpec {
     pub notes: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-pub enum ExperimentKind {
-    /// Compress all consecutive pairs in the family chain.
-    /// Produces C*(n) curve data.
-    Chain,
-    /// Compress a single pair at multiple worker counts.
-    /// Produces scalability / speedup data.
-    Scalability,
-}
-
 fn default_workers() -> Vec<usize> {
     vec![4]
 }
 fn default_runs() -> usize {
     1
-}
-
-impl ExperimentKind {
-    pub fn as_str(&self) -> &str {
-        match self {
-            ExperimentKind::Chain => "Chain",
-            ExperimentKind::Scalability => "Scalability",
-        }
-    }
 }

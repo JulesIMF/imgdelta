@@ -23,6 +23,7 @@ pub struct PairResult {
     pub decompress_stats: Option<DecompressionStats>,
     pub archive_bytes: u64,
     pub base_file_bytes: u64,
+    pub target_file_bytes: u64,
 }
 
 /// Build a minimal passthrough router (no delta encoding configured yet).
@@ -125,6 +126,7 @@ pub async fn compress_pair(
     };
 
     let base_file_bytes = file_or_dir_size(base_path)?;
+    let target_file_bytes = file_or_dir_size(target_path)?;
 
     Ok(PairResult {
         image_id: image_id.to_owned(),
@@ -133,6 +135,7 @@ pub async fn compress_pair(
         decompress_stats,
         archive_bytes,
         base_file_bytes,
+        target_file_bytes,
     })
 }
 

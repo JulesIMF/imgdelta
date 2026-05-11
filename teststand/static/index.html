@@ -529,12 +529,6 @@
             <option value="">— loading… —</option>
           </select>
 
-          <label class="form-label">Kind</label>
-          <select id="f-kind" class="form-inp" onchange="onKindChange();buildTomlPreview()">
-            <option value="Chain">Chain — all consecutive pairs</option>
-            <option value="Scalability">Scalability — one pair, many worker counts</option>
-          </select>
-
           <label class="form-label">Workers</label>
           <input id="f-workers" type="text" value="1, 2, 4, 8" class="form-inp" oninput="buildTomlPreview()"
                  title="Comma-separated worker counts, e.g. 1, 2, 4, 8">
@@ -544,18 +538,12 @@
 
           <!-- Chain-only: image filter -->
           <div id="f-images-row" class="form-label" style="align-self:start;padding-top:6px">
-            Images<br><span style="color:var(--dim);font-size:11px">leave empty = all</span>
+            Images<br><span style="color:var(--dim);font-size:11px">[0] = base, rest = targets<br>empty = all</span>
           </div>
           <div id="f-images-container" style="display:flex;flex-direction:column;gap:4px">
             <div id="f-images-list" style="display:flex;flex-wrap:wrap;gap:4px;max-height:120px;overflow-y:auto;border:1px solid var(--border);padding:4px;border-radius:4px;min-height:28px"></div>
             <div style="font-size:11px;color:var(--dim)">Click images above to toggle selection</div>
           </div>
-
-          <!-- Scalability-only: base/target -->
-          <label id="f-base-label" class="form-label" style="display:none">Base image</label>
-          <select id="f-base" class="form-inp" style="display:none"></select>
-          <label id="f-target-label" class="form-label" style="display:none">Target image</label>
-          <select id="f-target" class="form-inp" style="display:none"></select>
 
           <label class="form-label">Notes</label>
           <input id="f-notes" type="text" placeholder="optional" class="form-inp" oninput="buildTomlPreview()">
@@ -617,6 +605,7 @@
                   <th>base</th>
                   <th>compress ms</th>
                   <th>archive MB</th>
+                  <th>target MB</th>
                   <th>base MB</th>
                   <th>C*</th>
                 </tr>
@@ -839,27 +828,6 @@
         list.innerHTML = fam.images.map(function(img) {
           return '<span class="img-chip" data-id="' + esc(img.id) + '" onclick="toggleChip(this)">' + esc(img.id) + '</span>';
         }).join("");
-        // Populate base/target selects
-        ["f-base", "f-target"].forEach(function(sid) {
-          var s = document.getElementById(sid);
-          if (!s) return;
-          s.innerHTML = fam.images.map(function(img) {
-            return '<option value="' + esc(img.id) + '">' + esc(img.id) + '</option>';
-          }).join("");
-        });
-        onKindChange();
-        buildTomlPreview();
-      }
-
-      function onKindChange() {
-        var kind = document.getElementById("f-kind").value;
-        var chain = kind === "Chain";
-        document.getElementById("f-images-row").style.display       = chain ? "" : "none";
-        document.getElementById("f-images-container").style.display = chain ? "" : "none";
-        document.getElementById("f-base-label").style.display        = chain ? "none" : "";
-        document.getElementById("f-base").style.display              = chain ? "none" : "";
-        document.getElementById("f-target-label").style.display      = chain ? "none" : "";
-        document.getElementById("f-target").style.display            = chain ? "none" : "";
         buildTomlPreview();
       }
 
@@ -886,7 +854,6 @@
       function buildTomlPreview() {
         var name = (document.getElementById("f-name") || {}).value || "my-exp";
         var family = (document.getElementById("f-family") || {}).value || "";
-        var kind = (document.getElementById("f-kind") || {}).value || "Chain";
         var workers = ((document.getElementById("f-workers") || {}).value || "4")
           .split(",").map(function(v) { return parseInt(v.trim(), 10); }).filter(Boolean);
         var runs = parseInt((document.getElementById("f-runs") || {}).value || "1", 10);
@@ -896,20 +863,12 @@
         var lines = [
           'name = "' + name + '"',
           'family = "' + family + '"',
-          'kind = "' + kind + '"',
           'workers = [' + workers.join(", ") + ']',
           'runs_per_pair = ' + runs,
         ];
-        if (kind === "Chain") {
-          var selected = Array.from(document.querySelectorAll("#f-images-list .img-chip.selected")).map(function(c) { return c.dataset.id; });
-          if (selected.length > 0) {
-            lines.push('images = [' + selected.map(function(s) { return '"' + s + '"'; }).join(", ") + ']');
-          }
-        } else {
-          var base = (document.getElementById("f-base") || {}).value || "";
-          var target = (document.getElementById("f-target") || {}).value || "";
-          lines.push('base_image_id = "' + base + '"');
-          lines.push('target_image_id = "' + target + '"');
+        var selected = Array.from(document.querySelectorAll("#f-images-list .img-chip.selected")).map(function(c) { return c.dataset.id; });
+        if (selected.length > 0) {
+          lines.push('images = [' + selected.map(function(s) { return '"' + s + '"'; }).join(", ") + ']');
         }
         if (notes) lines.push('notes = "' + notes + '"');
         if (keep)  lines.push('keep_images = true');
@@ -1006,7 +965,6 @@
         var rows = [
           ["Name",        esc(exp.name || "")],
           ["Family",      esc(spec.family || exp.family || "")],
-          ["Kind",        esc(spec.kind   || exp.kind   || "")],
           ["Workers",     esc((spec.workers || []).join(", ") || "—")],
           ["Runs / pair", esc(String(spec.runs_per_pair || "—"))],
           ["Images",      esc((spec.images || []).join(", ") || "all")],
@@ -1034,7 +992,6 @@
         var rows = [
           ["Name",    esc(exp.name || "")],
           ["Family",  esc(spec.family || exp.family || "")],
-          ["Kind",    esc(spec.kind   || exp.kind   || "")],
           ["Workers", esc((spec.workers || []).join(", ") || "—")],
           ["Runs/pair", esc(String(spec.runs_per_pair || "—"))],
           ["Images", esc((spec.images || []).join(", ") || "all")],
@@ -1094,14 +1051,16 @@
         var tbody = document.getElementById("results-body");
         tbody.innerHTML = "";
         var totalA = 0,
+          totalT = 0,
           totalB = 0,
           sumC = 0;
         results.forEach(function (r) {
           var aMB = r.archive_bytes ? (r.archive_bytes / 1e6).toFixed(2) : "-";
+          var tMB = r.target_qcow2_bytes ? (r.target_qcow2_bytes / 1e6).toFixed(2) : "-";
           var bMB = r.base_qcow2_bytes
             ? (r.base_qcow2_bytes / 1e6).toFixed(2)
             : "-";
-          var cstar = r.cstar ? r.cstar.toFixed(3) : "-";
+          var cstar = r.cstar != null ? r.cstar.toFixed(4) : "-";
           var ms = "-";
           try {
             var cs = JSON.parse(r.compress_stats_json || "{}");
@@ -1119,14 +1078,17 @@
             '</td><td class="num">' +
             aMB +
             '</td><td class="num">' +
+            tMB +
+            '</td><td class="num">' +
             bMB +
             '</td><td class="num">' +
             cstar +
             "</td>";
           tbody.appendChild(tr);
           if (r.archive_bytes) totalA += r.archive_bytes;
+          if (r.target_qcow2_bytes) totalT += r.target_qcow2_bytes;
           if (r.base_qcow2_bytes) totalB += r.base_qcow2_bytes;
-          if (r.cstar) sumC += r.cstar;
+          if (r.cstar != null) sumC += r.cstar;
         });
         var n = results.length || 1;
         document.getElementById("kpi-grid").innerHTML =
@@ -1136,11 +1098,11 @@
           '<div class="kpi"><div class="label">Total Archive</div><div class="value">' +
           (totalA / 1e6).toFixed(1) +
           " MB</div></div>" +
-          '<div class="kpi"><div class="label">Total Base</div><div class="value">' +
-          (totalB / 1e6).toFixed(1) +
+          '<div class="kpi"><div class="label">Total Target</div><div class="value">' +
+          (totalT / 1e6).toFixed(1) +
           " MB</div></div>" +
-          '<div class="kpi"><div class="label">Avg C*</div><div class="value">' +
-          (sumC / n).toFixed(3) +
+          '<div class="kpi"><div class="label">Avg C*</div><div class="value" title="archive/target ratio">' +
+          (sumC / n).toFixed(4) +
           "</div></div>";
       }
 
@@ -1308,24 +1270,28 @@
       function handleSSE(ev) {
         if (!ev || !ev.type) return;
         if (ev.type === "Log") {
-          var entry = {
-            ts: Date.now(),
-            level: ev.level,
-            target: ev.run_id || "",
-            message: ev.message,
-          };
-          liveLogEntries.push(entry);
-          if (liveLogEntries.length > 2000) liveLogEntries.shift();
-          if (
-            selectedId &&
-            document.getElementById("tab-live").classList.contains("active")
-          )
-            renderLive();
+          // Add to live log only if it belongs to the current experiment
+          if (ev.experiment_id && ev.experiment_id === selectedId) {
+            var entry = {
+              ts: Date.now(),
+              level: ev.level,
+              target: ev.run_id || "runner",
+              message: ev.message,
+            };
+            liveLogEntries.push(entry);
+            if (liveLogEntries.length > 2000) liveLogEntries.shift();
+            if (
+              selectedId &&
+              document.getElementById("tab-live").classList.contains("active")
+            )
+              renderLive();
+          }
+          // Always add to server log buffer (everything, including Telegram)
           if (document.getElementById("srv-pane").style.display !== "none") {
             srvEntries.push({
               ts_ms: Date.now(),
               level: ev.level,
-              target: "runner",
+              target: ev.experiment_id ? "runner" : "server",
               message: ev.message,
             });
             renderSrv();
@@ -1375,7 +1341,6 @@
             headers: { "Content-Type": "text/plain" },
           });
           closeModal();
-          document.getElementById("exp-toml").value = "";
           loadExps();
         } catch (e) {
           alert("Error: " + e.message);

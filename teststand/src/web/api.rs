@@ -101,7 +101,7 @@ pub async fn create_experiment(
         &id,
         &spec.name,
         &spec.family,
-        spec.kind.as_str(),
+        "BaseRelative",
         &spec_json,
     )
     .await?;

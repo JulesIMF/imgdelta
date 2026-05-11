@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Copyright (c) 2026 JulesIMF
+// Copyright (c) 2026 Jules IMF
 //
 // image-delta — incremental disk-image compression toolkit
-// config_test.rs — see module docs
+// config_test.rs — smoke-tests for configuration parsing.
 
-// Copyright (c) 2026 Jules IMF
 //! Configuration parsing smoke-tests.
 
-use teststand::config::experiment::ExperimentKind;
 use teststand::config::families::FamilySpec;
 use teststand::config::{load_experiment, load_families, TeststandConfig};
 
@@ -43,38 +41,31 @@ fn parse_chain_experiment() {
     let toml = r#"
 name           = "test-chain"
 family         = "ubuntu-2204"
-kind           = "Chain"
 workers        = [1, 2, 4]
 runs_per_pair  = 2
 "#;
     let spec = load_experiment(toml).expect("parse failed");
     assert_eq!(spec.name, "test-chain");
-    assert!(matches!(spec.kind, ExperimentKind::Chain));
+    assert_eq!(spec.family, "ubuntu-2204");
     assert_eq!(spec.workers, vec![1usize, 2, 4]);
     assert_eq!(spec.runs_per_pair, 2);
 }
 
 #[test]
-fn parse_scalability_experiment() {
+fn parse_images_filter() {
     let toml = r#"
-name              = "scale-test"
-family            = "ubuntu-2204"
-kind              = "Scalability"
-base_image_id     = "ubuntu-v1"
-target_image_id   = "ubuntu-v2"
-workers           = [1, 2, 4, 8]
-runs_per_pair     = 3
+name          = "scale-test"
+family        = "ubuntu-2204"
+workers       = [1, 2, 4, 8]
+runs_per_pair = 3
+images        = ["ubuntu-v1", "ubuntu-v2", "ubuntu-v3"]
 "#;
     let spec = load_experiment(toml).expect("parse failed");
-    assert!(matches!(spec.kind, ExperimentKind::Scalability));
-    assert_eq!(spec.base_image_id.as_deref(), Some("ubuntu-v1"));
     assert_eq!(spec.workers.len(), 4);
-}
-
-#[test]
-fn experiment_kind_as_str() {
-    assert_eq!(ExperimentKind::Chain.as_str(), "Chain");
-    assert_eq!(ExperimentKind::Scalability.as_str(), "Scalability");
+    let imgs = spec.images.as_deref().unwrap_or(&[]);
+    assert_eq!(imgs.len(), 3);
+    assert_eq!(imgs[0], "ubuntu-v1");
+    assert_eq!(imgs[1], "ubuntu-v2");
 }
 
 #[test]

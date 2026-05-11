@@ -86,6 +86,7 @@ impl<S: Subscriber> Layer<S> for SseBroadcastLayer {
             return;
         }
         let _ = self.tx.send(crate::runner::progress::ProgressEvent::Log {
+            experiment_id: None,
             run_id: None,
             level: level_str(event).to_owned(),
             message,
