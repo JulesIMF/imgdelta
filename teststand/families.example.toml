@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 JulesIMF
+#
+# image-delta — incremental disk-image compression toolkit
+# families.example.toml — see module docs
+
+# families.example.toml — MULTI-FAMILY file (legacy / all-in-one format).
+# You can also use a *directory* of per-family files; see families/ for examples.
+#
+# CLI: teststand --families families/         (directory, recommended)
+#       teststand --families families.toml    (single file with [[family]] sections)
+
+[[family]]
+name = "ubuntu-2204"
+label = "Ubuntu 22.04 LTS"
+base_url = "https://storage.yandexcloud.net/my-bucket/ubuntu-2204"
+
+[[family.image]]
+id = "ubuntu-22-04-v20240101"
+url = "https://storage.yandexcloud.net/my-bucket/ubuntu-2204/ubuntu-22-04-v20240101.qcow2"
+size_bytes = 7444889600
+format = "qcow2"
+
+[[family.image]]
+id = "ubuntu-22-04-v20240108"
+url = "https://storage.yandexcloud.net/my-bucket/ubuntu-2204/ubuntu-22-04-v20240108.qcow2"
+size_bytes = 7500000000
+format = "qcow2"

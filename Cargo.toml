@@ -5,7 +5,7 @@
 # Workspace manifest: members, shared dependencies, patch directives
 
 [workspace]
-members = ["core", "cli", "synthetic-fs"]
+members = ["core", "cli", "synthetic-fs", "teststand"]
 resolver = "2"
 
 # Optimize dependencies (crypto, compression) even in debug builds.

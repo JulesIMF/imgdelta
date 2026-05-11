@@ -1,0 +1,32 @@
+# docker-compose.yaml — development / CI usage.
+# Create ./config/teststand.toml and ./config/families.toml before starting.
+services:
+  teststand:
+    build:
+      context: .. # workspace root (imgdelta/)
+      dockerfile: teststand/Dockerfile
+    image: imgdelta-teststand:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/config:ro
+      - teststand-data:/data
+    environment:
+      - RUST_LOG=teststand=info,image_delta_core=info,warn
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-sf",
+          "-H",
+          "Authorization: Bearer ${TESTSTAND_TOKEN}",
+          "http://localhost:8080/api/status",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  teststand-data:

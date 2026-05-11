@@ -102,6 +102,12 @@ pub async fn compress(
             }
         }
 
+        // Timing sink shared across all Fs partitions.
+        let timing_sink: std::sync::Arc<std::sync::Mutex<crate::operations::StageTimings>> =
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::operations::StageTimings::default(),
+            ));
+
         // Shared directory for all FS partition patch files.
         let all_patches_dir = tempfile::TempDir::new()?;
 
@@ -128,6 +134,7 @@ pub async fn compress(
                 tmp_dir: Arc::from(tmp_dir.path()),
                 patches_dir: Arc::from(all_patches_dir.path()),
                 debug_dir: options.debug_dir.as_deref().map(Arc::from),
+                timing_sink: Some(Arc::clone(&timing_sink)),
             };
             _live_tmpdirs.push(tmp_dir);
 
@@ -143,8 +150,12 @@ pub async fn compress(
         }
 
         // ── 5. Pack and upload the combined patches archive ───────────────
+        let t_pack = std::time::Instant::now();
         let (archive_stored_bytes, patches_compressed) =
             pack_and_upload_patches(all_patches_dir.path(), storage.as_ref(), image_id).await?;
+        if let Ok(mut guard) = timing_sink.lock() {
+            guard.pack_archive_ms = t_pack.elapsed().as_millis() as u64;
+        }
 
         // ── 6. Build and upload the manifest ──────────────────────────────
         let created_at = std::time::SystemTime::now()
@@ -186,11 +197,15 @@ pub async fn compress(
         // ── 8. Compute stats from manifest ────────────────────────────────
         let elapsed = started_at.elapsed();
         let manifest_stored_bytes = manifest_bytes_gz.len() as u64;
-        let stats = stats_from_manifest(
+        let mut stats = stats_from_manifest(
             &manifest,
             elapsed,
             archive_stored_bytes + manifest_stored_bytes,
         );
+        stats.stage_timings = timing_sink
+            .lock()
+            .ok()
+            .map(|g| g.clone() as crate::operations::StageTimings);
 
         info!(
             image_id,

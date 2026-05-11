@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 Jules IMF
+#
+# image-delta — incremental disk-image compression toolkit
+# teststand — experiment runner and web UI for image-delta benchmarking.
+
+[package]
+name = "teststand"
+version = "0.1.0"
+edition = "2021"
+description = "Experiment orchestrator and web monitor for image-delta-core benchmarking"
+
+[[bin]]
+name = "teststand"
+path = "src/main.rs"
+
+[lib]
+name = "teststand"
+path = "src/lib.rs"
+
+[dependencies]
+image-delta-core = { path = "../core", features = ["qcow2"] }
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.7", features = [
+  "sqlite",
+  "runtime-tokio-rustls",
+  "migrate",
+  "json",
+  "uuid",
+  "chrono",
+] }
+reqwest = { version = "0.12", features = [
+  "stream",
+  "json",
+  "rustls-tls",
+], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = [
+  "env-filter",
+  "fmt",
+  "registry",
+] }
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+tokio-stream = "0.1"
+async-trait = "0.1"
+thiserror = "1"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+async-stream = "0.3"
+tower-http = { version = "0.5", features = ["cors"] }
+subtle = "2"
+bytes = "1"
+hex = "0.4"
+walkdir = "2"
+tempfile = "3"
+
+[features]
+default = []
+telegram = []
+
+[dev-dependencies]
+image-delta-synthetic-fs = { path = "../synthetic-fs" }

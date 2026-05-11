@@ -1,0 +1,13 @@
+# Runtime config (contains secrets: tokens, paths)
+teststand.toml
+families.toml
+.env
+
+# Runtime data
+*.db
+*.db-shm
+*.db-wal
+data/
+images/
+storage/
+results/

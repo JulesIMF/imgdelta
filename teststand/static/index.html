@@ -1,0 +1,1393 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>imgdelta teststand</title>
+    <style>
+      :root {
+        --bg: #0d1117;
+        --surface: #161b22;
+        --border: #30363d;
+        --text: #c9d1d9;
+        --dim: #8b949e;
+        --accent: #58a6ff;
+        --green: #3fb950;
+        --red: #f85149;
+        --yellow: #d29922;
+        --orange: #db6d28;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.5 "JetBrains Mono",
+          monospace;
+        display: flex;
+        height: 100vh;
+      }
+      #auth-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.85);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+      }
+      #auth-overlay.hidden {
+        display: none;
+      }
+      #auth-box {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 32px;
+        width: 360px;
+      }
+      #auth-box h2 {
+        color: var(--accent);
+        margin-bottom: 16px;
+      }
+      #auth-box input {
+        width: 100%;
+        padding: 8px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: 4px;
+        font: inherit;
+        margin-bottom: 12px;
+      }
+      #auth-box button {
+        width: 100%;
+        padding: 8px;
+        background: var(--accent);
+        border: none;
+        color: #fff;
+        cursor: pointer;
+        border-radius: 4px;
+        font: inherit;
+        font-weight: 600;
+      }
+      #sidebar {
+        width: 280px;
+        background: var(--surface);
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+      }
+      #main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .sidebar-header {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .sidebar-header span {
+        font-weight: 700;
+        color: var(--accent);
+        flex: 1;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--dim);
+      }
+      .dot.connected {
+        background: var(--green);
+      }
+      #exp-list {
+        flex: 1;
+        overflow-y: auto;
+      }
+      .exp-item {
+        padding: 10px 16px;
+        cursor: pointer;
+        border-bottom: 1px solid var(--border);
+        transition: background 0.1s;
+      }
+      .exp-item:hover {
+        background: var(--bg);
+      }
+      .exp-item.selected {
+        background: var(--bg);
+        border-left: 3px solid var(--accent);
+      }
+      .exp-item .name {
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .exp-item .meta {
+        font-size: 11px;
+        color: var(--dim);
+      }
+      .status-badge {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+      }
+      .status-queued {
+        background: #21262d;
+        color: var(--dim);
+      }
+      .status-running {
+        background: #1f3a5f;
+        color: var(--accent);
+      }
+      .status-done {
+        background: #1a3a2a;
+        color: var(--green);
+      }
+      .status-error {
+        background: #3d1c1c;
+        color: var(--red);
+      }
+      #new-exp-btn {
+        margin: 12px;
+        padding: 8px;
+        background: var(--accent);
+        border: none;
+        color: #fff;
+        cursor: pointer;
+        border-radius: 4px;
+        font: inherit;
+        font-weight: 600;
+      }
+      #srv-log-btn {
+        margin: 0 12px 12px;
+        padding: 8px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--dim);
+        cursor: pointer;
+        border-radius: 4px;
+        font: inherit;
+      }
+      #srv-log-btn:hover {
+        color: var(--text);
+      }
+      .empty-state {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--dim);
+      }
+      .tab-bar {
+        display: flex;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        padding: 0 16px;
+      }
+      .tab {
+        padding: 10px 16px;
+        cursor: pointer;
+        color: var(--dim);
+        border-bottom: 2px solid transparent;
+        font-weight: 600;
+      }
+      .tab.active {
+        color: var(--accent);
+        border-bottom-color: var(--accent);
+      }
+      .tab-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px;
+      }
+      .tab-pane {
+        display: none;
+      }
+      .tab-pane.active {
+        display: block;
+      }
+      .kpi-grid {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 16px;
+      }
+      .kpi {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 12px 16px;
+        min-width: 130px;
+      }
+      .kpi .label {
+        font-size: 11px;
+        color: var(--dim);
+        text-transform: uppercase;
+      }
+      .kpi .value {
+        font-size: 22px;
+        font-weight: 700;
+        margin-top: 2px;
+      }
+      .rtable {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      .rtable th {
+        text-align: left;
+        color: var(--dim);
+        padding: 4px 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      .rtable td {
+        padding: 4px 8px;
+        border-bottom: 1px solid #21262d;
+      }
+      .rtable tr:hover td {
+        background: var(--surface);
+      }
+      .num {
+        font-variant-numeric: tabular-nums;
+      }
+      .log-toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+      }
+      .log-toolbar select,
+      .log-toolbar input {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 4px 8px;
+        border-radius: 4px;
+        font: inherit;
+        font-size: 12px;
+      }
+      .log-toolbar button {
+        padding: 4px 12px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text);
+        cursor: pointer;
+        border-radius: 4px;
+        font: inherit;
+        font-size: 12px;
+      }
+      .log-lines {
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      .ll {
+        display: flex;
+        gap: 8px;
+        padding: 1px 0;
+        border-bottom: 1px solid #1c2128;
+      }
+      .ll:hover {
+        background: #1c2128;
+      }
+      .ll-ts {
+        color: var(--dim);
+        white-space: nowrap;
+        min-width: 90px;
+      }
+      .ll-lv {
+        min-width: 44px;
+        font-weight: 700;
+        text-align: center;
+      }
+      .ll-tg {
+        color: var(--dim);
+        min-width: 120px;
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ll-ms {
+        flex: 1;
+        word-break: break-all;
+      }
+      .lv-error {
+        color: var(--red);
+      }
+      .lv-warn {
+        color: var(--yellow);
+      }
+      .lv-info {
+        color: var(--green);
+      }
+      .lv-debug {
+        color: var(--dim);
+      }
+      .lv-trace {
+        color: #555;
+      }
+      .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.7);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 50;
+      }
+      .modal-overlay.hidden {
+        display: none;
+      }
+      .modal {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 24px;
+        width: 520px;
+      }
+      .modal h3 {
+        color: var(--accent);
+        margin-bottom: 12px;
+      }
+      .modal textarea {
+        width: 100%;
+        height: 180px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 8px;
+        font: 13px/1.5 inherit;
+        border-radius: 4px;
+        resize: vertical;
+      }
+      .modal-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 12px;
+      }
+      .modal-actions button {
+        padding: 6px 16px;
+        border-radius: 4px;
+        border: none;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 600;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+      }
+      .btn-secondary {
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border) !important;
+      }
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: var(--bg);
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 3px;
+      }
+
+      .spec-params {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 16px;
+        padding: 10px 16px 6px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        font-size: 12px;
+      }
+      .sp-item { display: flex; gap: 4px; align-items: baseline; }
+      .sp-key { color: var(--dim); }
+      .sp-val { color: var(--text); font-weight: 600; }
+      /* TOML preview */
+      .toml-hl {
+        background: #1a1a2e;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 8px;
+        font-size: 12px;
+        line-height: 1.5;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 180px;
+        overflow-y: auto;
+        color: #cdd6f4;
+        margin-top: 0;
+      }
+      .th-cmt { color: #6c7086; }
+      .th-sec { color: #89b4fa; font-weight: 700; }
+      .th-key { color: #89dceb; }
+      .th-eq  { color: #cba6f7; }
+      .th-str { color: #a6e3a1; }
+      .th-bool { color: #fab387; }
+      .th-num  { color: #f38ba8; }
+
+      .modal-wide { width: min(680px, 96vw); }
+      .form-grid {
+        display: grid;
+        grid-template-columns: 140px 1fr;
+        gap: 8px 12px;
+        align-items: center;
+        margin-top: 12px;
+      }
+      .form-label { font-size: 12px; color: var(--dim); }
+      .form-inp {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 5px 8px;
+        border-radius: 4px;
+        font: inherit;
+        font-size: 12px;
+        width: 100%;
+      }
+      .form-inp:focus { outline: none; border-color: var(--accent); }
+      .img-chip {
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        cursor: pointer;
+        white-space: nowrap;
+        user-select: none;
+      }
+      .img-chip.selected {
+        background: var(--accent);
+        color: #000;
+        border-color: var(--accent);
+      }
+      /* Spec detail pane */
+      .spec-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+      .spec-table td { padding: 5px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      .spec-table td:first-child { color: var(--dim); width: 160px; white-space: nowrap; }
+      .spec-dl-row { display: flex; gap: 8px; margin-top: 16px; }
+      .btn-dl {
+        padding: 6px 14px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--accent);
+        cursor: pointer;
+        border-radius: 4px;
+        font: inherit;
+        font-size: 12px;
+        text-decoration: none;
+        display: inline-block;
+      }
+      .btn-dl:hover { border-color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <div id="auth-overlay">
+      <div id="auth-box">
+        <h2>imgdelta teststand</h2>
+        <p style="color: var(--dim); margin-bottom: 16px; font-size: 13px">
+          Enter your auth token to continue.
+        </p>
+        <input
+          id="token-input"
+          type="password"
+          placeholder="Bearer token"
+          autocomplete="current-password"
+        />
+        <button onclick="doAuth()">Sign in</button>
+      </div>
+    </div>
+
+    <div id="new-exp-modal" class="modal-overlay hidden">
+      <div class="modal modal-wide">
+        <h3>New Experiment</h3>
+        <div class="form-grid">
+          <label class="form-label">Name</label>
+          <input id="f-name" type="text" placeholder="my-chain-1" class="form-inp" oninput="buildTomlPreview()">
+
+          <label class="form-label">Family</label>
+          <select id="f-family" class="form-inp" onchange="onFamilyChange()">
+            <option value="">— loading… —</option>
+          </select>
+
+          <label class="form-label">Kind</label>
+          <select id="f-kind" class="form-inp" onchange="onKindChange();buildTomlPreview()">
+            <option value="Chain">Chain — all consecutive pairs</option>
+            <option value="Scalability">Scalability — one pair, many worker counts</option>
+          </select>
+
+          <label class="form-label">Workers</label>
+          <input id="f-workers" type="text" value="1, 2, 4, 8" class="form-inp" oninput="buildTomlPreview()"
+                 title="Comma-separated worker counts, e.g. 1, 2, 4, 8">
+
+          <label class="form-label">Runs / pair</label>
+          <input id="f-runs" type="number" value="1" min="1" class="form-inp" oninput="buildTomlPreview()">
+
+          <!-- Chain-only: image filter -->
+          <div id="f-images-row" class="form-label" style="align-self:start;padding-top:6px">
+            Images<br><span style="color:var(--dim);font-size:11px">leave empty = all</span>
+          </div>
+          <div id="f-images-container" style="display:flex;flex-direction:column;gap:4px">
+            <div id="f-images-list" style="display:flex;flex-wrap:wrap;gap:4px;max-height:120px;overflow-y:auto;border:1px solid var(--border);padding:4px;border-radius:4px;min-height:28px"></div>
+            <div style="font-size:11px;color:var(--dim)">Click images above to toggle selection</div>
+          </div>
+
+          <!-- Scalability-only: base/target -->
+          <label id="f-base-label" class="form-label" style="display:none">Base image</label>
+          <select id="f-base" class="form-inp" style="display:none"></select>
+          <label id="f-target-label" class="form-label" style="display:none">Target image</label>
+          <select id="f-target" class="form-inp" style="display:none"></select>
+
+          <label class="form-label">Notes</label>
+          <input id="f-notes" type="text" placeholder="optional" class="form-inp" oninput="buildTomlPreview()">
+
+          <label class="form-label">Keep images</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+            <input id="f-keep" type="checkbox" onchange="buildTomlPreview()">
+            don't delete qcow2 after finish
+          </label>
+        </div>
+
+        <!-- TOML preview -->
+        <div style="margin-top:12px;font-size:11px;color:var(--dim)">Generated TOML:</div>
+        <pre id="toml-preview" class="toml-hl" style="max-height:140px;overflow-y:auto;margin-top:4px"></pre>
+
+        <div class="modal-actions">
+          <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn-primary" onclick="submitExperiment()">Submit</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="sidebar">
+      <div class="sidebar-header">
+        <span>teststand</span>
+        <div id="sse-dot" class="dot" title="SSE connection"></div>
+      </div>
+      <div id="exp-list"></div>
+      <button id="new-exp-btn" onclick="openModal()">+ New Experiment</button>
+      <button id="srv-log-btn" onclick="showServerLogs()">
+        🖥 Server Logs
+      </button>
+    </div>
+
+    <div id="main">
+      <div id="empty-state" class="empty-state">
+        Select an experiment or open Server Logs
+      </div>
+
+      <div
+        id="exp-detail"
+        style="display: none; flex: 1; flex-direction: column; overflow: hidden"
+      >
+        <div class="tab-bar">
+          <div class="tab active" onclick="switchTab('spec')">Spec</div>
+          <div class="tab" onclick="switchTab('results')">Results</div>
+          <div class="tab" onclick="switchTab('live')">Live Log</div>
+        </div>
+        <div class="tab-content">
+          <div id="tab-spec" class="tab-pane active">
+            <div id="spec-detail-content" style="padding:16px;overflow-y:auto;flex:1"></div>
+          </div>
+          <div id="tab-results" class="tab-pane">
+            <div id="kpi-grid" class="kpi-grid"></div>
+            <table class="rtable">
+              <thead>
+                <tr>
+                  <th>image</th>
+                  <th>base</th>
+                  <th>compress ms</th>
+                  <th>archive MB</th>
+                  <th>base MB</th>
+                  <th>C*</th>
+                </tr>
+              </thead>
+              <tbody id="results-body"></tbody>
+            </table>
+          </div>
+          <div id="tab-live" class="tab-pane">
+            <div class="log-toolbar">
+              <select id="live-lvl" onchange="renderLive()">
+                <option value="">all levels</option>
+                <option value="error">error</option>
+                <option value="warn">warn</option>
+                <option value="info">info</option>
+              </select>
+              <input
+                id="live-txt"
+                type="text"
+                placeholder="filter…"
+                oninput="renderLive()"
+                style="width: 160px"
+              />
+              <button
+                onclick="
+                  liveLogEntries = [];
+                  renderLive();
+                "
+              >
+                Clear
+              </button>
+              <label
+                style="
+                  color: var(--dim);
+                  font-size: 12px;
+                  display: flex;
+                  align-items: center;
+                  gap: 4px;
+                "
+              >
+                <input type="checkbox" id="live-scroll" checked /> autoscroll
+              </label>
+            </div>
+            <div id="live-log" class="log-lines"></div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        id="srv-pane"
+        style="display: none; flex: 1; flex-direction: column; overflow: hidden"
+      >
+        <div
+          class="tab-bar"
+          style="justify-content: space-between; align-items: center"
+        >
+          <div
+            style="padding: 10px 16px; font-weight: 700; color: var(--accent)"
+          >
+            Server Logs
+          </div>
+          <div
+            style="
+              padding: 6px 16px;
+              display: flex;
+              gap: 8px;
+              align-items: center;
+            "
+          >
+            <select
+              id="srv-lvl"
+              onchange="renderSrv()"
+              style="
+                background: var(--surface);
+                border: 1px solid var(--border);
+                color: var(--text);
+                padding: 4px 8px;
+                border-radius: 4px;
+                font: inherit;
+                font-size: 12px;
+              "
+            >
+              <option value="">all</option>
+              <option value="error">error</option>
+              <option value="warn">warn</option>
+              <option value="info">info</option>
+              <option value="debug">debug</option>
+            </select>
+            <input
+              id="srv-txt"
+              type="text"
+              placeholder="filter…"
+              oninput="renderSrv()"
+              style="
+                width: 180px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                color: var(--text);
+                padding: 4px 8px;
+                border-radius: 4px;
+                font: inherit;
+                font-size: 12px;
+              "
+            />
+            <button
+              onclick="loadSrv()"
+              style="
+                padding: 4px 12px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                color: var(--text);
+                cursor: pointer;
+                border-radius: 4px;
+                font: inherit;
+                font-size: 12px;
+              "
+            >
+              ↻ Refresh
+            </button>
+            <button
+              onclick="showExp(null)"
+              style="
+                padding: 4px 12px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                color: var(--dim);
+                cursor: pointer;
+                border-radius: 4px;
+                font: inherit;
+                font-size: 12px;
+              "
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding: 16px">
+          <div id="srv-lines" class="log-lines"></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      var TOKEN = localStorage.getItem("ts_token") || "";
+      var familiesData = [];  // loaded from /api/families
+      var experiments = {};
+      var selectedId = null;
+      var liveLogEntries = [];
+      var srvEntries = [];
+      var sseCtrl = null;
+      var sseTimer = null;
+
+      document.addEventListener("DOMContentLoaded", function () {
+        if (TOKEN) {
+          document.getElementById("auth-overlay").classList.add("hidden");
+          init();
+        }
+        document
+          .getElementById("token-input")
+          .addEventListener("keydown", function (e) {
+            if (e.key === "Enter") doAuth();
+          });
+      });
+
+      function doAuth() {
+        TOKEN = document.getElementById("token-input").value.trim();
+        if (!TOKEN) return;
+        localStorage.setItem("ts_token", TOKEN);
+        document.getElementById("auth-overlay").classList.add("hidden");
+        init();
+      }
+
+      async function apiFetch(path, opts) {
+        opts = opts || {};
+        var headers = Object.assign(
+          { Authorization: "Bearer " + TOKEN },
+          opts.headers || {},
+        );
+        var r = await fetch(
+          "/api" + path,
+          Object.assign({}, opts, { headers: headers }),
+        );
+        if (r.status === 401) {
+          localStorage.removeItem("ts_token");
+          location.reload();
+        }
+        if (!r.ok) throw new Error(await r.text());
+        return r;
+      }
+
+      function init() {
+        loadExps();
+        loadFamilies();
+        connectSSE();
+        setInterval(loadExps, 10000);
+      }
+
+      async function loadFamilies() {
+        try {
+          var r = await apiFetch("/families");
+          familiesData = await r.json();
+          populateFamilySelect();
+        } catch(e) { console.error("loadFamilies", e); }
+      }
+
+      function populateFamilySelect() {
+        var sel = document.getElementById("f-family");
+        if (!sel) return;
+        sel.innerHTML = familiesData.map(function(f) {
+          return '<option value="' + esc(f.name) + '">' + esc(f.label || f.name) + '</option>';
+        }).join("");
+        onFamilyChange();
+      }
+
+      function onFamilyChange() {
+        var name = document.getElementById("f-family").value;
+        var fam = familiesData.find(function(f) { return f.name === name; }) || { images: [] };
+        // Populate chip list
+        var list = document.getElementById("f-images-list");
+        if (!list) return;
+        list.innerHTML = fam.images.map(function(img) {
+          return '<span class="img-chip" data-id="' + esc(img.id) + '" onclick="toggleChip(this)">' + esc(img.id) + '</span>';
+        }).join("");
+        // Populate base/target selects
+        ["f-base", "f-target"].forEach(function(sid) {
+          var s = document.getElementById(sid);
+          if (!s) return;
+          s.innerHTML = fam.images.map(function(img) {
+            return '<option value="' + esc(img.id) + '">' + esc(img.id) + '</option>';
+          }).join("");
+        });
+        onKindChange();
+        buildTomlPreview();
+      }
+
+      function onKindChange() {
+        var kind = document.getElementById("f-kind").value;
+        var chain = kind === "Chain";
+        document.getElementById("f-images-row").style.display       = chain ? "" : "none";
+        document.getElementById("f-images-container").style.display = chain ? "" : "none";
+        document.getElementById("f-base-label").style.display        = chain ? "none" : "";
+        document.getElementById("f-base").style.display              = chain ? "none" : "";
+        document.getElementById("f-target-label").style.display      = chain ? "none" : "";
+        document.getElementById("f-target").style.display            = chain ? "none" : "";
+        buildTomlPreview();
+      }
+
+      function toggleChip(el) {
+        el.classList.toggle("selected");
+        buildTomlPreview();
+      }
+
+
+      async function dlResults(fmt, filename) {
+        var path = "/api/results/" + selectedId + (fmt === "csv" ? "/csv" : "");
+        try {
+          var r = await apiFetch(path);
+          var blob = await r.blob();
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          a.click();
+          setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
+        } catch(e) { alert("Download failed: " + e.message); }
+      }
+
+      function buildTomlPreview() {
+        var name = (document.getElementById("f-name") || {}).value || "my-exp";
+        var family = (document.getElementById("f-family") || {}).value || "";
+        var kind = (document.getElementById("f-kind") || {}).value || "Chain";
+        var workers = ((document.getElementById("f-workers") || {}).value || "4")
+          .split(",").map(function(v) { return parseInt(v.trim(), 10); }).filter(Boolean);
+        var runs = parseInt((document.getElementById("f-runs") || {}).value || "1", 10);
+        var notes = (document.getElementById("f-notes") || {}).value || "";
+        var keep = (document.getElementById("f-keep") || {}).checked;
+
+        var lines = [
+          'name = "' + name + '"',
+          'family = "' + family + '"',
+          'kind = "' + kind + '"',
+          'workers = [' + workers.join(", ") + ']',
+          'runs_per_pair = ' + runs,
+        ];
+        if (kind === "Chain") {
+          var selected = Array.from(document.querySelectorAll("#f-images-list .img-chip.selected")).map(function(c) { return c.dataset.id; });
+          if (selected.length > 0) {
+            lines.push('images = [' + selected.map(function(s) { return '"' + s + '"'; }).join(", ") + ']');
+          }
+        } else {
+          var base = (document.getElementById("f-base") || {}).value || "";
+          var target = (document.getElementById("f-target") || {}).value || "";
+          lines.push('base_image_id = "' + base + '"');
+          lines.push('target_image_id = "' + target + '"');
+        }
+        if (notes) lines.push('notes = "' + notes + '"');
+        if (keep)  lines.push('keep_images = true');
+
+        var toml = lines.join("\n");
+        var pre = document.getElementById("toml-preview");
+        if (pre) pre.innerHTML = tomlHighlight(toml);
+        return toml;
+      }
+
+      async function loadExps() {
+        try {
+          var r = await apiFetch("/experiments");
+          var list = await r.json();
+          list.forEach(function (e) {
+            experiments[e.id] = e;
+          });
+          renderList(list);
+          if (selectedId && experiments[selectedId]) loadDetail(selectedId);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      function renderList(list) {
+        var el = document.getElementById("exp-list");
+        el.innerHTML = "";
+        list.forEach(function (e) {
+          var d = document.createElement("div");
+          d.className = "exp-item" + (e.id === selectedId ? " selected" : "");
+          d.setAttribute("data-id", e.id);
+          d.onclick = function () {
+            showExp(e.id);
+          };
+          d.innerHTML =
+            '<div class="name">' +
+            esc(e.name) +
+            "</div>" +
+            '<div class="meta"><span class="status-badge status-' +
+            e.status +
+            '">' +
+            e.status +
+            "</span> " +
+            e.kind +
+            " &middot; " +
+            e.family +
+            "</div>";
+          el.appendChild(d);
+        });
+      }
+
+      function showExp(id) {
+        selectedId = id;
+        document.querySelectorAll(".exp-item").forEach(function (el) {
+          el.classList.remove("selected");
+        });
+        if (id) {
+          var el = document.querySelector('[data-id="' + id + '"]');
+          if (el) el.classList.add("selected");
+        }
+        document.getElementById("empty-state").style.display = id
+          ? "none"
+          : "flex";
+        document.getElementById("exp-detail").style.display = id
+          ? "flex"
+          : "none";
+        document.getElementById("srv-pane").style.display = "none";
+        if (id) {
+          liveLogEntries = [];
+          renderLive();
+          switchTab("spec");
+          loadDetail(id);
+        }
+      }
+
+      async function loadDetail(id) {
+        try {
+          var r = await apiFetch("/experiments/" + id);
+          var data = await r.json();
+          renderSpecInfo(data.experiment);
+          renderSpecDetail(data.experiment, id);
+          renderResults(data.results || []);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      function renderSpecDetail(exp, id) {
+        var el = document.getElementById("spec-detail-content");
+        if (!el || !exp) return;
+        var spec = {};
+        try { spec = JSON.parse(exp.spec_json || "{}"); } catch(e) {}
+
+        var rows = [
+          ["Name",        esc(exp.name || "")],
+          ["Family",      esc(spec.family || exp.family || "")],
+          ["Kind",        esc(spec.kind   || exp.kind   || "")],
+          ["Workers",     esc((spec.workers || []).join(", ") || "—")],
+          ["Runs / pair", esc(String(spec.runs_per_pair || "—"))],
+          ["Images",      esc((spec.images || []).join(", ") || "all")],
+          ["Keep images", spec.keep_images ? "yes" : "no"],
+          ["Notes",       esc(spec.notes  || "—")],
+          ["Status",      '<span class="status-badge status-' + (exp.status||"") + '">' + esc(exp.status||"") + '</span>'],
+        ];
+        var html = '<table class="spec-table">';
+        rows.forEach(function(r) {
+          html += '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td></tr>';
+        });
+        html += '</table>';
+        html += '<div class="spec-dl-row">';
+        html += '<button class="btn-dl" onclick="dlResults(\'csv\',\'results.csv\')">↓ CSV</button>';
+        html += '<button class="btn-dl" onclick="dlResults(\'jsonl\',\'results.jsonl\')">↓ JSONL</button>';
+        html += '</div>';
+        el.innerHTML = html;
+      }
+
+      function renderSpecInfo(exp) {
+        var el = document.getElementById("spec-info");
+        if (!el || !exp) return;
+        var spec = {};
+        try { spec = JSON.parse(exp.spec_json || "{}"); } catch(e) {}
+        var rows = [
+          ["Name",    esc(exp.name || "")],
+          ["Family",  esc(spec.family || exp.family || "")],
+          ["Kind",    esc(spec.kind   || exp.kind   || "")],
+          ["Workers", esc((spec.workers || []).join(", ") || "—")],
+          ["Runs/pair", esc(String(spec.runs_per_pair || "—"))],
+          ["Images", esc((spec.images || []).join(", ") || "all")],
+          ["Notes",  esc(spec.notes || "—")],
+        ];
+        var html = '<div class="spec-params">';
+        rows.forEach(function(r) {
+          html += '<div class="sp-item"><span class="sp-key">' + r[0] + '</span><span class="sp-val">' + r[1] + '</span></div>';
+        });
+        html += '</div>';
+        el.innerHTML = html;
+      }
+
+      // ── TOML syntax highlighter ──────────────────────────────────────────
+      function tomlHighlight(text) {
+        if (!text) return "";
+        var lines = text.split("\n").map(function(line) {
+          // Escape HTML first
+          var s = line.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+          // Comment
+          if (/^\s*#/.test(s)) return '<span class="th-cmt">' + s + '</span>';
+          // Section header
+          if (/^\s*\[/.test(s)) return '<span class="th-sec">' + s + '</span>';
+          // key = value
+          s = s.replace(/^(\s*[\w\-\.]+)(\s*=\s*)/, function(_, k, eq) {
+            return '<span class="th-key">' + k + '</span>' + '<span class="th-eq">' + eq + '</span>';
+          });
+          // Strings
+          s = s.replace(/(&#34;|&quot;|")((?:[^"\\]|\\.)*)(")/g, '<span class="th-str">&quot;$2&quot;</span>');
+          s = s.replace(/(&apos;|')((?:[^'\\]|\\.)*)(')/g, "<span class='th-str'>&#39;$2&#39;</span>");
+          // Numbers and booleans
+          s = s.replace(/\b(true|false)\b/g, '<span class="th-bool">$1</span>');
+          s = s.replace(/(\b\d+\.\d+\b|\b\d+\b)/g, '<span class="th-num">$1</span>');
+          return s;
+        });
+        return lines.join("\n");
+      }
+
+      function updateTomlPreview() {
+        var ta = document.getElementById("exp-toml");
+        var pre = document.getElementById("toml-preview");
+        if (!ta || !pre) return;
+        pre.innerHTML = tomlHighlight(ta.value);
+      }
+
+      function handleTomlTab(e) {
+        if (e.key !== "Tab") return;
+        e.preventDefault();
+        var ta = e.target;
+        var s = ta.selectionStart, end = ta.selectionEnd;
+        ta.value = ta.value.substring(0, s) + "  " + ta.value.substring(end);
+        ta.selectionStart = ta.selectionEnd = s + 2;
+        updateTomlPreview();
+      }
+
+      function renderResults(results) {
+        var tbody = document.getElementById("results-body");
+        tbody.innerHTML = "";
+        var totalA = 0,
+          totalB = 0,
+          sumC = 0;
+        results.forEach(function (r) {
+          var aMB = r.archive_bytes ? (r.archive_bytes / 1e6).toFixed(2) : "-";
+          var bMB = r.base_qcow2_bytes
+            ? (r.base_qcow2_bytes / 1e6).toFixed(2)
+            : "-";
+          var cstar = r.cstar ? r.cstar.toFixed(3) : "-";
+          var ms = "-";
+          try {
+            var cs = JSON.parse(r.compress_stats_json || "{}");
+            if (cs.elapsed_secs) ms = Math.round(cs.elapsed_secs * 1000);
+          } catch (e) {}
+          var tr = document.createElement("tr");
+          tr.innerHTML =
+            "<td>" +
+            esc(r.image_id) +
+            "</td><td>" +
+            (r.base_image_id ? esc(r.base_image_id) : "—") +
+            "</td>" +
+            '<td class="num">' +
+            ms +
+            '</td><td class="num">' +
+            aMB +
+            '</td><td class="num">' +
+            bMB +
+            '</td><td class="num">' +
+            cstar +
+            "</td>";
+          tbody.appendChild(tr);
+          if (r.archive_bytes) totalA += r.archive_bytes;
+          if (r.base_qcow2_bytes) totalB += r.base_qcow2_bytes;
+          if (r.cstar) sumC += r.cstar;
+        });
+        var n = results.length || 1;
+        document.getElementById("kpi-grid").innerHTML =
+          '<div class="kpi"><div class="label">Runs</div><div class="value">' +
+          results.length +
+          "</div></div>" +
+          '<div class="kpi"><div class="label">Total Archive</div><div class="value">' +
+          (totalA / 1e6).toFixed(1) +
+          " MB</div></div>" +
+          '<div class="kpi"><div class="label">Total Base</div><div class="value">' +
+          (totalB / 1e6).toFixed(1) +
+          " MB</div></div>" +
+          '<div class="kpi"><div class="label">Avg C*</div><div class="value">' +
+          (sumC / n).toFixed(3) +
+          "</div></div>";
+      }
+
+      function switchTab(tab) {
+        document.querySelectorAll(".tab").forEach(function (t) {
+          t.classList.toggle("active", t.getAttribute("onclick") === "switchTab('" + tab + "')");
+        });
+        document.querySelectorAll(".tab-pane").forEach(function (p) {
+          p.classList.remove("active");
+        });
+        document.getElementById("tab-" + tab).classList.add("active");
+      }
+
+      function renderLive() {
+        var lvl = document.getElementById("live-lvl").value;
+        var txt = document.getElementById("live-txt").value.toLowerCase();
+        var el = document.getElementById("live-log");
+        el.innerHTML = "";
+        liveLogEntries
+          .filter(function (e) {
+            return (
+              (!lvl || e.level === lvl) &&
+              (!txt || e.message.toLowerCase().includes(txt))
+            );
+          })
+          .forEach(function (e) {
+            el.appendChild(
+              makeLine(e.ts, e.level, e.target || "runner", e.message),
+            );
+          });
+        if (document.getElementById("live-scroll").checked)
+          el.scrollTop = el.scrollHeight;
+      }
+
+      function showServerLogs() {
+        selectedId = null;
+        document.querySelectorAll(".exp-item").forEach(function (el) {
+          el.classList.remove("selected");
+        });
+        document.getElementById("empty-state").style.display = "none";
+        document.getElementById("exp-detail").style.display = "none";
+        document.getElementById("srv-pane").style.display = "flex";
+        loadSrv();
+      }
+
+      async function loadSrv() {
+        try {
+          var r = await apiFetch("/logs/server?n=500");
+          srvEntries = await r.json();
+          renderSrv();
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      function renderSrv() {
+        var lvl = document.getElementById("srv-lvl").value;
+        var txt = document.getElementById("srv-txt").value.toLowerCase();
+        var el = document.getElementById("srv-lines");
+        el.innerHTML = "";
+        srvEntries
+          .filter(function (e) {
+            return (
+              (!lvl || e.level === lvl) &&
+              (!txt ||
+                e.message.toLowerCase().includes(txt) ||
+                e.target.toLowerCase().includes(txt))
+            );
+          })
+          .forEach(function (e) {
+            el.appendChild(makeLine(e.ts_ms, e.level, e.target, e.message));
+          });
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function makeLine(ts, level, target, message) {
+        var d = document.createElement("div");
+        d.className = "ll";
+        var t = ts > 1e12 ? new Date(ts) : new Date(ts * 1000);
+        var tStr = t.toLocaleTimeString("en-GB", {
+          hour12: false,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        d.innerHTML =
+          '<span class="ll-ts">' +
+          tStr +
+          "</span>" +
+          '<span class="ll-lv lv-' +
+          level +
+          '">' +
+          level.toUpperCase() +
+          "</span>" +
+          '<span class="ll-tg" title="' +
+          esc(target) +
+          '">' +
+          esc(target) +
+          "</span>" +
+          '<span class="ll-ms">' +
+          esc(message) +
+          "</span>";
+        return d;
+      }
+
+      function connectSSE() {
+        if (sseCtrl) sseCtrl.abort();
+        var dot = document.getElementById("sse-dot");
+        sseCtrl = new AbortController();
+        fetch("/api/events", {
+          headers: { Authorization: "Bearer " + TOKEN },
+          signal: sseCtrl.signal,
+        })
+          .then(function (r) {
+            if (!r.ok) {
+              retrySSE();
+              return;
+            }
+            dot.classList.add("connected");
+            var reader = r.body.getReader();
+            var dec = new TextDecoder();
+            var buf = "";
+            function pump() {
+              reader
+                .read()
+                .then(function (x) {
+                  if (x.done) {
+                    dot.classList.remove("connected");
+                    retrySSE();
+                    return;
+                  }
+                  buf += dec.decode(x.value, { stream: true });
+                  var parts = buf.split("\n\n");
+                  buf = parts.pop();
+                  parts.forEach(function (chunk) {
+                    var line = (chunk.split("\n") || []).find(function (l) {
+                      return l.startsWith("data:");
+                    });
+                    if (line) {
+                      try {
+                        handleSSE(JSON.parse(line.slice(5).trim()));
+                      } catch (e) {}
+                    }
+                  });
+                  pump();
+                })
+                .catch(function () {
+                  dot.classList.remove("connected");
+                  retrySSE();
+                });
+            }
+            pump();
+          })
+          .catch(function () {
+            dot.classList.remove("connected");
+            retrySSE();
+          });
+      }
+
+      function retrySSE() {
+        clearTimeout(sseTimer);
+        sseTimer = setTimeout(connectSSE, 5000);
+      }
+
+      function handleSSE(ev) {
+        if (!ev || !ev.type) return;
+        if (ev.type === "Log") {
+          var entry = {
+            ts: Date.now(),
+            level: ev.level,
+            target: ev.run_id || "",
+            message: ev.message,
+          };
+          liveLogEntries.push(entry);
+          if (liveLogEntries.length > 2000) liveLogEntries.shift();
+          if (
+            selectedId &&
+            document.getElementById("tab-live").classList.contains("active")
+          )
+            renderLive();
+          if (document.getElementById("srv-pane").style.display !== "none") {
+            srvEntries.push({
+              ts_ms: Date.now(),
+              level: ev.level,
+              target: "runner",
+              message: ev.message,
+            });
+            renderSrv();
+          }
+        } else if (ev.type === "ExperimentFinished") {
+          loadExps();
+        } else if (ev.type === "RunStarted" || ev.type === "ImageDone") {
+          if (ev.type === "ImageDone" && selectedId) loadDetail(selectedId);
+          var msg =
+            ev.type === "RunStarted"
+              ? "▶ run started (workers=" + ev.workers + ")"
+              : "✓ " +
+                ev.image_id +
+                " C*=" +
+                (ev.cstar || 0).toFixed(3) +
+                " " +
+                ((ev.archive_bytes || 0) / 1e6).toFixed(1) +
+                "MB";
+          liveLogEntries.push({
+            ts: Date.now(),
+            level: "info",
+            target: "runner",
+            message: msg,
+          });
+          if (
+            selectedId &&
+            document.getElementById("tab-live").classList.contains("active")
+          )
+            renderLive();
+        }
+      }
+
+      function openModal() {
+        populateFamilySelect();
+        document.getElementById("new-exp-modal").classList.remove("hidden");
+      }
+      function closeModal() {
+        document.getElementById("new-exp-modal").classList.add("hidden");
+      }
+      async function submitExperiment() {
+        var toml = buildTomlPreview().trim();
+        if (!toml) return;
+        try {
+          await apiFetch("/experiments", {
+            method: "POST",
+            body: toml,
+            headers: { "Content-Type": "text/plain" },
+          });
+          closeModal();
+          document.getElementById("exp-toml").value = "";
+          loadExps();
+        } catch (e) {
+          alert("Error: " + e.message);
+        }
+      }
+
+      function esc(s) {
+        return String(s == null ? "" : s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+    </script>
+  </body>
+</html>

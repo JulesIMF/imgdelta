@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 JulesIMF
+#
+# image-delta — incremental disk-image compression toolkit
+# teststand.example.toml — see module docs
+
+# teststand.example.toml — copy to teststand.toml and fill in your values.
+# teststand.toml is intentionally gitignored.
+
+workdir = "/var/lib/teststand"
+port = 8080
+auth_token = "CHANGE_ME_STRONG_RANDOM_TOKEN"
+
+[compressor]
+workers = 4
+passthrough_threshold = 1.0
+
+# Optional: Telegram notifications.
+# Remove or comment out the [telegram] section to disable.
+[telegram]
+bot_token = "YOUR_BOT_TOKEN_HERE"
+# Default subscribers (Telegram user/chat IDs).
+# Users can also subscribe via /subscribe in the bot.
+subscribers = []
