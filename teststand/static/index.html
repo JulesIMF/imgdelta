@@ -605,6 +605,7 @@
                   <th>base</th>
                   <th>compress ms</th>
                   <th>archive MB</th>
+                  <th>storage MB</th>
                   <th>target MB</th>
                   <th>base MB</th>
                   <th>C*</th>
@@ -1051,11 +1052,13 @@
         var tbody = document.getElementById("results-body");
         tbody.innerHTML = "";
         var totalA = 0,
+          totalS = 0,
           totalT = 0,
           totalB = 0,
           sumC = 0;
         results.forEach(function (r) {
           var aMB = r.archive_bytes ? (r.archive_bytes / 1e6).toFixed(2) : "-";
+          var sMB = r.storage_bytes ? (r.storage_bytes / 1e6).toFixed(2) : "-";
           var tMB = r.target_qcow2_bytes ? (r.target_qcow2_bytes / 1e6).toFixed(2) : "-";
           var bMB = r.base_qcow2_bytes
             ? (r.base_qcow2_bytes / 1e6).toFixed(2)
@@ -1078,6 +1081,8 @@
             '</td><td class="num">' +
             aMB +
             '</td><td class="num">' +
+            sMB +
+            '</td><td class="num">' +
             tMB +
             '</td><td class="num">' +
             bMB +
@@ -1086,6 +1091,7 @@
             "</td>";
           tbody.appendChild(tr);
           if (r.archive_bytes) totalA += r.archive_bytes;
+          if (r.storage_bytes) totalS = Math.max(totalS, r.storage_bytes);
           if (r.target_qcow2_bytes) totalT += r.target_qcow2_bytes;
           if (r.base_qcow2_bytes) totalB += r.base_qcow2_bytes;
           if (r.cstar != null) sumC += r.cstar;
@@ -1097,6 +1103,9 @@
           "</div></div>" +
           '<div class="kpi"><div class="label">Total Archive</div><div class="value">' +
           (totalA / 1e6).toFixed(1) +
+          " MB</div></div>" +
+          '<div class="kpi"><div class="label">Storage (peak)</div><div class="value" title="largest storage dir snapshot">' +
+          (totalS / 1e6).toFixed(1) +
           " MB</div></div>" +
           '<div class="kpi"><div class="label">Total Target</div><div class="value">' +
           (totalT / 1e6).toFixed(1) +

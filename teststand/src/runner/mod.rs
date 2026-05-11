@@ -171,6 +171,12 @@ impl Runner {
         let base_spec = images[0];
         let targets = &images[1..];
 
+        // Per-experiment isolated storage: experiments/{exp_id}/storage/
+        let storage_dir = self.config.experiment_storage_dir(exp_id);
+        tokio::fs::create_dir_all(&storage_dir)
+            .await
+            .map_err(crate::error::Error::Io)?;
+
         self.log(
             exp_id,
             "info",
@@ -240,13 +246,16 @@ impl Runner {
                         Some(&base_spec.id),
                         &target_path,
                         &base_path,
-                        &self.config.storage_dir(),
+                        &storage_dir,
                         workers,
                         pt,
                         false,
                         &target_spec.format,
                     )
                     .await;
+
+                    // Measure total storage dir after every compress call.
+                    let storage_bytes = executor::dir_size_bytes(&storage_dir).unwrap_or(0) as i64;
 
                     match pair_result {
                         Ok(pr) => {
@@ -267,6 +276,7 @@ impl Runner {
                                 archive_bytes: Some(pr.archive_bytes as i64),
                                 base_qcow2_bytes: Some(pr.base_file_bytes as i64),
                                 target_qcow2_bytes: Some(pr.target_file_bytes as i64),
+                                storage_bytes: Some(storage_bytes),
                                 cstar: Some(cstar),
                             };
                             db::insert_result(&self.db, &res).await?;
@@ -274,10 +284,11 @@ impl Runner {
                                 exp_id,
                                 "info",
                                 format!(
-                                    "done: {} archive={:.1}MB target={:.1}MB C*={:.4}",
+                                    "done: {} archive={:.1}MB target={:.1}MB storage={:.1}MB C*={:.4}",
                                     pr.image_id,
                                     pr.archive_bytes as f64 / 1e6,
                                     pr.target_file_bytes as f64 / 1e6,
+                                    storage_bytes as f64 / 1e6,
                                     cstar,
                                 ),
                             );

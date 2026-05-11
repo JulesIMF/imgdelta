@@ -139,6 +139,11 @@ pub async fn compress_pair(
     })
 }
 
+/// Sum bytes of all files under a directory (or return file size for a single file).
+pub fn dir_size_bytes(path: &Path) -> Result<u64> {
+    file_or_dir_size(path)
+}
+
 /// Sum bytes of a path: single file → its size; directory → recursive sum.
 fn file_or_dir_size(path: &Path) -> Result<u64> {
     if path.is_file() {

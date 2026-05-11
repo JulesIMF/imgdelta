@@ -75,11 +75,10 @@ async fn main() -> Result<()> {
     let cfg = Arc::new(load_config(&cli.config)?);
     let families = Arc::new(load_families(&cli.families)?);
 
-    // Ensure directories exist
+    // Ensure base directories exist (per-experiment dirs are created by the runner)
     std::fs::create_dir_all(cfg.workdir.as_path())?;
     std::fs::create_dir_all(cfg.images_dir())?;
-    std::fs::create_dir_all(cfg.storage_dir())?;
-    std::fs::create_dir_all(cfg.results_dir())?;
+    std::fs::create_dir_all(cfg.workdir.join("experiments"))?;
 
     // Database
     let db = db::open(&cfg.db_path()).await?;

@@ -27,8 +27,6 @@ pub struct TeststandConfig {
     /// Static auth token.  Store this in a password manager and paste it into
     /// the web UI on first visit — it will be saved to localStorage.
     pub auth_token: String,
-    /// imgdelta LocalStorage path (defaults to <workdir>/storage).
-    pub storage_dir: Option<PathBuf>,
     /// Number of images to keep pre-downloaded ahead of the current experiment.
     #[serde(default = "default_prefetch")]
     pub prefetch_ahead: usize,
@@ -66,18 +64,24 @@ pub struct TelegramConfig {
 }
 
 impl TeststandConfig {
-    pub fn storage_dir(&self) -> PathBuf {
-        self.storage_dir
-            .clone()
-            .unwrap_or_else(|| self.workdir.join("storage"))
+    /// Root directory for a specific experiment (experiments/{id}/).
+    pub fn experiment_dir(&self, experiment_id: &str) -> std::path::PathBuf {
+        self.workdir.join("experiments").join(experiment_id)
     }
-    pub fn images_dir(&self) -> PathBuf {
+    /// Isolated LocalStorage for one experiment (experiments/{id}/storage/).
+    pub fn experiment_storage_dir(&self, experiment_id: &str) -> std::path::PathBuf {
+        self.experiment_dir(experiment_id).join("storage")
+    }
+    /// Working directories for an experiment (experiments/{id}/workdirs/).
+    #[allow(dead_code)]
+    pub fn experiment_workdirs(&self, experiment_id: &str) -> std::path::PathBuf {
+        self.experiment_dir(experiment_id).join("workdirs")
+    }
+    /// Shared image download cache (not per-experiment).
+    pub fn images_dir(&self) -> std::path::PathBuf {
         self.workdir.join("images")
     }
-    pub fn results_dir(&self) -> PathBuf {
-        self.workdir.join("results")
-    }
-    pub fn db_path(&self) -> PathBuf {
+    pub fn db_path(&self) -> std::path::PathBuf {
         self.workdir.join("teststand.db")
     }
 }
