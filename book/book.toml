@@ -14,3 +14,7 @@ src = "src"
 site-url = "/imgdelta/"
 git-repository-url = "https://github.com/JulesIMF/imgdelta"
 edit-url-template = "https://github.com/JulesIMF/imgdelta/edit/main/book/src/{path}"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

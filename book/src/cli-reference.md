@@ -1,137 +1,127 @@
 # CLI Reference
 
+`imgdelta` is the command-line interface for `image-delta-core`. All commands
+require a configuration file (`--config`).
+
 ## Global flags
 
-| Flag                  | Default | Description                                                |
-| --------------------- | ------- | ---------------------------------------------------------- |
-| `-c, --config <FILE>` | —       | Path to TOML configuration file                            |
-| `--log-level <LEVEL>` | `info`  | Override log level (`error`/`warn`/`info`/`debug`/`trace`) |
-| `-h, --help`          | —       | Print help                                                 |
-| `-V, --version`       | —       | Print version                                              |
-
----
+| Flag                  | Default  | Description                                          |
+| --------------------- | -------- | ---------------------------------------------------- |
+| `--config <PATH>`     | required | Path to TOML configuration file                      |
+| `--log-level <LEVEL>` | `info`   | Verbosity: `error`, `warn`, `info`, `debug`, `trace` |
 
 ## `imgdelta compress`
 
-Compress a new image relative to a base image and upload patches to S3.
+Compute a delta from a **base** image to a **target** image and upload it
+to storage.
 
-```sh
-imgdelta compress \
-  --image         <PATH>         # target filesystem root (or qcow2 path)
-  --image-id      <ID>           # unique ID for the new image
-  --base-image-id <ID>           # ID of the base image (omit for full backup)
-  [--image-format directory|qcow2]   # default: directory
-  [--workers      <N>]           # override config workers
-  --config        <FILE>
+```
+imgdelta --config imgdelta.toml compress \
+    --image-id        <TARGET_ID>         \
+    --base-image-id   <BASE_ID>           \
+    --source          <BASE_ROOT_PATH>    \
+    --target          <TARGET_ROOT_PATH>  \
+    [--image-format   directory|qcow2]    \
+    [--workers        N]                  \
+    [--overwrite]                         \
+    [--debug-dir      <PATH>]
 ```
 
-**Exit codes**: `0` success, `1` error (message on stderr).
+| Flag              | Default     | Description                                        |
+| ----------------- | ----------- | -------------------------------------------------- |
+| `--image-id`      | required    | Unique ID for the new image being produced         |
+| `--base-image-id` | required    | ID of the base (reference) image                   |
+| `--source`        | required    | Mounted root of the base image                     |
+| `--target`        | required    | Mounted root of the target image                   |
+| `--image-format`  | `directory` | Image format: `directory` or `qcow2`               |
+| `--workers`       | from config | Override `[compressor].workers`                    |
+| `--overwrite`     | `false`     | Overwrite an existing image with the same ID       |
+| `--debug-dir`     | none        | Dump intermediate pipeline state to this directory |
 
----
+### Exit codes
+
+| Code | Meaning                                                            |
+| ---- | ------------------------------------------------------------------ |
+| 0    | Success                                                            |
+| 1    | Configuration error (missing file, bad TOML, missing required key) |
+| 2    | Storage error (upload failed, permission denied, etc.)             |
+| 3    | Image error (mount failed, qemu-nbd not found, etc.)               |
 
 ## `imgdelta decompress`
 
-Reconstruct an image from stored patches.
+Reconstruct a target image from its stored delta and the base image.
 
-```sh
-imgdelta decompress \
-  --image-id  <ID>      # image to reconstruct
-  --base-root <PATH>    # filesystem root of the base image
-  --output    <PATH>    # directory to write the reconstructed image
-  --config    <FILE>
+```
+imgdelta --config imgdelta.toml decompress \
+    --image-id      <TARGET_ID>         \
+    --base-root     <BASE_ROOT_PATH>    \
+    --output        <OUTPUT_PATH>       \
+    [--image-format directory|qcow2]    \
+    [--workers      N]
 ```
 
-The output directory is created if it does not exist. On completion all
-file attributes (mode, uid, gid, mtime, symlinks, hardlinks, xattrs) are
-identical to the original target filesystem.
+| Flag             | Default     | Description                                             |
+| ---------------- | ----------- | ------------------------------------------------------- |
+| `--image-id`     | required    | ID of the delta image to reconstruct                    |
+| `--base-root`    | required    | Mounted root of the base image                          |
+| `--output`       | required    | Directory where the reconstructed image will be written |
+| `--image-format` | `directory` | Image format                                            |
+| `--workers`      | from config | Override `[compressor].workers`                         |
 
----
+## `imgdelta image status`
 
-## `imgdelta image`
+Print the status (`Pending`, `Ready`, `Deleted`) of a single image.
 
-Image management subcommands.
-
-### `imgdelta image status`
-
-```sh
-imgdelta image status --image-id <ID> --config <FILE>
+```
+imgdelta --config imgdelta.toml image status --image-id <ID>
 ```
 
-Prints the lifecycle state of an image (`Pending` / `Compressing` /
-`Compressed` / `Failed: <reason>`).
+## `imgdelta image list`
 
-Exit code `1` if the image is not found.
+List all image records known to the storage backend.
 
-### `imgdelta image list`
-
-```sh
-imgdelta image list [--format table|json] --config <FILE>
 ```
-
-Lists all known images with their `image_id`, `base_image_id`, and status.
-
----
-
-## `imgdelta manifest`
-
-Manifest inspection subcommands.
-
-### `imgdelta manifest inspect`
-
-```sh
-imgdelta manifest inspect \
-  --image-id <ID> \
-  [--format msgpack|json]   # default: json
-  --config <FILE>
+imgdelta --config imgdelta.toml image list
 ```
-
-Downloads and prints the manifest for `image-id`. Use `--format json` for
-human-readable output or pipe to `jq`.
-
-### `imgdelta manifest diff`
-
-```sh
-imgdelta manifest diff \
-  --from-image-id <ID> \
-  --to-image-id   <ID> \
-  --config <FILE>
-```
-
-Prints a summary of differences between two manifests.
-
----
-
-## `imgdelta debug walkdir` _(debug builds only)_
-
-Available only when built without `--release` (`#[cfg(debug_assertions)]`).
-Useful for inspecting real directory pairs without a full compress cycle.
-
-```sh
-cargo build
-./target/debug/imgdelta debug walkdir <OLD_PATH> <NEW_PATH> [--show-metadata=true|false]
-```
-
-| Flag              | Default | Description                    |
-| ----------------- | ------- | ------------------------------ |
-| `--show-metadata` | `true`  | Show `M` (metadata-only) lines |
 
 Output format:
 
 ```
-+ path/to/added/file
-- path/to/removed/file
-~ path/to/changed/file
-M path/to/metadata-only/file
-
-─── diff summary ────────────────────────
-  +  added:         N
-  -  removed:       N
-  ~  changed:       N
-  M  metadata-only: N
-  ─────────────────────────────────────────
-     total diffs:   N
-
-─── tree stats ──────────────────────────
-  old (base)    N files  X.X MiB  N dirs  N symlinks
-  new (target)  N files  X.X MiB  N dirs  N symlinks
+ID                          BASE               STATUS    CREATED
+debian-11-20260502          debian-11-20260401 Ready     2026-05-02T10:11:12Z
+debian-11-20260401          <base>             Ready     2026-04-01T08:00:00Z
 ```
+
+## `imgdelta manifest inspect`
+
+Download and pretty-print the manifest for an image.
+
+```
+imgdelta --config imgdelta.toml manifest inspect --image-id <ID>
+```
+
+The manifest is decoded from MessagePack and printed as JSON (with
+human-readable byte sizes for the `size` fields).
+
+## `imgdelta manifest diff`
+
+Print a human-readable summary of which files were added, removed, modified,
+or renamed between two image manifests.
+
+```
+imgdelta --config imgdelta.toml manifest diff \
+    --base-id   <BASE_ID> \
+    --target-id <TARGET_ID>
+```
+
+## `imgdelta debug walkdir` _(debug builds only)_
+
+Walk a directory tree and print every path together with its SHA-256, size,
+mode, uid, gid, and mtime. Useful for diagnosing why a file is or is not
+picked up by the compress pipeline.
+
+```
+imgdelta --config imgdelta.toml debug walkdir --root <PATH>
+```
+
+This subcommand is compiled out in release builds (`#[cfg(debug_assertions)]`).
