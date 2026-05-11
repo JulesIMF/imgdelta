@@ -42,7 +42,7 @@ format, partition layout, decompression order — is handled by the library.
 ```mermaid
 graph TB
     subgraph core["image-delta-core"]
-        DC["DefaultCompressor\n(compress / decompress)"]
+        DC["DefaultCompressor<br/>(compress / decompress)"]
         FD["fs_diff"]
         PM["path_match"]
         RE["RouterEncoder"]
@@ -54,9 +54,9 @@ graph TB
     end
 
     subgraph provider["Provider / CLI"]
-        PS["impl Storage\n(your object store)"]
-        PI["impl Image\n(optional: custom format)"]
-        RC["Routing config\n(TOML or programmatic)"]
+        PS["impl Storage<br/>(your object store)"]
+        PI["impl Image<br/>(optional: custom format)"]
+        RC["Routing config<br/>(TOML or programmatic)"]
     end
 
     PS -->|"Storage trait"| DC

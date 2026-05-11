@@ -56,11 +56,11 @@ average ratio appear extremely high. The median ratio is around 40–60×.
 | Compress time     | 154 s                  |
 
 ```mermaid
-bar-chart
-    title Delta size comparison — Ubuntu 22.04 LTS (2024-03-18 → 2024-06-17)
-    "Full rootfs" : 5930
-    "qcow2 delta" : 2970
-    "imgdelta patches" : 148
+xychart-beta
+    title "Delta size — Ubuntu 22.04 LTS (2024-03-18 → 2024-06-17), MB"
+    x-axis ["Full rootfs", "qcow2 delta", "imgdelta patches"]
+    y-axis "Size (MB)" 0 --> 6000
+    bar [5930, 2970, 148]
 ```
 
 <!-- TODO: turn this into a proper SVG -->
@@ -109,9 +109,9 @@ imgdelta includes three levels of automated testing:
 
 ```mermaid
 graph LR
-    U["Unit tests\n(per-module)"]
-    I["Integration tests\ncargo test -p image-delta-core"]
-    R["Roundtrip tests\nscripts/roundtrip-test.sh"]
+    U["Unit tests<br/>(per-module)"]
+    I["Integration tests<br/>cargo test -p image-delta-core"]
+    R["Roundtrip tests<br/>scripts/roundtrip-test.sh"]
     U --> I --> R
 ```
 

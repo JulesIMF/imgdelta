@@ -9,21 +9,20 @@ changed file with the most appropriate algorithm.
 
 ```mermaid
 flowchart TD
-    subgraph compress["compress()"]
+    subgraph compress["compress(image, storage, router, source, target, options)"]
         direction TB
-        IB["Image::open(base)"] --> PB["base partitions"]
-        IT["Image::open(target)"] --> PT["target partitions"]
-        PB --> WD["walkdir_fn()\n(base root + target root)"]
-        PT --> WD
-        WD --> FD["FsDraft\n(records)"]
-        FD --> BL["blob_lookup\n(match base blobs by path)"]
-        BL --> MR["match_renamed\n(path-similarity rename detection)"]
-        MR --> CL["cleanup\n(remove redundant records)"]
-        CL --> UB["upload_blobs\n(upload new verbatim blobs)"]
-        UB --> DB["download_blobs\n(fetch base blobs for patching)"]
-        DB --> CP["compute_patches\n(RouterEncoder per file)"]
-        CP --> PA["pack_archive\npatches.tar.gz"]
-        PA --> ST["Storage\nupload_manifest + upload_patches"]
+        IB["Image::open(base)"] --> DL["DiskLayout<br/>(partition table)"]
+        IT["Image::open(target)"] --> DL
+        DL --> ITER["iterate partitions<br/>(parallel, matched by index)"]
+        ITER --> FSH["FsHandle<br/>filesystem partition"]
+        ITER --> BB["BiosBootHandle<br/>BIOS boot GPT"]
+        ITER --> MB["MbrHandle<br/>MBR boot code"]
+        ITER --> RW["RawHandle<br/>opaque partition"]
+        FSH -->|"8-stage file-level pipeline"| ST["Storage"]
+        BB -->|"single blob"| ST
+        MB -->|"single blob"| ST
+        RW -->|"xdelta3 blob"| ST
+        ST --> MN["upload_manifest()"]
     end
 ```
 
@@ -106,85 +105,174 @@ image-delta-core/src/
 
 ## Modularity
 
-The design deliberately keeps every major concern behind a trait:
+Every major concern is behind a narrow trait. The three core traits —
+`Image`/`OpenImage`, `Storage`, and `PatchEncoder` — have no dependencies on
+each other. A new image format, a new storage backend, or a new encoder can
+be added without touching any other trait.
+
+### Image abstraction
+
+`Image` is a factory: given a path it opens the image and returns an `OpenImage`
+handle. `OpenImage` is a live, mounted handle that exposes the partition layout
+and keeps any OS resources (qemu-nbd connection, loop device, FUSE mount)
+alive until it is dropped. Each format provides both implementations.
 
 ```mermaid
 classDiagram
     class Image {
-        +format_name() str
-        +open(path) OpenImage
-        +mount(path) MountHandle
+        <<trait>>
+        Opens an image path
+        Returns a live OpenImage handle
     }
     class OpenImage {
-        +disk_layout() DiskLayout
-        +partitions() Vec~PartitionHandle~
-        +create_partition(pm) PartitionHandle
+        <<trait>>
+        Live image handle
+        Exposes DiskLayout and PartitionHandles
+        Keeps OS resources alive until dropped
     }
+    class DirectoryImage {
+        Plain directory tree
+        No mounting required
+    }
+    class Qcow2Image {
+        qemu-nbd mount
+        feature = "qcow2"
+    }
+    class TarRootfsImage {
+        TAR rootfs archive
+        example custom impl
+    }
+    class RawImgImage {
+        Raw .img disk file
+        loop device or nbd
+    }
+    Image <|.. DirectoryImage : implements
+    Image <|.. Qcow2Image : implements
+    Image <|.. TarRootfsImage : implements
+    Image <|.. RawImgImage : implements
+    OpenImage <|.. DirectoryImage : implements
+    OpenImage <|.. Qcow2Image : implements
+    OpenImage <|.. TarRootfsImage : implements
+    OpenImage <|.. RawImgImage : implements
+    Image --> OpenImage : open() produces
+```
+
+<!-- TODO: turn this into a proper SVG -->
+
+### Storage backend
+
+`Storage` is the sole interface between imgdelta and any persistence layer.
+It covers three concerns: a content-addressable blob store (SHA-256 keyed),
+image metadata (id, status, base relationship), and blob-origin tracking
+for cross-image delta reuse. `LocalStorage` is the built-in reference
+implementation; providers replace it with their own.
+
+```mermaid
+classDiagram
     class Storage {
-        +blob_exists(sha256) Option~Uuid~
-        +upload_blob(sha256, data) Uuid
-        +download_blob(id) Vec~u8~
-        +upload_manifest(id, bytes)
-        +download_manifest(id) Vec~u8~
-        +upload_patches(id, data)
-        +download_patches(id) Vec~u8~
-        +register_image(meta)
-        +get_image(id) Option~ImageMeta~
-        +update_status(id, status)
-        +list_images() Vec~ImageMeta~
-        +find_blob_candidates(base_id, partition) Vec~BlobCandidate~
-        +record_blob_origin(uuid, orig, base, part, path)
-        +delete_manifest(id)
-        +delete_patches(id)
-        +delete_blob(id)
-        +delete_blob_origins(id)
-        +delete_image_meta(id)
+        <<trait>>
+        Content-addressable blob store
+        Image metadata registry
+        Patch and manifest persistence
+        Blob origin tracking for delta reuse
     }
+    class LocalStorage {
+        Filesystem-backed reference impl
+        UUID v5 deterministic blob IDs
+        gzip-compressed blobs on disk
+        JSON index files
+    }
+    class ProviderStorage {
+        <<implement this>>
+        S3, GCS, custom object store
+        Any async backend
+    }
+    Storage <|.. LocalStorage : built-in
+    Storage <|.. ProviderStorage : your impl
+```
+
+<!-- TODO: turn this into a proper SVG -->
+
+### Encoding
+
+`PatchEncoder` produces a binary delta from source → target and can reconstruct
+target from source + delta. Each implementation tags its output with a one-byte
+`AlgorithmCode` so decompression is always symmetric.
+
+`RouterEncoder` is itself a `PatchEncoder` that delegates to the first matching
+rule. Because it implements the same trait, routers can be nested: one router
+can be the fallback of another, enabling tree-shaped routing policies.
+
+```mermaid
+classDiagram
     class PatchEncoder {
-        +encode(src, target) FilePatch
-        +decode(src, patch) Vec~u8~
-        +algorithm_code() Option~AlgorithmCode~
-        +algorithm_id() str
-    }
-    class RoutingRule {
-        +accept(file) bool
-        +encoder() Arc~PatchEncoder~
+        <<trait>>
+        Produces a binary delta src → target
+        Reconstructs target from src + delta
+        Tagged with a 1-byte AlgorithmCode
     }
     class RouterEncoder {
-        +new(rules, fallback)
-        +select(file) Arc~PatchEncoder~
-        +find_decoder(code, id) Option~Arc~PatchEncoder~~
+        Selects encoder by file properties
+        Itself implements PatchEncoder
+        Supports nested sub-routers
+    }
+    class RoutingRule {
+        <<trait>>
+        Matches a file by glob / ELF magic / size / MIME
+        Returns the encoder to use
+    }
+    class Xdelta3Encoder {
+        VCDIFF format
+        FFI to vendored xdelta3.c
+        Best for ELF binaries and binary data
+    }
+    class TextDiffEncoder {
+        Myers line-level diff
+        Pure Rust - no FFI
+        Best for config files and scripts
+    }
+    class PassthroughEncoder {
+        No encoding — verbatim blob
+        Used for already-compressed data
+        Auto-selected when delta exceeds source
     }
     PatchEncoder <|.. RouterEncoder
     PatchEncoder <|.. Xdelta3Encoder
     PatchEncoder <|.. TextDiffEncoder
     PatchEncoder <|.. PassthroughEncoder
     RouterEncoder o-- RoutingRule
-    RoutingRule --> PatchEncoder
-    Image <|.. DirectoryImage
-    Image <|.. Qcow2Image
-    Storage <|.. LocalStorage
-    Storage <|.. ProviderStorage
+    RoutingRule --> PatchEncoder : returns encoder
 ```
 
 <!-- TODO: turn this into a proper SVG -->
 
-None of these traits have dependencies on each other at the type level:
-
-- A new **image format** implements `Image` (and `OpenImage`) — no changes to
-  encoders or storage.
-- A new **encoder** implements `PatchEncoder` — no changes to image format or
-  storage.
-- A new **storage backend** implements `Storage` — no changes to encoders or
-  image format.
-- The **router** is itself a `PatchEncoder`, so it can be used as the fallback
-  of another router, enabling arbitrarily nested routing trees.
-
 ---
 
-## Compression pipeline (stage-by-stage)
+## Filesystem partition pipeline
 
-Each filesystem partition goes through an 8-stage sequential pipeline:
+Non-filesystem partitions (MBR boot code, BIOS boot, raw/opaque) are stored as
+a single blob or a single xdelta3 diff — no further structure is assumed.
+
+Filesystem partitions go through an 8-stage sequential pipeline. Stages are
+run by `CompressPipeline`; stage 8 is called directly after.
+
+```mermaid
+flowchart TD
+    subgraph fspipe["FsHandle — compress pipeline"]
+        direction TB
+        WD["1. walkdir<br/>walk base + target, SHA-256 per file<br/>build FsDraft of changed entries"]
+        BL["2. blob_lookup<br/>match new files to existing base blobs<br/>by path similarity via Storage"]
+        MR["3. match_renamed<br/>rename detection — weighted edit-distance<br/>path scoring, bijective matching"]
+        CL["4. cleanup<br/>remove records superseded<br/>by blob-lookup or rename"]
+        UB["5. upload_blobs<br/>upload verbatim blobs for added files<br/>record blob origin in Storage"]
+        DB["6. download_blobs<br/>fetch base blobs needed<br/>as delta sources"]
+        CP["7. compute_patches<br/>RouterEncoder::encode() per file<br/>produce PatchRef records"]
+        PA["8. pack_archive<br/>pack patches.tar.gz<br/>upload via Storage::upload_patches"]
+        WD --> BL --> MR --> CL --> UB --> DB --> CP --> PA
+    end
+```
+
+<!-- TODO: turn this into a proper SVG -->
 
 | Stage | Name              | What it does                                                                                                        |
 | ----- | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -197,13 +285,26 @@ Each filesystem partition goes through an 8-stage sequential pipeline:
 | 7     | `compute_patches` | Run `RouterEncoder::encode` per file; produce `PatchRef` records                                                    |
 | 8     | `pack_archive`    | Pack all patches into `patches.tar.gz`; upload via `Storage::upload_patches`                                        |
 
-Stages 2–7 are run by `CompressPipeline`; stage 8 is called directly after.
-
 ---
 
 ## Decompression pipeline
 
 Decompression mirrors compression. For each partition the following stages run:
+
+```mermaid
+flowchart LR
+    ST["Storage"] -->|download_manifest| MF["Manifest<br/>(MessagePack)"]
+    ST -->|download_patches| AR["patches.tar.gz"]
+    AR --> EX["extract to tmpdir"]
+    MF --> AP["apply per record"]
+    EX --> AP
+    BM["base mount"] --> AP
+    AP --> OUT["output directory<br/>(exact replica)"]
+```
+
+<!-- TODO: turn this into a proper SVG -->
+
+For each record in the manifest the decompressor dispatches on record type:
 
 | Stage             | Records handled                                           |
 | ----------------- | --------------------------------------------------------- |
@@ -215,23 +316,6 @@ Decompression mirrors compression. For each partition the following stages run:
 | `rename_records`  | Copy renamed files from base and apply patches if any     |
 | `delete_records`  | Skip removed files                                        |
 | `apply_records`   | Set mode / uid / gid / mtime / xattrs on all output paths |
-
----
-
-## Data flow — decompression
-
-```mermaid
-flowchart LR
-    ST["Storage"] -->|download_manifest| MF["Manifest\n(MessagePack)"]
-    ST -->|download_patches| AR["patches.tar.gz"]
-    AR --> EX["extract to tmpdir"]
-    EX --> AP["apply per-record"]
-    MF --> AP
-    BM["base mount"] --> AP
-    AP --> OUT["output directory\n(exact replica)"]
-```
-
-<!-- TODO: turn this into a proper SVG -->
 
 ---
 
@@ -273,20 +357,35 @@ compact. A JSON debug view is available via `imgdelta manifest inspect --format 
 
 ## Partition types
 
+Different regions of a disk image have very different internal structure.
+imgdelta uses a distinct handler for each, so the representation is always
+as compact and semantically correct as possible.
+
 ```mermaid
 graph LR
-    IMG["disk image"] --> MBR["MBR boot-code\npartition 0 (synthetic)"]
-    IMG --> BIOS["BIOS Boot GPT\npartition"]
-    IMG --> FS["Filesystem\npartition (ext4, xfs, vfat, …)"]
-    IMG --> RAW["Unknown / opaque\npartition"]
+    IMG["disk image"] --> MBR["MbrHandle<br/>partition 0 (synthetic)"]
+    IMG --> BIOS["BiosBootHandle<br/>BIOS Boot GPT"]
+    IMG --> FS["FsHandle<br/>filesystem partition<br/>ext4 / xfs / vfat / …"]
+    IMG --> RAW["RawHandle<br/>unknown / opaque"]
 
-    MBR -->|"single blob\n(SHA-256 dedup)"| ST["Storage"]
+    MBR -->|"single blob"| ST["Storage"]
     BIOS -->|"single blob"| ST
-    FS -->|"file-level delta\n(8-stage pipeline)"| ST
-    RAW -->|"single xdelta3 blob"| ST
+    FS -->|"8-stage file-level pipeline"| ST
+    RAW -->|"xdelta3 blob"| ST
 ```
 
 <!-- TODO: turn this into a proper SVG -->
+
+| Type                    | Handler          | What it covers                                                        | Strategy                                      | Why                                                                                                           |
+| ----------------------- | ---------------- | --------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Filesystem partition    | `FsHandle`       | ext4, xfs, vfat, btrfs, …                                             | 8-stage file-level pipeline                   | Files are the natural unit of change; file-level deltas are orders of magnitude smaller than block-level ones |
+| MBR boot code           | `MbrHandle`      | First 446 bytes of sector 0 (boot code area, not the partition table) | Single verbatim blob, SHA-256 dedup           | Tiny and changes rarely; file-level diff is meaningless for raw machine code                                  |
+| BIOS Boot GPT partition | `BiosBootHandle` | The GPT BIOS boot partition (typically 1 MiB, no filesystem)          | Single verbatim blob                          | No filesystem structure to exploit; content is opaque GRUB stage-2 code                                       |
+| Unknown / opaque        | `RawHandle`      | Any partition with an unrecognised type GUID or no filesystem         | xdelta3 binary diff of the raw partition data | Better than verbatim for large opaque regions that still have binary similarity between versions              |
+
+The `MbrHandle` partition is **synthetic**: qcow2 images store the MBR boot
+code in sector 0 outside of any partition table entry, so imgdelta creates
+a virtual partition 0 to make the manifest representation uniform.
 
 ---
 
