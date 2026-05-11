@@ -97,6 +97,14 @@ pub async fn compress_pair(
 
     let decompress_stats = if run_decompress {
         let decomp_dir = tempfile::tempdir().map_err(Error::Io)?;
+        // For qcow2 the image::create() call runs `qemu-img create <path>`, which
+        // requires a *file* path — not a directory.  Provide a named file inside
+        // the tempdir so the output_root argument is a regular path, not a dir.
+        let output_path = if format == "qcow2" {
+            decomp_dir.path().join("output.qcow2")
+        } else {
+            decomp_dir.path().to_path_buf()
+        };
         let storage2: Arc<dyn image_delta_core::Storage> = Arc::new(
             LocalStorage::new(storage_dir.to_path_buf())
                 .map_err(|e| Error::Other(format!("storage2: {e}")))?,
@@ -110,7 +118,7 @@ pub async fn compress_pair(
             make_image(format),
             storage2,
             build_passthrough_router(),
-            decomp_dir.path(),
+            &output_path,
             opts,
         )
         .await

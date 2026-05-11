@@ -26,6 +26,7 @@ use crate::{
     logging::{BufferLayer, LogBuffer, SseBroadcastLayer},
     notify::NotifyManager,
     runner::progress,
+    runner::queue::Queue,
     runner::Runner,
     web::{api::ApiState, build_router},
 };
@@ -89,11 +90,15 @@ async fn main() -> Result<()> {
         image_manager.register(family.images.clone()).await;
     }
 
+    // Shared run queue (passed to both Runner and NotifyManager)
+    let runner_queue = Queue::new();
+
     // Notifications
-    let notify = NotifyManager::new(cfg.telegram.clone(), db.clone());
+    let notify = NotifyManager::new(cfg.telegram.clone(), db.clone(), runner_queue.clone());
 
     // Runner
     let runner = Runner::new(
+        runner_queue,
         Arc::clone(&cfg),
         db.clone(),
         Arc::clone(&families),

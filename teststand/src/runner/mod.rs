@@ -36,6 +36,7 @@ pub struct Runner {
 
 impl Runner {
     pub fn new(
+        queue: Queue,
         config: Arc<TeststandConfig>,
         db: Db,
         families: Arc<FamiliesConfig>,
@@ -44,7 +45,7 @@ impl Runner {
         notify: Arc<NotifyManager>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            queue: Queue::new(),
+            queue,
             config,
             db,
             families,
@@ -52,6 +53,11 @@ impl Runner {
             progress_tx,
             notify,
         })
+    }
+
+    /// Queue reference for inspecting pending items.
+    pub fn queue(&self) -> &Queue {
+        &self.queue
     }
 
     /// Spawn the background worker loop.
@@ -68,12 +74,31 @@ impl Runner {
         });
     }
 
-    fn log(&self, experiment_id: &str, level: &str, message: impl Into<String>) {
+    fn log(
+        &self,
+        experiment_id: &str,
+        run_id: Option<&str>,
+        level: &str,
+        message: impl Into<String>,
+    ) {
+        let msg = message.into();
         let _ = self.progress_tx.send(ProgressEvent::Log {
             experiment_id: Some(experiment_id.to_owned()),
-            run_id: None,
+            run_id: run_id.map(str::to_owned),
             level: level.to_owned(),
-            message: message.into(),
+            message: msg.clone(),
+        });
+        // Persist to DB so historical log fetch works after the experiment ends.
+        let db = self.db.clone();
+        let exp_id = experiment_id.to_owned();
+        let rid = run_id.map(str::to_owned);
+        let lvl = level.to_owned();
+        tokio::spawn(async move {
+            if let Err(e) =
+                db::append_experiment_log(&db, &exp_id, rid.as_deref(), &lvl, &msg).await
+            {
+                tracing::warn!(err = %e, "failed to persist experiment log");
+            }
         });
     }
 
@@ -93,10 +118,35 @@ impl Runner {
         db::update_experiment_status(&self.db, exp_id, "running").await?;
         self.log(
             exp_id,
+            None,
             "info",
             format!("Starting experiment '{}'", spec.name),
         );
 
+        // Start notification.
+        {
+            let family_name = family.name.clone();
+            let target_count = family
+                .images
+                .iter()
+                .filter(|img| {
+                    spec.images
+                        .as_ref()
+                        .map(|f| f.contains(&img.id))
+                        .unwrap_or(true)
+                })
+                .count();
+            let msg = format!(
+                "\u{1F680} <b>Experiment '{}' started</b>\nFamily: <code>{}</code> \u{2022} {} images \u{2022} workers: {:?}",
+                spec.name,
+                family_name,
+                target_count,
+                spec.workers,
+            );
+            self.notify.send(&msg).await;
+        }
+
+        let started_at = std::time::Instant::now();
         let result = self.run_base_relative(exp_id, spec, family).await;
 
         match &result {
@@ -106,9 +156,15 @@ impl Runner {
                     experiment_id: exp_id.clone(),
                     status: "done".into(),
                 });
-                self.notify
-                    .send(&format!("Experiment '{}' completed.", spec.name))
+                let msg = self
+                    .build_completion_msg(
+                        exp_id,
+                        &spec.name,
+                        "done",
+                        started_at.elapsed().as_secs_f64(),
+                    )
                     .await;
+                self.notify.send(&msg).await;
             }
             Err(e) => {
                 error!(err = %e, "experiment error");
@@ -117,9 +173,15 @@ impl Runner {
                     experiment_id: exp_id.clone(),
                     status: "error".into(),
                 });
-                self.notify
-                    .send(&format!("Experiment '{}' FAILED: {}", spec.name, e))
+                let msg = self
+                    .build_completion_msg(
+                        exp_id,
+                        &spec.name,
+                        "error",
+                        started_at.elapsed().as_secs_f64(),
+                    )
                     .await;
+                self.notify.send(&msg).await;
             }
         }
 
@@ -141,6 +203,67 @@ impl Runner {
         }
 
         result
+    }
+
+    /// Build a rich HTML completion summary from DB results.
+    async fn build_completion_msg(
+        &self,
+        exp_id: &str,
+        name: &str,
+        status: &str,
+        elapsed_secs: f64,
+    ) -> String {
+        let results = db::get_results_for_experiment(&self.db, exp_id)
+            .await
+            .unwrap_or_default();
+
+        let mut seen_target: std::collections::HashSet<String> = Default::default();
+        let mut total_target_bytes: f64 = 0.0;
+        let mut total_archive_bytes: f64 = 0.0;
+        let mut storage_peak: f64 = 0.0;
+        let mut c_sum: f64 = 0.0;
+        let mut cstar_sum: f64 = 0.0;
+        let mut c_n: usize = 0;
+        let mut cstar_n: usize = 0;
+
+        for r in &results {
+            if seen_target.insert(r.image_id.clone()) {
+                total_target_bytes += r.target_qcow2_bytes.unwrap_or(0) as f64;
+                total_archive_bytes += r.archive_bytes.unwrap_or(0) as f64;
+            }
+            let sb = r.storage_bytes.unwrap_or(0) as f64;
+            if sb > storage_peak {
+                storage_peak = sb;
+            }
+            if let Some(c) = r.c {
+                c_sum += c;
+                c_n += 1;
+            }
+            if let Some(cs) = r.cstar {
+                cstar_sum += cs;
+                cstar_n += 1;
+            }
+        }
+
+        let c_agg = if c_n > 0 { c_sum / c_n as f64 } else { 0.0 };
+        let cstar_agg = if cstar_n > 0 {
+            cstar_sum / cstar_n as f64
+        } else {
+            0.0
+        };
+        const MB: f64 = 1_048_576.0;
+
+        crate::notify::fmt_completion_summary(
+            name,
+            status,
+            elapsed_secs,
+            results.len(),
+            total_target_bytes / MB,
+            total_archive_bytes / MB,
+            storage_peak / MB,
+            c_agg,
+            cstar_agg,
+        )
     }
 
     /// Base-relative runner: images[0] is the base; images[1..] are all targets.
@@ -177,8 +300,14 @@ impl Runner {
             .await
             .map_err(crate::error::Error::Io)?;
 
+        let runs_total = spec.runs_per_pair as i64;
+        let total_pairs = spec.workers.len() * targets.len() * spec.runs_per_pair;
+        let mut done_pairs = 0u32;
+        let started_at = std::time::Instant::now();
+
         self.log(
             exp_id,
+            None,
             "info",
             format!(
                 "base = {}, targets = [{}], workers = {:?}, runs = {}",
@@ -226,6 +355,7 @@ impl Runner {
 
                     self.log(
                         exp_id,
+                        Some(&run_id),
                         "info",
                         format!(
                             "compressing {} → {} (workers={}, run {}/{})",
@@ -249,7 +379,7 @@ impl Runner {
                         &storage_dir,
                         workers,
                         pt,
-                        false,
+                        true,
                         &target_spec.format,
                     )
                     .await;
@@ -259,6 +389,7 @@ impl Runner {
 
                     match pair_result {
                         Ok(pr) => {
+                            let c = compute_c(&pr);
                             let cstar = compute_cstar(&pr);
                             let timing_json = pr
                                 .compress_stats
@@ -271,24 +402,32 @@ impl Runner {
                                 image_id: pr.image_id.clone(),
                                 base_image_id: pr.base_image_id.clone(),
                                 compress_stats_json: serde_json::to_string(&pr.compress_stats).ok(),
-                                decompress_stats_json: None,
+                                decompress_stats_json: pr
+                                    .decompress_stats
+                                    .as_ref()
+                                    .and_then(|d| serde_json::to_string(d).ok()),
                                 timing_json,
                                 archive_bytes: Some(pr.archive_bytes as i64),
                                 base_qcow2_bytes: Some(pr.base_file_bytes as i64),
                                 target_qcow2_bytes: Some(pr.target_file_bytes as i64),
                                 storage_bytes: Some(storage_bytes),
                                 cstar: Some(cstar),
+                                c: Some(c),
+                                workers: workers as i64,
+                                run_repetition: run_idx as i64,
+                                runs_total,
                             };
                             db::insert_result(&self.db, &res).await?;
                             self.log(
                                 exp_id,
+                                Some(&run_id),
                                 "info",
                                 format!(
-                                    "done: {} archive={:.1}MB target={:.1}MB storage={:.1}MB C*={:.4}",
+                                    "done: {} archive={:.1}MB storage={:.1}MB C={:.2} C*={:.2}",
                                     pr.image_id,
                                     pr.archive_bytes as f64 / 1e6,
-                                    pr.target_file_bytes as f64 / 1e6,
                                     storage_bytes as f64 / 1e6,
+                                    c,
                                     cstar,
                                 ),
                             );
@@ -299,12 +438,32 @@ impl Runner {
                                 compress_ms: (pr.compress_stats.elapsed_secs * 1000.0) as u64,
                                 archive_bytes: pr.archive_bytes,
                                 cstar,
+                                c,
+                            });
+                            done_pairs += 1;
+                            let _ = self.progress_tx.send(ProgressEvent::ExperimentProgress {
+                                experiment_id: exp_id.to_owned(),
+                                done: done_pairs,
+                                total: total_pairs as u32,
+                                elapsed_secs: started_at.elapsed().as_secs_f64(),
                             });
                             db::update_run_done(&self.db, &run_id, None).await?;
                         }
                         Err(e) => {
                             let msg = e.to_string();
-                            self.log(exp_id, "error", format!("compress failed: {msg}"));
+                            self.log(
+                                exp_id,
+                                Some(&run_id),
+                                "error",
+                                format!("compress failed: {msg}"),
+                            );
+                            done_pairs += 1;
+                            let _ = self.progress_tx.send(ProgressEvent::ExperimentProgress {
+                                experiment_id: exp_id.to_owned(),
+                                done: done_pairs,
+                                total: total_pairs as u32,
+                                elapsed_secs: started_at.elapsed().as_secs_f64(),
+                            });
                             db::update_run_done(&self.db, &run_id, Some(&msg)).await?;
                             db::append_log(&self.db, &run_id, "error", &msg).await?;
                         }
@@ -316,12 +475,23 @@ impl Runner {
     }
 }
 
-/// C* = archive_bytes / target_bytes
-/// Measures how large the delta is relative to the target image.
-/// 0.0 means perfect (zero delta); 1.0 means delta is same size as target.
-fn compute_cstar(pr: &executor::PairResult) -> f64 {
-    if pr.target_file_bytes == 0 {
+/// C = target_bytes / archive_bytes
+/// How many times larger the target is vs the delta archive.
+/// Higher is better (e.g. C=11 means the delta is 11x smaller than the target).
+fn compute_c(pr: &executor::PairResult) -> f64 {
+    if pr.archive_bytes == 0 {
         return 1.0;
     }
-    pr.archive_bytes as f64 / pr.target_file_bytes as f64
+    pr.target_file_bytes as f64 / pr.archive_bytes as f64
+}
+
+/// C* = (base_bytes + target_bytes) / (base_bytes + archive_bytes)
+/// Storage efficiency including the shared base: how many times more data we
+/// would store without delta compression vs with it.
+fn compute_cstar(pr: &executor::PairResult) -> f64 {
+    let denom = pr.base_file_bytes + pr.archive_bytes;
+    if denom == 0 {
+        return 1.0;
+    }
+    (pr.base_file_bytes + pr.target_file_bytes) as f64 / denom as f64
 }

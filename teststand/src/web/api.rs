@@ -19,7 +19,11 @@ use crate::{
     db::{self, Db},
     error::{Error, Result},
     logging::LogBuffer,
-    runner::{progress::ProgressTx, queue::QueueItem, Runner},
+    runner::{
+        progress::{ProgressEvent, ProgressTx},
+        queue::QueueItem,
+        Runner,
+    },
 };
 
 #[derive(Clone)]
@@ -144,8 +148,9 @@ pub async fn download_results_csv(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let results = db::get_results_for_experiment(&s.db, &id).await?;
-    let mut lines =
-        vec!["image_id,base_image_id,archive_bytes,base_qcow2_bytes,cstar,compress_ms".to_owned()];
+    let mut lines = vec![
+        "image_id,base_image_id,workers,run_repetition,runs_total,archive_bytes,base_qcow2_bytes,target_qcow2_bytes,storage_bytes,c,cstar,compress_ms,decompress_ms".to_owned(),
+    ];
     for r in &results {
         let compress_ms: String = r
             .compress_stats_json
@@ -154,16 +159,32 @@ pub async fn download_results_csv(
             .and_then(|v| v["elapsed_secs"].as_f64())
             .map(|s| format!("{}", (s * 1000.0) as u64))
             .unwrap_or_default();
+        let decompress_ms: String = r
+            .decompress_stats_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .and_then(|v| v["elapsed_secs"].as_f64())
+            .map(|s| format!("{}", (s * 1000.0) as u64))
+            .unwrap_or_default();
         lines.push(format!(
-            "{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
             r.image_id,
             r.base_image_id.as_deref().unwrap_or(""),
+            r.workers,
+            r.run_repetition + 1,
+            r.runs_total,
             r.archive_bytes.map(|v| v.to_string()).unwrap_or_default(),
             r.base_qcow2_bytes
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
-            r.cstar.map(|v| format!("{:.6}", v)).unwrap_or_default(),
+            r.target_qcow2_bytes
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            r.storage_bytes.map(|v| v.to_string()).unwrap_or_default(),
+            r.c.map(|v| format!("{:.4}", v)).unwrap_or_default(),
+            r.cstar.map(|v| format!("{:.4}", v)).unwrap_or_default(),
             compress_ms,
+            decompress_ms,
         ));
     }
     let csv = lines.join("\n");
@@ -227,6 +248,12 @@ pub async fn sse_events(
         loop {
             match rx.recv().await {
                 Ok(event) => {
+                    // Drop debug/trace log events — they flood the SSE buffer.
+                    if let ProgressEvent::Log { ref level, .. } = event {
+                        if level == "debug" || level == "trace" {
+                            continue;
+                        }
+                    }
                     if let Ok(data) = serde_json::to_string(&event) {
                         yield Ok::<_, std::convert::Infallible>(
                             axum::response::sse::Event::default().data(data)

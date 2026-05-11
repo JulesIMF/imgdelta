@@ -49,10 +49,27 @@ impl std::ops::AddAssign for StageTimings {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CompressionStats {
+    // ── Legacy per-file counters (files only, directories excluded) ───────────
     pub files_patched: usize,
     pub files_added: usize,
     pub files_removed: usize,
     pub files_renamed: usize,
+    // ── Per-entity counters (files + dirs + symlinks + specials) ─────────────
+    /// Entities present in target but not in base (new_path set, old_path None).
+    pub entities_added: usize,
+    /// Entities deleted from base (old_path set, new_path None).
+    pub entities_removed: usize,
+    /// Entities renamed: old_path ≠ new_path (may also carry a content patch).
+    pub entities_renamed: usize,
+    /// Entities changed in-place: same path but content or metadata differs.
+    pub entities_changed: usize,
+    // ── Tree totals ───────────────────────────────────────────────────────────
+    /// Total number of entries (files + dirs + symlinks + specials) in the base
+    /// image across all Fs partitions.
+    pub entities_in_base: u64,
+    /// Total number of entries in the target image across all Fs partitions.
+    pub entities_in_target: u64,
+    // ── Byte stats ────────────────────────────────────────────────────────────
     pub total_source_bytes: u64,
     pub total_stored_bytes: u64,
     pub elapsed_secs: f64,

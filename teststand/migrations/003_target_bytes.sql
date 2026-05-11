@@ -3,5 +3,5 @@
 --
 -- image-delta — incremental disk-image compression toolkit
 -- 003_target_bytes.sql — add target_qcow2_bytes column to results.
-
-ALTER TABLE results ADD COLUMN target_qcow2_bytes INTEGER;
+ALTER TABLE results
+ADD COLUMN target_qcow2_bytes INTEGER;

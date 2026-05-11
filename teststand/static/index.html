@@ -263,6 +263,12 @@
       .num {
         font-variant-numeric: tabular-nums;
       }
+      .delta {
+        font-family: var(--font-mono, monospace);
+        font-size: 11px;
+        white-space: nowrap;
+        cursor: default;
+      }
       .log-toolbar {
         display: flex;
         gap: 8px;
@@ -418,9 +424,18 @@
         background: var(--surface);
         font-size: 12px;
       }
-      .sp-item { display: flex; gap: 4px; align-items: baseline; }
-      .sp-key { color: var(--dim); }
-      .sp-val { color: var(--text); font-weight: 600; }
+      .sp-item {
+        display: flex;
+        gap: 4px;
+        align-items: baseline;
+      }
+      .sp-key {
+        color: var(--dim);
+      }
+      .sp-val {
+        color: var(--text);
+        font-weight: 600;
+      }
       /* TOML preview */
       .toml-hl {
         background: #1a1a2e;
@@ -437,15 +452,32 @@
         color: #cdd6f4;
         margin-top: 0;
       }
-      .th-cmt { color: #6c7086; }
-      .th-sec { color: #89b4fa; font-weight: 700; }
-      .th-key { color: #89dceb; }
-      .th-eq  { color: #cba6f7; }
-      .th-str { color: #a6e3a1; }
-      .th-bool { color: #fab387; }
-      .th-num  { color: #f38ba8; }
+      .th-cmt {
+        color: #6c7086;
+      }
+      .th-sec {
+        color: #89b4fa;
+        font-weight: 700;
+      }
+      .th-key {
+        color: #89dceb;
+      }
+      .th-eq {
+        color: #cba6f7;
+      }
+      .th-str {
+        color: #a6e3a1;
+      }
+      .th-bool {
+        color: #fab387;
+      }
+      .th-num {
+        color: #f38ba8;
+      }
 
-      .modal-wide { width: min(680px, 96vw); }
+      .modal-wide {
+        width: min(680px, 96vw);
+      }
       .form-grid {
         display: grid;
         grid-template-columns: 140px 1fr;
@@ -453,7 +485,10 @@
         align-items: center;
         margin-top: 12px;
       }
-      .form-label { font-size: 12px; color: var(--dim); }
+      .form-label {
+        font-size: 12px;
+        color: var(--dim);
+      }
       .form-inp {
         background: var(--bg);
         border: 1px solid var(--border);
@@ -464,7 +499,10 @@
         font-size: 12px;
         width: 100%;
       }
-      .form-inp:focus { outline: none; border-color: var(--accent); }
+      .form-inp:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
       .img-chip {
         font-size: 11px;
         padding: 2px 6px;
@@ -481,10 +519,27 @@
         border-color: var(--accent);
       }
       /* Spec detail pane */
-      .spec-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
-      .spec-table td { padding: 5px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
-      .spec-table td:first-child { color: var(--dim); width: 160px; white-space: nowrap; }
-      .spec-dl-row { display: flex; gap: 8px; margin-top: 16px; }
+      .spec-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        margin-top: 8px;
+      }
+      .spec-table td {
+        padding: 5px 10px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      .spec-table td:first-child {
+        color: var(--dim);
+        width: 160px;
+        white-space: nowrap;
+      }
+      .spec-dl-row {
+        display: flex;
+        gap: 8px;
+        margin-top: 16px;
+      }
       .btn-dl {
         padding: 6px 14px;
         background: var(--surface);
@@ -497,7 +552,9 @@
         text-decoration: none;
         display: inline-block;
       }
-      .btn-dl:hover { border-color: var(--accent); }
+      .btn-dl:hover {
+        border-color: var(--accent);
+      }
     </style>
   </head>
   <body>
@@ -522,7 +579,13 @@
         <h3>New Experiment</h3>
         <div class="form-grid">
           <label class="form-label">Name</label>
-          <input id="f-name" type="text" placeholder="my-chain-1" class="form-inp" oninput="buildTomlPreview()">
+          <input
+            id="f-name"
+            type="text"
+            placeholder="my-chain-1"
+            class="form-inp"
+            oninput="buildTomlPreview()"
+          />
 
           <label class="form-label">Family</label>
           <select id="f-family" class="form-inp" onchange="onFamilyChange()">
@@ -530,38 +593,96 @@
           </select>
 
           <label class="form-label">Workers</label>
-          <input id="f-workers" type="text" value="1, 2, 4, 8" class="form-inp" oninput="buildTomlPreview()"
-                 title="Comma-separated worker counts, e.g. 1, 2, 4, 8">
+          <input
+            id="f-workers"
+            type="text"
+            value="1, 2, 4, 8"
+            class="form-inp"
+            oninput="buildTomlPreview()"
+            title="Comma-separated worker counts, e.g. 1, 2, 4, 8"
+          />
 
           <label class="form-label">Runs / pair</label>
-          <input id="f-runs" type="number" value="1" min="1" class="form-inp" oninput="buildTomlPreview()">
+          <input
+            id="f-runs"
+            type="number"
+            value="1"
+            min="1"
+            class="form-inp"
+            oninput="buildTomlPreview()"
+          />
 
           <!-- Chain-only: image filter -->
-          <div id="f-images-row" class="form-label" style="align-self:start;padding-top:6px">
-            Images<br><span style="color:var(--dim);font-size:11px">[0] = base, rest = targets<br>empty = all</span>
+          <div
+            id="f-images-row"
+            class="form-label"
+            style="align-self: start; padding-top: 6px"
+          >
+            Images<br /><span style="color: var(--dim); font-size: 11px"
+              >[0] = base, rest = targets<br />empty = all</span
+            >
           </div>
-          <div id="f-images-container" style="display:flex;flex-direction:column;gap:4px">
-            <div id="f-images-list" style="display:flex;flex-wrap:wrap;gap:4px;max-height:120px;overflow-y:auto;border:1px solid var(--border);padding:4px;border-radius:4px;min-height:28px"></div>
-            <div style="font-size:11px;color:var(--dim)">Click images above to toggle selection</div>
+          <div
+            id="f-images-container"
+            style="display: flex; flex-direction: column; gap: 4px"
+          >
+            <div
+              id="f-images-list"
+              style="
+                display: flex;
+                flex-wrap: wrap;
+                gap: 4px;
+                max-height: 120px;
+                overflow-y: auto;
+                border: 1px solid var(--border);
+                padding: 4px;
+                border-radius: 4px;
+                min-height: 28px;
+              "
+            ></div>
+            <div style="font-size: 11px; color: var(--dim)">
+              Click images above to toggle selection
+            </div>
           </div>
 
           <label class="form-label">Notes</label>
-          <input id="f-notes" type="text" placeholder="optional" class="form-inp" oninput="buildTomlPreview()">
+          <input
+            id="f-notes"
+            type="text"
+            placeholder="optional"
+            class="form-inp"
+            oninput="buildTomlPreview()"
+          />
 
           <label class="form-label">Keep images</label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px">
-            <input id="f-keep" type="checkbox" onchange="buildTomlPreview()">
+          <label
+            style="
+              display: flex;
+              align-items: center;
+              gap: 6px;
+              font-size: 12px;
+            "
+          >
+            <input id="f-keep" type="checkbox" onchange="buildTomlPreview()" />
             don't delete qcow2 after finish
           </label>
         </div>
 
         <!-- TOML preview -->
-        <div style="margin-top:12px;font-size:11px;color:var(--dim)">Generated TOML:</div>
-        <pre id="toml-preview" class="toml-hl" style="max-height:140px;overflow-y:auto;margin-top:4px"></pre>
+        <div style="margin-top: 12px; font-size: 11px; color: var(--dim)">
+          Generated TOML:
+        </div>
+        <pre
+          id="toml-preview"
+          class="toml-hl"
+          style="max-height: 140px; overflow-y: auto; margin-top: 4px"
+        ></pre>
 
         <div class="modal-actions">
           <button class="btn-secondary" onclick="closeModal()">Cancel</button>
-          <button class="btn-primary" onclick="submitExperiment()">Submit</button>
+          <button class="btn-primary" onclick="submitExperiment()">
+            Submit
+          </button>
         </div>
       </div>
     </div>
@@ -594,21 +715,60 @@
         </div>
         <div class="tab-content">
           <div id="tab-spec" class="tab-pane active">
-            <div id="spec-detail-content" style="padding:16px;overflow-y:auto;flex:1"></div>
+            <div
+              id="spec-detail-content"
+              style="padding: 16px; overflow-y: auto; flex: 1"
+            ></div>
           </div>
           <div id="tab-results" class="tab-pane">
+            <div
+              id="exp-progress-wrap"
+              style="display: none; padding: 0 16px 8px"
+            >
+              <div style="display: flex; align-items: center; gap: 10px">
+                <div
+                  style="
+                    flex: 1;
+                    background: #2a2a2a;
+                    border-radius: 4px;
+                    height: 12px;
+                    overflow: hidden;
+                  "
+                >
+                  <div
+                    id="exp-progress-bar"
+                    style="
+                      height: 100%;
+                      background: #4c9be8;
+                      width: 0%;
+                      transition: width 0.3s;
+                    "
+                  ></div>
+                </div>
+                <span
+                  id="exp-progress-label"
+                  style="font-size: 12px; color: #aaa; white-space: nowrap"
+                  >0/0</span
+                >
+              </div>
+            </div>
             <div id="kpi-grid" class="kpi-grid"></div>
             <table class="rtable">
               <thead>
                 <tr>
                   <th>image</th>
                   <th>base</th>
+                  <th>workers</th>
+                  <th>run</th>
                   <th>compress ms</th>
+                  <th>decompress ms</th>
                   <th>archive MB</th>
                   <th>storage MB</th>
                   <th>target MB</th>
                   <th>base MB</th>
+                  <th>C</th>
                   <th>C*</th>
+                  <th title="entity delta: +added ~changed -removed ↩renamed">Δ</th>
                 </tr>
               </thead>
               <tbody id="results-body"></tbody>
@@ -750,7 +910,7 @@
 
     <script>
       var TOKEN = localStorage.getItem("ts_token") || "";
-      var familiesData = [];  // loaded from /api/families
+      var familiesData = []; // loaded from /api/families
       var experiments = {};
       var selectedId = null;
       var liveLogEntries = [];
@@ -808,27 +968,47 @@
           var r = await apiFetch("/families");
           familiesData = await r.json();
           populateFamilySelect();
-        } catch(e) { console.error("loadFamilies", e); }
+        } catch (e) {
+          console.error("loadFamilies", e);
+        }
       }
 
       function populateFamilySelect() {
         var sel = document.getElementById("f-family");
         if (!sel) return;
-        sel.innerHTML = familiesData.map(function(f) {
-          return '<option value="' + esc(f.name) + '">' + esc(f.label || f.name) + '</option>';
-        }).join("");
+        sel.innerHTML = familiesData
+          .map(function (f) {
+            return (
+              '<option value="' +
+              esc(f.name) +
+              '">' +
+              esc(f.label || f.name) +
+              "</option>"
+            );
+          })
+          .join("");
         onFamilyChange();
       }
 
       function onFamilyChange() {
         var name = document.getElementById("f-family").value;
-        var fam = familiesData.find(function(f) { return f.name === name; }) || { images: [] };
+        var fam = familiesData.find(function (f) {
+          return f.name === name;
+        }) || { images: [] };
         // Populate chip list
         var list = document.getElementById("f-images-list");
         if (!list) return;
-        list.innerHTML = fam.images.map(function(img) {
-          return '<span class="img-chip" data-id="' + esc(img.id) + '" onclick="toggleChip(this)">' + esc(img.id) + '</span>';
-        }).join("");
+        list.innerHTML = fam.images
+          .map(function (img) {
+            return (
+              '<span class="img-chip" data-id="' +
+              esc(img.id) +
+              '" onclick="toggleChip(this)">' +
+              esc(img.id) +
+              "</span>"
+            );
+          })
+          .join("");
         buildTomlPreview();
       }
 
@@ -836,7 +1016,6 @@
         el.classList.toggle("selected");
         buildTomlPreview();
       }
-
 
       async function dlResults(fmt, filename) {
         if (!selectedId) return;
@@ -849,31 +1028,56 @@
           a.href = url;
           a.download = filename;
           a.click();
-          setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
-        } catch(e) { alert("Download failed: " + e.message); }
+          setTimeout(function () {
+            URL.revokeObjectURL(url);
+          }, 2000);
+        } catch (e) {
+          alert("Download failed: " + e.message);
+        }
       }
 
       function buildTomlPreview() {
         var name = (document.getElementById("f-name") || {}).value || "my-exp";
         var family = (document.getElementById("f-family") || {}).value || "";
-        var workers = ((document.getElementById("f-workers") || {}).value || "4")
-          .split(",").map(function(v) { return parseInt(v.trim(), 10); }).filter(Boolean);
-        var runs = parseInt((document.getElementById("f-runs") || {}).value || "1", 10);
+        var workers = (
+          (document.getElementById("f-workers") || {}).value || "4"
+        )
+          .split(",")
+          .map(function (v) {
+            return parseInt(v.trim(), 10);
+          })
+          .filter(Boolean);
+        var runs = parseInt(
+          (document.getElementById("f-runs") || {}).value || "1",
+          10,
+        );
         var notes = (document.getElementById("f-notes") || {}).value || "";
         var keep = (document.getElementById("f-keep") || {}).checked;
 
         var lines = [
           'name = "' + name + '"',
           'family = "' + family + '"',
-          'workers = [' + workers.join(", ") + ']',
-          'runs_per_pair = ' + runs,
+          "workers = [" + workers.join(", ") + "]",
+          "runs_per_pair = " + runs,
         ];
-        var selected = Array.from(document.querySelectorAll("#f-images-list .img-chip.selected")).map(function(c) { return c.dataset.id; });
+        var selected = Array.from(
+          document.querySelectorAll("#f-images-list .img-chip.selected"),
+        ).map(function (c) {
+          return c.dataset.id;
+        });
         if (selected.length > 0) {
-          lines.push('images = [' + selected.map(function(s) { return '"' + s + '"'; }).join(", ") + ']');
+          lines.push(
+            "images = [" +
+              selected
+                .map(function (s) {
+                  return '"' + s + '"';
+                })
+                .join(", ") +
+              "]",
+          );
         }
         if (notes) lines.push('notes = "' + notes + '"');
-        if (keep)  lines.push('keep_images = true');
+        if (keep) lines.push("keep_images = true");
 
         var toml = lines.join("\n");
         var pre = document.getElementById("toml-preview");
@@ -952,7 +1156,7 @@
           var r = await apiFetch("/experiments/" + id + "/logs");
           var logs = await r.json();
           // Convert DB log_lines rows to the same shape as SSE Log events
-          liveLogEntries = logs.map(function(l) {
+          liveLogEntries = logs.map(function (l) {
             return {
               ts: l.ts * 1000,
               level: l.level,
@@ -961,7 +1165,9 @@
             };
           });
           renderLive();
-        } catch(e) { console.error("loadHistoricalLogs", e); }
+        } catch (e) {
+          console.error("loadHistoricalLogs", e);
+        }
       }
 
       async function loadDetail(id) {
@@ -980,27 +1186,38 @@
         var el = document.getElementById("spec-detail-content");
         if (!el || !exp) return;
         var spec = {};
-        try { spec = JSON.parse(exp.spec_json || "{}"); } catch(e) {}
+        try {
+          spec = JSON.parse(exp.spec_json || "{}");
+        } catch (e) {}
 
         var rows = [
-          ["Name",        esc(exp.name || "")],
-          ["Family",      esc(spec.family || exp.family || "")],
-          ["Workers",     esc((spec.workers || []).join(", ") || "—")],
+          ["Name", esc(exp.name || "")],
+          ["Family", esc(spec.family || exp.family || "")],
+          ["Workers", esc((spec.workers || []).join(", ") || "—")],
           ["Runs / pair", esc(String(spec.runs_per_pair || "—"))],
-          ["Images",      esc((spec.images || []).join(", ") || "all")],
+          ["Images", esc((spec.images || []).join(", ") || "all")],
           ["Keep images", spec.keep_images ? "yes" : "no"],
-          ["Notes",       esc(spec.notes  || "—")],
-          ["Status",      '<span class="status-badge status-' + (exp.status||"") + '">' + esc(exp.status||"") + '</span>'],
+          ["Notes", esc(spec.notes || "—")],
+          [
+            "Status",
+            '<span class="status-badge status-' +
+              (exp.status || "") +
+              '">' +
+              esc(exp.status || "") +
+              "</span>",
+          ],
         ];
         var html = '<table class="spec-table">';
-        rows.forEach(function(r) {
-          html += '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td></tr>';
+        rows.forEach(function (r) {
+          html += "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td></tr>";
         });
-        html += '</table>';
+        html += "</table>";
         html += '<div class="spec-dl-row">';
-        html += '<button class="btn-dl" onclick="dlResults(\'csv\',\'results.csv\')">↓ CSV</button>';
-        html += '<button class="btn-dl" onclick="dlResults(\'jsonl\',\'results.jsonl\')">↓ JSONL</button>';
-        html += '</div>';
+        html +=
+          "<button class=\"btn-dl\" onclick=\"dlResults('csv','results.csv')\">↓ CSV</button>";
+        html +=
+          "<button class=\"btn-dl\" onclick=\"dlResults('jsonl','results.jsonl')\">↓ JSONL</button>";
+        html += "</div>";
         el.innerHTML = html;
       }
 
@@ -1008,52 +1225,71 @@
         var el = document.getElementById("spec-info");
         if (!el || !exp) return;
         var spec = {};
-        try { spec = JSON.parse(exp.spec_json || "{}"); } catch(e) {}
+        try {
+          spec = JSON.parse(exp.spec_json || "{}");
+        } catch (e) {}
         var rows = [
-          ["Name",    esc(exp.name || "")],
-          ["Family",  esc(spec.family || exp.family || "")],
+          ["Name", esc(exp.name || "")],
+          ["Family", esc(spec.family || exp.family || "")],
           ["Workers", esc((spec.workers || []).join(", ") || "—")],
           ["Runs/pair", esc(String(spec.runs_per_pair || "—"))],
           ["Images", esc((spec.images || []).join(", ") || "all")],
-          ["Notes",  esc(spec.notes || "—")],
+          ["Notes", esc(spec.notes || "—")],
         ];
         var html = '<div class="spec-params">';
-        rows.forEach(function(r) {
-          html += '<div class="sp-item"><span class="sp-key">' + r[0] + '</span><span class="sp-val">' + r[1] + '</span></div>';
+        rows.forEach(function (r) {
+          html +=
+            '<div class="sp-item"><span class="sp-key">' +
+            r[0] +
+            '</span><span class="sp-val">' +
+            r[1] +
+            "</span></div>";
         });
-        html += '</div>';
+        html += "</div>";
         el.innerHTML = html;
       }
 
       // ── TOML syntax highlighter ──────────────────────────────────────────
       function tomlHighlight(text) {
         if (!text) return "";
-        return text.split("\n").map(function(line) {
-          var s = line
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
-          if (/^\s*#/.test(s)) return '<span class="th-cmt">' + s + "</span>";
-          if (/^\s*\[/.test(s)) return '<span class="th-sec">' + s + "</span>";
-          // Split at first "=" capturing surrounding whitespace
-          var m = s.match(/^(\s*[\w.\-]+)(\s*=\s*)([\s\S]*)$/);
-          if (!m) return s;
-          // Highlight the value part in one left-to-right pass:
-          // strings are consumed whole, so numbers inside strings are never matched.
-          var hVal = m[3].replace(
-            /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\b(true|false)\b|\b(\d+(?:\.\d+)?)\b/g,
-            function(match, ds, ss, bool, num) {
-              if (ds !== undefined) return '<span class="th-str">"' + ds + '"</span>';
-              if (ss !== undefined) return "<span class=\"th-str\">'"+ss+"'</span>";
-              if (bool) return '<span class="th-bool">' + bool + "</span>";
-              if (num)  return '<span class="th-num">'  + num  + "</span>";
-              return match;
-            }
-          );
-          return '<span class="th-key">' + m[1] + "</span>"
-               + '<span class="th-eq">'  + m[2] + "</span>"
-               + hVal;
-        }).join("\n");
+        return text
+          .split("\n")
+          .map(function (line) {
+            var s = line
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;");
+            if (/^\s*#/.test(s)) return '<span class="th-cmt">' + s + "</span>";
+            if (/^\s*\[/.test(s))
+              return '<span class="th-sec">' + s + "</span>";
+            // Split at first "=" capturing surrounding whitespace
+            var m = s.match(/^(\s*[\w.\-]+)(\s*=\s*)([\s\S]*)$/);
+            if (!m) return s;
+            // Highlight the value part in one left-to-right pass:
+            // strings are consumed whole, so numbers inside strings are never matched.
+            var hVal = m[3].replace(
+              /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\b(true|false)\b|\b(\d+(?:\.\d+)?)\b/g,
+              function (match, ds, ss, bool, num) {
+                if (ds !== undefined)
+                  return '<span class="th-str">"' + ds + '"</span>';
+                if (ss !== undefined)
+                  return '<span class="th-str">\'' + ss + "'</span>";
+                if (bool) return '<span class="th-bool">' + bool + "</span>";
+                if (num) return '<span class="th-num">' + num + "</span>";
+                return match;
+              },
+            );
+            return (
+              '<span class="th-key">' +
+              m[1] +
+              "</span>" +
+              '<span class="th-eq">' +
+              m[2] +
+              "</span>" +
+              hVal
+            );
+          })
+          .join("\n");
       }
 
       function updateTomlPreview() {
@@ -1067,7 +1303,8 @@
         if (e.key !== "Tab") return;
         e.preventDefault();
         var ta = e.target;
-        var s = ta.selectionStart, end = ta.selectionEnd;
+        var s = ta.selectionStart,
+          end = ta.selectionEnd;
         ta.value = ta.value.substring(0, s) + "  " + ta.value.substring(end);
         ta.selectionStart = ta.selectionEnd = s + 2;
         updateTomlPreview();
@@ -1076,23 +1313,57 @@
       function renderResults(results) {
         var tbody = document.getElementById("results-body");
         tbody.innerHTML = "";
-        var totalA = 0,
-          totalS = 0,
-          totalT = 0,
-          totalB = 0,
-          sumC = 0;
+        var totalS = 0,
+          seenImgC = {},
+          seenImgT = {};
+        var sumC = 0,
+          sumCstar = 0;
         results.forEach(function (r) {
+          // Track unique images for aggregate totals (avoid inflating by repetitions).
+          if (r.image_id && !seenImgT[r.image_id]) {
+            seenImgT[r.image_id] = r.target_qcow2_bytes || 0;
+          }
+          if (r.image_id && !seenImgC[r.image_id]) {
+            seenImgC[r.image_id] = r.archive_bytes || 0;
+          }
+          // Peak storage across all runs.
+          if (r.storage_bytes) totalS = Math.max(totalS, r.storage_bytes);
           var aMB = r.archive_bytes ? (r.archive_bytes / 1e6).toFixed(2) : "-";
           var sMB = r.storage_bytes ? (r.storage_bytes / 1e6).toFixed(2) : "-";
-          var tMB = r.target_qcow2_bytes ? (r.target_qcow2_bytes / 1e6).toFixed(2) : "-";
+          var tMB = r.target_qcow2_bytes
+            ? (r.target_qcow2_bytes / 1e6).toFixed(2)
+            : "-";
           var bMB = r.base_qcow2_bytes
             ? (r.base_qcow2_bytes / 1e6).toFixed(2)
             : "-";
-          var cstar = r.cstar != null ? r.cstar.toFixed(4) : "-";
-          var ms = "-";
+          var c = r.c != null ? r.c.toFixed(2) : "-";
+          var cstar = r.cstar != null ? r.cstar.toFixed(2) : "-";
+          var wk = r.workers || "-";
+          var runLabel =
+            r.runs_total > 1
+              ? r.run_repetition + 1 + "/" + r.runs_total
+              : r.run_repetition != null
+                ? r.run_repetition + 1
+                : "-";
+          var ms = "-", deltaCell = "-", deltaTitle = "";
           try {
             var cs = JSON.parse(r.compress_stats_json || "{}");
             if (cs.elapsed_secs) ms = Math.round(cs.elapsed_secs * 1000);
+            if (cs.entities_added != null || cs.entities_changed != null || cs.entities_removed != null) {
+              var ea = cs.entities_added || 0;
+              var ec = cs.entities_changed || 0;
+              var er = cs.entities_removed || 0;
+              var en = cs.entities_renamed || 0;
+              deltaCell = "+" + ea + " ~" + ec + " -" + er;
+              deltaTitle = "added: " + ea + ", changed: " + ec + ", removed: " + er + ", renamed: " + en;
+              if (cs.entities_in_base != null) deltaTitle += "\nbase entities: " + cs.entities_in_base;
+              if (cs.entities_in_target != null) deltaTitle += ", target entities: " + cs.entities_in_target;
+            }
+          } catch (e) {}
+          var dMs = "-";
+          try {
+            var ds = JSON.parse(r.decompress_stats_json || "{}");
+            if (ds.elapsed_secs) dMs = Math.round(ds.elapsed_secs * 1000);
           } catch (e) {}
           var tr = document.createElement("tr");
           tr.innerHTML =
@@ -1100,9 +1371,15 @@
             esc(r.image_id) +
             "</td><td>" +
             (r.base_image_id ? esc(r.base_image_id) : "—") +
+            '</td><td class="num">' +
+            wk +
+            '</td><td class="num">' +
+            runLabel +
             "</td>" +
             '<td class="num">' +
             ms +
+            '</td><td class="num">' +
+            dMs +
             '</td><td class="num">' +
             aMB +
             '</td><td class="num">' +
@@ -1112,37 +1389,83 @@
             '</td><td class="num">' +
             bMB +
             '</td><td class="num">' +
+            c +
+            '</td><td class="num">' +
             cstar +
+            '</td><td class="num delta" title="' + deltaTitle.replace(/"/g, '&quot;') + '">' +
+            deltaCell +
             "</td>";
           tbody.appendChild(tr);
-          if (r.archive_bytes) totalA += r.archive_bytes;
-          if (r.storage_bytes) totalS = Math.max(totalS, r.storage_bytes);
-          if (r.target_qcow2_bytes) totalT += r.target_qcow2_bytes;
-          if (r.base_qcow2_bytes) totalB += r.base_qcow2_bytes;
-          if (r.cstar != null) sumC += r.cstar;
+          if (r.c != null) sumC += r.c;
+          if (r.cstar != null) sumCstar += r.cstar;
         });
         var n = results.length || 1;
+        // Aggregate from unique images only.
+        var totalT = Object.values(seenImgT).reduce(function (a, b) {
+          return a + b;
+        }, 0);
+        var totalA = Object.values(seenImgC).reduce(function (a, b) {
+          return a + b;
+        }, 0);
+        var baseB = results.length > 0 ? results[0].base_qcow2_bytes || 0 : 0;
+        var aggC = totalA > 0 ? totalT / totalA : 0;
+        var aggCstar =
+          baseB + totalA > 0 ? (baseB + totalT) / (baseB + totalA) : 0;
         document.getElementById("kpi-grid").innerHTML =
           '<div class="kpi"><div class="label">Runs</div><div class="value">' +
           results.length +
           "</div></div>" +
-          '<div class="kpi"><div class="label">Total Archive</div><div class="value">' +
+          '<div class="kpi"><div class="label">Total Target</div><div class="value" title="sum of unique target image sizes">' +
+          (totalT / 1e6).toFixed(1) +
+          " MB</div></div>" +
+          '<div class="kpi"><div class="label">Total Archive</div><div class="value" title="sum of unique delta archive sizes">' +
           (totalA / 1e6).toFixed(1) +
           " MB</div></div>" +
           '<div class="kpi"><div class="label">Storage (peak)</div><div class="value" title="largest storage dir snapshot">' +
           (totalS / 1e6).toFixed(1) +
           " MB</div></div>" +
-          '<div class="kpi"><div class="label">Total Target</div><div class="value">' +
-          (totalT / 1e6).toFixed(1) +
-          " MB</div></div>" +
-          '<div class="kpi"><div class="label">Avg C*</div><div class="value" title="archive/target ratio">' +
-          (sumC / n).toFixed(4) +
+          '<div class="kpi"><div class="label">C (agg)</div><div class="value" title="sum(targets) / sum(archives)">' +
+          aggC.toFixed(2) +
+          "</div></div>" +
+          '<div class="kpi"><div class="label">C* (agg)</div><div class="value" title="(base+sum(targets)) / (base+sum(archives))">' +
+          aggCstar.toFixed(2) +
           "</div></div>";
+      }
+
+      function fmtDuration(secs) {
+        if (secs < 60) return Math.round(secs) + "s";
+        if (secs < 3600)
+          return Math.round(secs / 60) + "m " + Math.round(secs % 60) + "s";
+        return (secs / 3600).toFixed(1) + "h";
+      }
+
+      function updateExpProgress(done, total, elapsedSecs) {
+        var wrap = document.getElementById("exp-progress-wrap");
+        var bar = document.getElementById("exp-progress-bar");
+        var lbl = document.getElementById("exp-progress-label");
+        if (!wrap) return;
+        if (done >= total && total > 0) {
+          wrap.style.display = "none";
+          return;
+        }
+        wrap.style.display = "block";
+        var pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        bar.style.width = pct + "%";
+        var etaStr = "";
+        if (done > 0 && done < total && elapsedSecs > 0) {
+          var rate = elapsedSecs / done;
+          var remaining = rate * (total - done);
+          etaStr = " · ETA " + fmtDuration(remaining);
+        }
+        lbl.textContent = done + "/" + total + " (" + pct + "%)" + etaStr;
       }
 
       function switchTab(tab) {
         document.querySelectorAll(".tab").forEach(function (t) {
-          t.classList.toggle("active", t.getAttribute("onclick") === "switchTab('" + tab + "')");
+          t.classList.toggle(
+            "active",
+            t.getAttribute("onclick") === "switchTab('" + tab + "')",
+          );
         });
         document.querySelectorAll(".tab-pane").forEach(function (p) {
           p.classList.remove("active");
@@ -1332,6 +1655,13 @@
           }
         } else if (ev.type === "ExperimentFinished") {
           loadExps();
+          // Hide progress bar when experiment finishes.
+          var wrap = document.getElementById("exp-progress-wrap");
+          if (wrap) wrap.style.display = "none";
+        } else if (ev.type === "ExperimentProgress") {
+          if (selectedId && ev.experiment_id === selectedId) {
+            updateExpProgress(ev.done, ev.total, ev.elapsed_secs);
+          }
         } else if (ev.type === "RunStarted" || ev.type === "ImageDone") {
           if (ev.type === "ImageDone" && selectedId) loadDetail(selectedId);
           var msg =
@@ -1339,8 +1669,10 @@
               ? "▶ run started (workers=" + ev.workers + ")"
               : "✓ " +
                 ev.image_id +
+                " C=" +
+                (ev.c || 0).toFixed(2) +
                 " C*=" +
-                (ev.cstar || 0).toFixed(3) +
+                (ev.cstar || 0).toFixed(2) +
                 " " +
                 ((ev.archive_bytes || 0) / 1e6).toFixed(1) +
                 "MB";

@@ -293,6 +293,14 @@ pub enum PartitionContent {
         /// falls back to current safe defaults.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         fs_mkfs_params: Option<std::collections::HashMap<String, String>>,
+        /// Total entry count in the base image at compress time.
+        /// Zero on manifests produced by older tooling (`#[serde(default)]`).
+        #[serde(default)]
+        base_entity_count: u64,
+        /// Total entry count in the target image at compress time.
+        /// Zero on manifests produced by older tooling (`#[serde(default)]`).
+        #[serde(default)]
+        target_entity_count: u64,
         records: Vec<Record>,
     },
     /// MBR boot-code area (bytes 0–439 of the raw disk).
@@ -690,6 +698,8 @@ mod tests {
             fs_type: "ext4".into(),
             fs_uuid: None,
             fs_mkfs_params: None,
+            base_entity_count: 0,
+            target_entity_count: 0,
             records: vec![
                 make_record_added(),
                 make_record_deleted(),
@@ -730,6 +740,8 @@ mod tests {
                     fs_type: "ext4".into(),
                     fs_uuid: None,
                     fs_mkfs_params: None,
+                    base_entity_count: 0,
+                    target_entity_count: 0,
                     records: vec![make_record_added()],
                 },
             }],

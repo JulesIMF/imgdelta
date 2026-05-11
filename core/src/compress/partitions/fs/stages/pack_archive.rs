@@ -93,6 +93,8 @@ pub fn collect_fs_content(
         fs_type: fs_type.to_string(),
         fs_uuid,
         fs_mkfs_params,
+        base_entity_count: draft.base_entity_count as u64,
+        target_entity_count: draft.target_entity_count as u64,
         records,
     })
 }

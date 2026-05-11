@@ -26,6 +26,9 @@ pub enum ProgressEvent {
         base_image_id: Option<String>,
         compress_ms: u64,
         archive_bytes: u64,
+        /// C = target / archive
+        c: f64,
+        /// C* = (base + target) / (base + archive)
         cstar: f64,
     },
     /// A run finished (done or error).
@@ -38,6 +41,13 @@ pub enum ProgressEvent {
     ExperimentFinished {
         experiment_id: String,
         status: String,
+    },
+    /// Periodic experiment progress (emitted after each image finishes).
+    ExperimentProgress {
+        experiment_id: String,
+        done: u32,
+        total: u32,
+        elapsed_secs: f64,
     },
     /// Download progress.
     DownloadProgress {
@@ -58,5 +68,5 @@ pub type ProgressTx = tokio::sync::broadcast::Sender<ProgressEvent>;
 pub type ProgressRx = tokio::sync::broadcast::Receiver<ProgressEvent>;
 
 pub fn channel() -> (ProgressTx, ProgressRx) {
-    tokio::sync::broadcast::channel(256)
+    tokio::sync::broadcast::channel(1024)
 }

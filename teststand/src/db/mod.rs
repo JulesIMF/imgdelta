@@ -79,7 +79,16 @@ pub struct ExperimentResult {
     pub target_qcow2_bytes: Option<i64>,
     /// Total size of the experiment-local storage directory after compression.
     pub storage_bytes: Option<i64>,
+    /// C* = (base + target) / (base + archive) — total storage efficiency ratio.
     pub cstar: Option<f64>,
+    /// C = base / archive — pure delta compression ratio.
+    pub c: Option<f64>,
+    /// Number of parallel workers used for this run.
+    pub workers: i64,
+    /// 0-based repetition index within (target, workers) group.
+    pub run_repetition: i64,
+    /// Total repetitions configured for this experiment.
+    pub runs_total: i64,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
@@ -184,13 +193,29 @@ pub async fn update_run_done(db: &Db, id: &str, error: Option<&str>) -> Result<(
 
 pub async fn insert_result(db: &Db, res: &ExperimentResult) -> Result<()> {
     sqlx::query(
-        "INSERT INTO results (id, run_id, image_id, base_image_id, compress_stats_json, decompress_stats_json, timing_json, archive_bytes, base_qcow2_bytes, target_qcow2_bytes, storage_bytes, cstar) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+        "INSERT INTO results (id, run_id, image_id, base_image_id, compress_stats_json, \
+         decompress_stats_json, timing_json, archive_bytes, base_qcow2_bytes, \
+         target_qcow2_bytes, storage_bytes, cstar, c, workers, run_repetition, runs_total) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
-    .bind(&res.id).bind(&res.run_id).bind(&res.image_id).bind(&res.base_image_id)
-    .bind(&res.compress_stats_json).bind(&res.decompress_stats_json).bind(&res.timing_json)
-    .bind(res.archive_bytes).bind(res.base_qcow2_bytes).bind(res.target_qcow2_bytes)
-    .bind(res.storage_bytes).bind(res.cstar)
-    .execute(db).await?;
+    .bind(&res.id)
+    .bind(&res.run_id)
+    .bind(&res.image_id)
+    .bind(&res.base_image_id)
+    .bind(&res.compress_stats_json)
+    .bind(&res.decompress_stats_json)
+    .bind(&res.timing_json)
+    .bind(res.archive_bytes)
+    .bind(res.base_qcow2_bytes)
+    .bind(res.target_qcow2_bytes)
+    .bind(res.storage_bytes)
+    .bind(res.cstar)
+    .bind(res.c)
+    .bind(res.workers)
+    .bind(res.run_repetition)
+    .bind(res.runs_total)
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -218,6 +243,27 @@ pub async fn append_log(db: &Db, run_id: &str, level: &str, message: &str) -> Re
     Ok(())
 }
 
+pub async fn append_experiment_log(
+    db: &Db,
+    experiment_id: &str,
+    run_id: Option<&str>,
+    level: &str,
+    message: &str,
+) -> Result<()> {
+    let ts = now_ts();
+    sqlx::query(
+        "INSERT INTO experiment_log_lines (experiment_id, run_id, level, ts, message) VALUES (?,?,?,?,?)",
+    )
+    .bind(experiment_id)
+    .bind(run_id)
+    .bind(level)
+    .bind(ts)
+    .bind(message)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 pub async fn get_logs(db: &Db, run_id: &str) -> Result<Vec<LogLine>> {
     Ok(
         sqlx::query_as::<_, LogLine>("SELECT * FROM log_lines WHERE run_id = ? ORDER BY id")
@@ -229,12 +275,20 @@ pub async fn get_logs(db: &Db, run_id: &str) -> Result<Vec<LogLine>> {
 
 /// Fetch all log lines for all runs belonging to an experiment, ordered by id.
 pub async fn get_logs_for_experiment(db: &Db, experiment_id: &str) -> Result<Vec<LogLine>> {
+    // Union run-level error logs (stored in log_lines) and experiment-level
+    // progress logs (stored in experiment_log_lines).
     Ok(sqlx::query_as::<_, LogLine>(
-        "SELECT l.* FROM log_lines l \
+        "SELECT l.id, l.run_id, l.level, l.ts, l.message \
+         FROM log_lines l \
          JOIN runs r ON l.run_id = r.id \
          WHERE r.experiment_id = ? \
-         ORDER BY l.id",
+         UNION ALL \
+         SELECT e.id, COALESCE(e.run_id, '') AS run_id, e.level, e.ts, e.message \
+         FROM experiment_log_lines e \
+         WHERE e.experiment_id = ? \
+         ORDER BY ts, id",
     )
+    .bind(experiment_id)
     .bind(experiment_id)
     .fetch_all(db)
     .await?)

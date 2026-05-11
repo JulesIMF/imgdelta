@@ -203,6 +203,8 @@ pub fn walkdir_fn(base_root: &Path, target_root: &Path) -> Result<FsDraft> {
         base_hashes,
         target_hashes,
         blob_sha256,
+        base_entity_count: base_snap.len(),
+        target_entity_count: target_snap.len(),
         ..Default::default()
     })
 }

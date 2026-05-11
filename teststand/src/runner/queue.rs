@@ -51,8 +51,12 @@ impl Queue {
         self.inner.lock().await.len()
     }
 
-    #[allow(dead_code)]
     pub async fn is_empty(&self) -> bool {
         self.inner.lock().await.is_empty()
+    }
+
+    /// Snapshot of all queued items (not yet running).
+    pub async fn list_items(&self) -> Vec<QueueItem> {
+        self.inner.lock().await.iter().cloned().collect()
     }
 }

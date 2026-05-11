@@ -162,8 +162,19 @@ pub fn copy_unchanged_fn(
                         }
                     }
                 }
-                let data = std::fs::read(abs)
-                    .map_err(|e| Error::Other(format!("read {}: {e}", abs.display())))?;
+                let data = match std::fs::read(abs) {
+                    Ok(d) => d,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // Dangling symlink or a file that became inaccessible
+                        // through a broken symlink chain. Skip silently — the
+                        // file does not exist in the source image.
+                        tracing::warn!(path = %abs.display(), "copy_unchanged: skipping unreadable file (dangling symlink?)");
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(Error::Other(format!("read {}: {e}", abs.display())));
+                    }
+                };
                 let src_meta = abs.metadata().ok();
                 let src_mtime = src_meta
                     .as_ref()

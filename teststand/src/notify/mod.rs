@@ -9,21 +9,24 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::{
-    config::TelegramConfig,
+    config::{experiment::ExperimentSpec, TelegramConfig},
     db::{self, Db},
+    runner::queue::Queue,
 };
 
 pub struct NotifyManager {
     telegram: Option<TelegramConfig>,
     db: Db,
+    queue: Queue,
     client: reqwest::Client,
 }
 
 impl NotifyManager {
-    pub fn new(telegram: Option<TelegramConfig>, db: Db) -> Arc<Self> {
+    pub fn new(telegram: Option<TelegramConfig>, db: Db, queue: Queue) -> Arc<Self> {
         Arc::new(Self {
             telegram,
             db,
+            queue,
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(15))
                 .build()
@@ -52,7 +55,7 @@ impl NotifyManager {
         ids
     }
 
-    /// Send a plain-text notification to all subscribers.
+    /// Send a plain-text / HTML notification to all subscribers.
     /// Logs a warning on failure but never panics.
     pub async fn send(&self, message: &str) {
         let Some(tg) = &self.telegram else { return };
@@ -84,17 +87,142 @@ impl NotifyManager {
         let _ = self
             .client
             .post(&url)
-            .json(&serde_json::json!({"chat_id": chat_id, "text": text}))
+            .json(&serde_json::json!({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}))
             .send()
             .await;
     }
 
+    /// Build /status reply text.
+    async fn build_status_text(&self) -> String {
+        let mut out = String::from("<b>🖥 Teststand status</b>\n");
+        let now = db::now_ts();
+
+        match db::list_experiments(&self.db).await {
+            Ok(exps) => {
+                let running: Vec<_> = exps.iter().filter(|e| e.status == "running").collect();
+                let done_exps: Vec<_> = exps
+                    .iter()
+                    .filter(|e| e.status == "done" || e.status == "error")
+                    .take(5)
+                    .collect();
+
+                if running.is_empty() {
+                    out.push_str("\n<b>▶ Running:</b> none\n");
+                } else {
+                    out.push_str("\n<b>▶ Running:</b>\n");
+                    for exp in &running {
+                        let results = db::get_results_for_experiment(&self.db, &exp.id)
+                            .await
+                            .unwrap_or_default();
+
+                        let done_runs = results.len();
+                        let elapsed_secs = (now - exp.created_at).max(0) as f64;
+
+                        // Parse spec to know total expected runs.
+                        let spec: Option<ExperimentSpec> =
+                            serde_json::from_str(&exp.spec_json).ok();
+
+                        let total_runs: Option<usize> = spec.as_ref().and_then(|s| {
+                            s.images.as_ref().map(|imgs| {
+                                let targets = imgs.len().saturating_sub(1);
+                                targets * s.workers.len() * s.runs_per_pair
+                            })
+                        });
+
+                        // Progress string: "3/12 (25%)" or "3/?"
+                        let progress_str = match total_runs {
+                            Some(total) if total > 0 => {
+                                let pct = done_runs * 100 / total;
+                                format!("{done_runs}/{total} ({pct}%)")
+                            }
+                            _ => format!("{done_runs}/?"),
+                        };
+
+                        // ETA: rate-based, only if we have enough data.
+                        let eta_str = if done_runs > 0 && elapsed_secs > 1.0 {
+                            let secs_per_run = elapsed_secs / done_runs as f64;
+                            match total_runs {
+                                Some(total) if total > done_runs => {
+                                    let remaining = (total - done_runs) as f64 * secs_per_run;
+                                    format!(", ETA ~{}", fmt_duration(remaining))
+                                }
+                                _ => {
+                                    // No total — just show rate.
+                                    format!(", ~{}/run", fmt_duration(secs_per_run))
+                                }
+                            }
+                        } else {
+                            String::new()
+                        };
+
+                        let elapsed_str = fmt_duration(elapsed_secs);
+
+                        // Brief C/C* stats from completed results.
+                        let stats_str = if done_runs > 0 {
+                            let c_vals: Vec<f64> = results.iter().filter_map(|r| r.c).collect();
+                            let cs_vals: Vec<f64> =
+                                results.iter().filter_map(|r| r.cstar).collect();
+                            let avg = |v: &[f64]| {
+                                if v.is_empty() {
+                                    None
+                                } else {
+                                    Some(v.iter().sum::<f64>() / v.len() as f64)
+                                }
+                            };
+                            match (avg(&c_vals), avg(&cs_vals)) {
+                                (Some(c), Some(cs)) => {
+                                    format!(
+                                        "\n    C: <code>{c:.3}</code>  C*: <code>{cs:.3}</code>"
+                                    )
+                                }
+                                _ => String::new(),
+                            }
+                        } else {
+                            String::new()
+                        };
+
+                        out.push_str(&format!(
+                            "  • <code>{}</code> — {progress_str} ⏱ {elapsed_str}{eta_str}{stats_str}\n",
+                            exp.name
+                        ));
+                    }
+                }
+
+                // Queued items (in-memory).
+                let queued = self.queue.list_items().await;
+                if queued.is_empty() {
+                    out.push_str("\n<b>⏳ Queue:</b> empty\n");
+                } else {
+                    out.push_str(&format!("\n<b>⏳ Queue ({}):</b>\n", queued.len()));
+                    for item in &queued {
+                        out.push_str(&format!("  • <code>{}</code>\n", item.spec.name));
+                    }
+                }
+
+                // Recent completions with relative time.
+                if !done_exps.is_empty() {
+                    out.push_str("\n<b>✅ Recent:</b>\n");
+                    for exp in done_exps {
+                        let icon = if exp.status == "done" { "✅" } else { "❌" };
+                        let age_secs =
+                            (now - exp.finished_at.unwrap_or(exp.created_at)).max(0) as f64;
+                        let age_str = fmt_duration(age_secs);
+                        out.push_str(&format!(
+                            "  {icon} <code>{}</code> — {age_str} ago\n",
+                            exp.name
+                        ));
+                    }
+                }
+            }
+            Err(e) => {
+                out.push_str(&format!("\nDB error: {e}"));
+            }
+        }
+
+        out
+    }
+
     /// Spawn a long-polling task that handles bot commands.
-    ///
-    /// Handles `/start` and `/subscribe` (adds caller to DB).
-    /// Handles `/unsubscribe` (removes caller from DB).
-    ///
-    /// Errors are logged; the loop never propagates panics to the Tokio runtime.
     pub fn start_bot_polling(self: Arc<Self>) {
         let Some(tg) = self.telegram.clone() else {
             return;
@@ -114,7 +242,7 @@ impl NotifyManager {
             let result = self
                 .client
                 .get(&get_updates_url)
-                .timeout(Duration::from_secs(45)) // must exceed polling timeout=30
+                .timeout(Duration::from_secs(45))
                 .query(&[
                     ("offset", offset.to_string()),
                     ("timeout", "30".into()),
@@ -180,10 +308,61 @@ impl NotifyManager {
                         Err(e) => warn!(chat_id, err = %e, "unsubscribe failed"),
                     }
                 } else if text.starts_with("/status") {
-                    self.reply(bot_token, chat_id, "🟢 teststand is running")
-                        .await;
+                    let status_text = self.build_status_text().await;
+                    self.reply(bot_token, chat_id, &status_text).await;
+                } else {
+                    self.reply(
+                        bot_token,
+                        chat_id,
+                        "Commands: /status, /subscribe, /unsubscribe",
+                    )
+                    .await;
                 }
             }
         }
     }
+}
+
+// ── Formatting helpers (public for runner use) ────────────────────────────────
+
+pub fn fmt_duration(secs: f64) -> String {
+    if secs < 60.0 {
+        format!("{:.0}s", secs)
+    } else if secs < 3600.0 {
+        format!("{:.0}m {:.0}s", secs / 60.0, secs % 60.0)
+    } else {
+        format!("{:.1}h", secs / 3600.0)
+    }
+}
+
+/// Build a completion summary suitable for a Telegram HTML message.
+pub fn fmt_completion_summary(
+    exp_name: &str,
+    status: &str,
+    elapsed_secs: f64,
+    total_runs: usize,
+    total_target_mb: f64,
+    total_archive_mb: f64,
+    storage_peak_mb: f64,
+    c_agg: f64,
+    cstar_agg: f64,
+) -> String {
+    let icon = if status == "done" { "✅" } else { "❌" };
+    format!(
+        "{icon} <b>Experiment '{exp_name}' {status}</b> — {}\n\
+         \n\
+         <b>Runs</b>         {total_runs}\n\
+         <b>Duration</b>     {}\n\
+         <b>Total Target</b> {total_target_mb:.1} MB\n\
+         <b>Total Archive</b>{total_archive_mb:.1} MB\n\
+         <b>Storage peak</b> {storage_peak_mb:.1} MB\n\
+         <b>C  (agg)</b>     {c_agg:.2}\n\
+         <b>C* (agg)</b>     {cstar_agg:.2}",
+        if status == "done" {
+            "completed".to_owned()
+        } else {
+            format!("FAILED")
+        },
+        fmt_duration(elapsed_secs),
+    )
 }

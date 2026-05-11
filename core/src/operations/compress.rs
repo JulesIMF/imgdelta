@@ -18,7 +18,7 @@ use crate::compress::partitions::{
     RawPartitionCompressor,
 };
 use crate::manifest::{
-    Data, Manifest, ManifestHeader, PartitionContent, PartitionManifest, Patch, MANIFEST_VERSION,
+    Manifest, ManifestHeader, PartitionContent, PartitionManifest, Patch, MANIFEST_VERSION,
 };
 use crate::partitions::PartitionHandle;
 use crate::storage::ImageStatus;
@@ -213,6 +213,12 @@ pub async fn compress(
             patched = stats.files_patched,
             removed = stats.files_removed,
             renamed = stats.files_renamed,
+            entities_added = stats.entities_added,
+            entities_changed = stats.entities_changed,
+            entities_removed = stats.entities_removed,
+            entities_renamed = stats.entities_renamed,
+            entities_in_base = stats.entities_in_base,
+            entities_in_target = stats.entities_in_target,
             archive_stored_bytes,
             manifest_stored_bytes,
             total_stored_bytes = stats.total_stored_bytes,
@@ -260,26 +266,39 @@ fn stats_from_manifest(
         ..CompressionStats::default()
     };
     for pm in &manifest.partitions {
-        if let PartitionContent::Fs { records, .. } = &pm.content {
+        if let PartitionContent::Fs {
+            records,
+            base_entity_count,
+            target_entity_count,
+            ..
+        } = &pm.content
+        {
+            stats.entities_in_base += base_entity_count;
+            stats.entities_in_target += target_entity_count;
             for r in records {
-                if matches!(r.entry_type, crate::manifest::EntryType::Directory) {
-                    continue;
-                }
-                match (&r.old_path, &r.new_path) {
-                    (None, Some(_)) => stats.files_added += 1,
-                    (Some(_), None) => stats.files_removed += 1,
-                    (Some(old), Some(new)) if old != new => stats.files_renamed += 1,
-                    (Some(_), Some(_)) => {
-                        if matches!(r.patch, Some(Patch::Real(_))) {
-                            stats.files_patched += 1;
+                // ── Legacy file-only counters ─────────────────────────────────
+                if !matches!(r.entry_type, crate::manifest::EntryType::Directory) {
+                    match (&r.old_path, &r.new_path) {
+                        (None, Some(_)) => stats.files_added += 1,
+                        (Some(_), None) => stats.files_removed += 1,
+                        (Some(old), Some(new)) if old != new => stats.files_renamed += 1,
+                        (Some(_), Some(_)) => {
+                            if matches!(r.patch, Some(Patch::Real(_))) {
+                                stats.files_patched += 1;
+                            }
                         }
+                        _ => {}
                     }
+                }
+                // ── New entity counters (all types) ───────────────────────────
+                match (&r.old_path, &r.new_path) {
+                    (None, Some(_)) => stats.entities_added += 1,
+                    (Some(_), None) => stats.entities_removed += 1,
+                    (Some(old), Some(new)) if old != new => stats.entities_renamed += 1,
+                    (Some(_), Some(_)) => stats.entities_changed += 1,
                     _ => {}
                 }
                 stats.total_source_bytes += r.size;
-                if let Some(Data::BlobRef(b)) = &r.data {
-                    stats.total_stored_bytes += b.size;
-                }
             }
         }
     }
