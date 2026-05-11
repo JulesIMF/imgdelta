@@ -127,7 +127,13 @@ pub async fn download_results(
         .collect::<Vec<_>>()
         .join("\n");
     Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/jsonl")],
+        [
+            (axum::http::header::CONTENT_TYPE, "application/x-ndjson"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"results.jsonl\"",
+            ),
+        ],
         jsonl,
     ))
 }
@@ -179,6 +185,15 @@ pub async fn get_run_logs(
     Path(run_id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let logs = db::get_logs(&s.db, &run_id).await?;
+    Ok(Json(logs))
+}
+
+// GET /api/experiments/:id/logs  — all log lines for an experiment (across all runs)
+pub async fn get_experiment_logs(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse> {
+    let logs = db::get_logs_for_experiment(&s.db, &id).await?;
     Ok(Json(logs))
 }
 

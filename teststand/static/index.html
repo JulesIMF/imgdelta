@@ -839,7 +839,8 @@
 
 
       async function dlResults(fmt, filename) {
-        var path = "/api/results/" + selectedId + (fmt === "csv" ? "/csv" : "");
+        if (!selectedId) return;
+        var path = "/results/" + selectedId + (fmt === "csv" ? "/csv" : "");
         try {
           var r = await apiFetch(path);
           var blob = await r.blob();
@@ -942,7 +943,25 @@
           renderLive();
           switchTab("spec");
           loadDetail(id);
+          loadHistoricalLogs(id);
         }
+      }
+
+      async function loadHistoricalLogs(id) {
+        try {
+          var r = await apiFetch("/experiments/" + id + "/logs");
+          var logs = await r.json();
+          // Convert DB log_lines rows to the same shape as SSE Log events
+          liveLogEntries = logs.map(function(l) {
+            return {
+              ts: l.ts * 1000,
+              level: l.level,
+              target: l.run_id ? l.run_id.slice(0, 8) : "runner",
+              message: l.message,
+            };
+          });
+          renderLive();
+        } catch(e) { console.error("loadHistoricalLogs", e); }
       }
 
       async function loadDetail(id) {
@@ -1009,26 +1028,32 @@
       // ── TOML syntax highlighter ──────────────────────────────────────────
       function tomlHighlight(text) {
         if (!text) return "";
-        var lines = text.split("\n").map(function(line) {
-          // Escape HTML first
-          var s = line.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-          // Comment
-          if (/^\s*#/.test(s)) return '<span class="th-cmt">' + s + '</span>';
-          // Section header
-          if (/^\s*\[/.test(s)) return '<span class="th-sec">' + s + '</span>';
-          // key = value
-          s = s.replace(/^(\s*[\w\-\.]+)(\s*=\s*)/, function(_, k, eq) {
-            return '<span class="th-key">' + k + '</span>' + '<span class="th-eq">' + eq + '</span>';
-          });
-          // Strings
-          s = s.replace(/(&#34;|&quot;|")((?:[^"\\]|\\.)*)(")/g, '<span class="th-str">&quot;$2&quot;</span>');
-          s = s.replace(/(&apos;|')((?:[^'\\]|\\.)*)(')/g, "<span class='th-str'>&#39;$2&#39;</span>");
-          // Numbers and booleans
-          s = s.replace(/\b(true|false)\b/g, '<span class="th-bool">$1</span>');
-          s = s.replace(/(\b\d+\.\d+\b|\b\d+\b)/g, '<span class="th-num">$1</span>');
-          return s;
-        });
-        return lines.join("\n");
+        return text.split("\n").map(function(line) {
+          var s = line
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+          if (/^\s*#/.test(s)) return '<span class="th-cmt">' + s + "</span>";
+          if (/^\s*\[/.test(s)) return '<span class="th-sec">' + s + "</span>";
+          // Split at first "=" capturing surrounding whitespace
+          var m = s.match(/^(\s*[\w.\-]+)(\s*=\s*)([\s\S]*)$/);
+          if (!m) return s;
+          // Highlight the value part in one left-to-right pass:
+          // strings are consumed whole, so numbers inside strings are never matched.
+          var hVal = m[3].replace(
+            /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\b(true|false)\b|\b(\d+(?:\.\d+)?)\b/g,
+            function(match, ds, ss, bool, num) {
+              if (ds !== undefined) return '<span class="th-str">"' + ds + '"</span>';
+              if (ss !== undefined) return "<span class=\"th-str\">'"+ss+"'</span>";
+              if (bool) return '<span class="th-bool">' + bool + "</span>";
+              if (num)  return '<span class="th-num">'  + num  + "</span>";
+              return match;
+            }
+          );
+          return '<span class="th-key">' + m[1] + "</span>"
+               + '<span class="th-eq">'  + m[2] + "</span>"
+               + hVal;
+        }).join("\n");
       }
 
       function updateTomlPreview() {

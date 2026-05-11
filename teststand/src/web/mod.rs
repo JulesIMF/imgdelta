@@ -22,6 +22,7 @@ pub fn build_router(state: ApiState, auth_token: String) -> Router {
             get(api::list_experiments).post(api::create_experiment),
         )
         .route("/experiments/:id", get(api::get_experiment))
+        .route("/experiments/:id/logs", get(api::get_experiment_logs))
         .route("/results/:id", get(api::download_results))
         .route("/results/:id/csv", get(api::download_results_csv))
         .route("/logs/server", get(api::get_server_logs))

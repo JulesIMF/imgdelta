@@ -227,6 +227,19 @@ pub async fn get_logs(db: &Db, run_id: &str) -> Result<Vec<LogLine>> {
     )
 }
 
+/// Fetch all log lines for all runs belonging to an experiment, ordered by id.
+pub async fn get_logs_for_experiment(db: &Db, experiment_id: &str) -> Result<Vec<LogLine>> {
+    Ok(sqlx::query_as::<_, LogLine>(
+        "SELECT l.* FROM log_lines l \
+         JOIN runs r ON l.run_id = r.id \
+         WHERE r.experiment_id = ? \
+         ORDER BY l.id",
+    )
+    .bind(experiment_id)
+    .fetch_all(db)
+    .await?)
+}
+
 // ── Telegram subscribers ─────────────────────────────────────────────────
 
 pub async fn add_telegram_subscriber(db: &Db, chat_id: i64) -> Result<()> {
