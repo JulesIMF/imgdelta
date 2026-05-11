@@ -1,153 +1,145 @@
 # imgdelta
 
-Delta compression tool for cloud OS images. Computes per-file binary deltas
-between filesystem snapshots, stores patches in S3, and reconstructs images
-offline. Built in Rust with vendored xdelta3, pluggable encoders, and
-configurable file-type routing.
+Delta compression toolkit for cloud OS images. imgdelta computes per-file
+binary deltas between consecutive filesystem snapshots, stores compact patch
+archives in any pluggable storage backend, and reconstructs images offline —
+**without any daemon, FUSE mount, or cloud SDK dependency in the core library**.
 
-## Status
-
-> **Phase 4 complete.** Compress/decompress pipeline implemented and covered
-> by 85 L1 unit + integration tests. Phase 5 (real S3/PostgreSQL storage,
-> Qcow2Image, parallel scheduler) is next.
+Built as a diploma project with industrial applicability in mind.
 
 ## How it works
 
-Traditional approach: store every image version in full → O(N) storage.
+Traditional approach: store every image version in full → O(N) storage cost.
 
 imgdelta approach:
 
 ```
 base image ──┐
-             ├──▶ diff_dirs() ──▶ path_match() ──▶ encode() ──▶ S3
+             ├──▶ walkdir ──▶ rename-detect ──▶ route ──▶ encode ──▶ Storage
 new image  ──┘
 ```
 
-1. **Walk** both filesystem trees, detect added/removed/changed/renamed files
-2. **Route** each changed file to the right encoder by type (ELF→xdelta3,
-   config→text-diff, already-compressed→passthrough, …)
-3. **Encode** using VCDIFF (xdelta3 FFI) or text-diff or verbatim blob
-4. **Upload** patches + manifest to S3; index metadata in PostgreSQL
+1. **Walk** both filesystem trees; detect added/removed/changed/renamed files
+2. **Route** each changed file to the right encoder by type
+   (ELF → xdelta3, config → text-diff, already-compressed → passthrough, …)
+3. **Encode** using VCDIFF (xdelta3 FFI), Myers text-diff, or verbatim blob
+4. **Upload** patches + manifest (MessagePack) to storage
 
-Decompression downloads the manifest and patches, applies them in order,
-and reconstructs the target filesystem offline (no daemon, no FUSE).
+Decompression downloads the manifest and patches, applies them in order, and
+reconstructs the target filesystem exactly.
 
-## Quick Start
+Benchmarked on 551 real cloud image pairs across Ubuntu 22.04, Debian 11,
+Fedora 37, and CentOS Stream 8 — imgdelta achieves **42–114× compression
+ratio** vs full rootfs size (vs 2–5× for qcow2 backing chains).
+
+## Quick start
 
 ### Prerequisites
 
 - Rust stable (`rustup toolchain install stable`)
 - C compiler (`gcc` or `clang`) — for the vendored `xdelta3.c`
-- S3-compatible object storage and PostgreSQL (for Phase 5+)
+- For qcow2 images: `qemu-nbd` and `CAP_SYS_ADMIN`
 
-### Install from source
+### Build from source
 
 ```sh
 git clone https://github.com/JulesIMF/imgdelta
 cd imgdelta
-cargo build --release --all
-# binary is at ./target/release/imgdelta
+cargo build --release
+# binary: ./target/release/imgdelta
 ```
 
 ### Minimal config (`imgdelta.toml`)
 
 ```toml
 [storage]
-s3_bucket    = "my-images"
-s3_region    = "us-east-1"
-database_url = "postgres://user:pass@localhost/imgdelta"
+type      = "local"
+local_dir = "/srv/imgdelta"
 
 [compressor]
-workers            = 8
-default_encoder    = "xdelta3"
-passthrough_threshold = 1.0   # never store a delta larger than the original
+workers = 8
 
 [[compressor.routing]]
 type    = "glob"
-pattern = "**/*.{gz,zst,xz,bz2,lz4}"
+pattern = "**/*.{gz,zst,xz,bz2}"
 encoder = "passthrough"
 
 [[compressor.routing]]
 type    = "elf"
 encoder = "xdelta3"
+
+# fallback
+[[compressor.routing]]
+type    = "glob"
+pattern = "**/*"
+encoder = "xdelta3"
 ```
+
+A full annotated example is in [`examples/imgdelta.toml`](examples/imgdelta.toml).
 
 ### Compress
 
 ```sh
-imgdelta compress \
-  --image    /mnt/new-image \
-  --image-id debian-11-20260502 \
+imgdelta --config imgdelta.toml compress \
+  --image-id      debian-11-20260502 \
   --base-image-id debian-11-20260401 \
-  --config   imgdelta.toml
+  --source        /mnt/base-image \
+  --target        /mnt/new-image
 ```
 
-### Decompress (reconstruct)
+### Decompress
 
 ```sh
-imgdelta decompress \
-  --image-id   debian-11-20260502 \
-  --base-root  /mnt/base-image \
-  --output     /mnt/restored \
-  --config     imgdelta.toml
+imgdelta --config imgdelta.toml decompress \
+  --image-id  debian-11-20260502 \
+  --base-root /mnt/base-image \
+  --output    /mnt/restored
 ```
 
 ### Inspect a manifest
 
 ```sh
-imgdelta manifest inspect --image-id debian-11-20260502 --format json
+imgdelta --config imgdelta.toml manifest inspect --image-id debian-11-20260502
 ```
 
 ## Crate structure
 
-| Crate              | Role                                                             |
-| ------------------ | ---------------------------------------------------------------- |
-| `image-delta-core` | Library: all algorithms, traits, data structures. No S3/DB deps. |
-| `image-delta-cli`  | Binary `imgdelta`: CLI, S3Storage impl, TOML config wiring.      |
-
-Key modules inside `image-delta-core`:
-
-| Module                 | Purpose                                                                       |
-| ---------------------- | ----------------------------------------------------------------------------- |
-| `fs_diff`              | Walk two directory trees → `DiffResult` (added/removed/changed/metadata-only) |
-| `path_match`           | Bijective path-similarity scoring for rename detection                        |
-| `encoders/vcdiff`      | xdelta3 FFI (unsafe confined here), `Xdelta3Encoder`                          |
-| `encoders/passthrough` | Verbatim blob encoder for incompressible files                                |
-| `routing`              | `RouterEncoder`, `GlobRule`, `ElfRule`, `SizeRule`, `MagicRule`               |
-| `compressor`           | `DefaultCompressor`: orchestrates diff → match → encode → upload              |
-| `manifest`             | MessagePack-serialised `Manifest` with per-file `Entry` records               |
-| `storage`              | `Storage` trait (upload/download blobs, patches, manifests)                   |
+| Crate                      | Role                                                                                                       |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `image-delta-core`         | Library: all algorithms, traits, data structures, `LocalStorage` reference impl. Zero cloud SDK / DB deps. |
+| `image-delta-cli`          | Binary `imgdelta`: CLI, TOML config wiring.                                                                |
+| `image-delta-synthetic-fs` | Test helper: deterministic filesystem tree generator and mutator.                                          |
 
 ## Testing
 
 ```sh
-# All L1 tests (85 tests, no external deps)
+# Unit + integration tests (no external deps)
 cargo test --all
 
-# A specific integration test file
-cargo test --test compress_decompress
-
-# Debug walkdir (debug builds only)
-cargo build
-./target/debug/imgdelta debug walkdir /path/to/base /path/to/new
+# Real qcow2 roundtrip (requires qemu-nbd + CAP_SYS_ADMIN)
+bash scripts/roundtrip-test.sh
 ```
 
 Test infrastructure:
 
-- `FakeStorage` — in-memory `Storage` for unit tests
-- `compare_dirs` — deep tree comparison: SHA-256, mode, uid/gid, mtime, type,
-  symlink targets, hardlinks, extended attributes (`xattr`)
-- `fs_diff_integration` — 10 bidirectional scenarios with `assert_symmetric()`
+- `FakeStorage` — in-memory `Storage` mock; no I/O
+- `image-delta-synthetic-fs` — generates realistic base/target directory pairs
+  (`FsTreeBuilder` + `FsMutator`)
+- `compare_dirs` — deep tree comparison: SHA-256, mode, uid/gid, mtime,
+  symlink targets, hardlinks, xattrs
 
 ## Documentation
 
-- [User Guide](https://JulesIMF.github.io/imgdelta/) — quickstart, configuration reference, architecture, integration guide
-- [API Reference](https://JulesIMF.github.io/imgdelta/api/) — `cargo doc` output for `image-delta-core`
+- **[User Guide](https://JulesIMF.github.io/imgdelta/)** — quickstart,
+  configuration reference, architecture, provider integration guide
+- **[API Reference](https://JulesIMF.github.io/imgdelta/api/)** — `cargo doc`
+  output for `image-delta-core`
 
 Build docs locally:
 
 ```sh
-cargo doc --no-deps -p image-delta-core --open
+cargo install mdbook mdbook-mermaid
+mdbook serve book --open
 ```
 
 ## Contributing
