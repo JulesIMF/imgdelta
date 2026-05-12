@@ -18,6 +18,7 @@ use crate::{
     config::{experiment::ExperimentSpec, families::FamiliesConfig},
     db::{self, Db},
     error::{Error, Result},
+    image_manager::ImageManager,
     logging::LogBuffer,
     runner::{
         progress::{ProgressEvent, ProgressTx},
@@ -33,6 +34,7 @@ pub struct ApiState {
     pub progress_tx: ProgressTx,
     pub log_buffer: Arc<LogBuffer>,
     pub families: Arc<FamiliesConfig>,
+    pub image_manager: Arc<ImageManager>,
 }
 
 // GET /api/families — list families + image IDs for the visual UI form
@@ -312,4 +314,69 @@ pub async fn sse_events(
         }
     };
     Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
+}
+
+// GET /api/images — list all families + images with download state
+pub async fn list_images(State(s): State<ApiState>) -> impl IntoResponse {
+    let all = s.image_manager.list_all().await;
+    let data: Vec<_> = s
+        .families
+        .families
+        .iter()
+        .map(|f| {
+            let images: Vec<_> = f
+                .images
+                .iter()
+                .map(|spec| {
+                    let info = all.iter().find(|i| i.id == spec.id);
+                    let state = info.map(|i| i.state.as_str()).unwrap_or("missing");
+                    let progress = info.and_then(|i| i.progress_bytes).unwrap_or(0);
+                    let total = info
+                        .and_then(|i| i.total_bytes)
+                        .or(spec.size_bytes)
+                        .unwrap_or(0);
+                    json!({
+                        "id":             spec.id,
+                        "size_bytes":     spec.size_bytes,
+                        "state":          state,
+                        "progress_bytes": progress,
+                        "total_bytes":    total,
+                    })
+                })
+                .collect();
+            json!({
+                "name":   f.name,
+                "label":  f.label,
+                "images": images,
+            })
+        })
+        .collect();
+    Json(data)
+}
+
+// POST /api/images/:id/download — start background download
+pub async fn start_image_download(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse> {
+    if s.image_manager.image_state(&id).await.is_none() {
+        return Err(Error::NotFound(id));
+    }
+    let im = Arc::clone(&s.image_manager);
+    let id2 = id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = im.ensure(&id2).await {
+            tracing::error!(id = %id2, err = %e, "background image download failed");
+        }
+    });
+    Ok(Json(json!({ "ok": true })))
+}
+
+// DELETE /api/images/:id — evict (delete) image from disk
+pub async fn evict_image(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse> {
+    s.image_manager.evict(&id).await?;
+    Ok(Json(json!({ "ok": true })))
 }

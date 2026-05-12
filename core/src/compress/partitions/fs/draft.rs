@@ -69,4 +69,8 @@ pub struct FsDraft {
     /// Total number of entries found in the target image during the walkdir
     /// stage.
     pub target_entity_count: usize,
+
+    /// Total bytes actually written to storage by the `upload_blobs` stage
+    /// (deduped blobs that already existed in storage are NOT counted).
+    pub blobs_stored_bytes: u64,
 }

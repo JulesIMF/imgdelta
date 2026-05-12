@@ -166,7 +166,9 @@ impl CompressorConfig {
             rules.push(rule);
         }
 
-        Ok(Arc::new(RouterEncoder::new(rules, fallback)))
+        let mut router = RouterEncoder::new(rules, fallback);
+        router.set_passthrough_threshold(self.passthrough_threshold);
+        Ok(Arc::new(router))
     }
 }
 

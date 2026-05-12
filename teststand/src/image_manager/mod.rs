@@ -147,7 +147,6 @@ impl ImageManager {
     }
 
     /// Evict (delete) an image to free disk space.
-    #[allow(dead_code)]
     pub async fn evict(&self, id: &str) -> Result<()> {
         let path = {
             let mut map = self.state.lock().await;
@@ -178,7 +177,6 @@ impl ImageManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn image_state(&self, id: &str) -> Option<String> {
         let map = self.state.lock().await;
         map.get(id).map(|e| match &e.state {
@@ -197,6 +195,54 @@ impl ImageManager {
             ImageState::Evicting => "evicting".into(),
         })
     }
+
+    /// List all registered images with their current state.
+    /// Also lazily detects images that are already on disk (Missing → Ready).
+    pub async fn list_all(&self) -> Vec<ImageInfo> {
+        let mut map = self.state.lock().await;
+        for entry in map.values_mut() {
+            if entry.state == ImageState::Missing {
+                let dest = self.images_dir.join(format!("{}.qcow2", entry.spec.id));
+                if dest.exists() {
+                    entry.state = ImageState::Ready;
+                    entry.path = Some(dest);
+                }
+            }
+        }
+        map.values()
+            .map(|e| {
+                let (state, progress_bytes, total_bytes) = match &e.state {
+                    ImageState::Missing => ("missing".to_owned(), None, None),
+                    ImageState::Downloading {
+                        progress_bytes,
+                        total_bytes,
+                    } => (
+                        "downloading".to_owned(),
+                        Some(*progress_bytes),
+                        *total_bytes,
+                    ),
+                    ImageState::Ready => ("ready".to_owned(), None, None),
+                    ImageState::Evicting => ("evicting".to_owned(), None, None),
+                };
+                ImageInfo {
+                    id: e.spec.id.clone(),
+                    size_bytes: e.spec.size_bytes,
+                    state,
+                    progress_bytes,
+                    total_bytes: total_bytes.or(e.spec.size_bytes),
+                }
+            })
+            .collect()
+    }
+}
+
+pub struct ImageInfo {
+    pub id: String,
+    #[allow(dead_code)]
+    pub size_bytes: Option<u64>,
+    pub state: String,
+    pub progress_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
 }
 
 async fn download_image(

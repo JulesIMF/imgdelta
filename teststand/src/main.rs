@@ -137,6 +137,7 @@ async fn main() -> Result<()> {
         progress_tx: progress_tx.clone(),
         log_buffer: Arc::clone(&log_buffer),
         families: Arc::clone(&families),
+        image_manager: Arc::clone(&image_manager),
     };
     let app = build_router(api_state, cfg.auth_token.clone());
 

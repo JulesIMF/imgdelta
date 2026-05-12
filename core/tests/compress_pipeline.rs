@@ -428,8 +428,8 @@ async fn test_pack_upload_archive_produces_fs_content() {
     // Build a draft with one computed patch.
     let mut draft = walkdir(base_dir.path(), target_dir.path()).unwrap();
     // Stage 5: no lazy blobs (changed file, no new additions).
-    let router = xdelta3_router();
-    draft = compute_patches(draft, &router, 1).unwrap();
+    let router = Arc::new(xdelta3_router());
+    draft = compute_patches(draft, router, 1).unwrap();
 
     let (content, _compressed, _archive_bytes) =
         pack_and_upload_archive(draft, &storage, "img-001", "ext4", None)
@@ -1002,8 +1002,8 @@ fn test_compute_patches_rayon_stress_many_files() {
         "must have exactly {n} changed records"
     );
 
-    let router = xdelta3_router();
-    let draft = compute_patches(draft, &router, 1).unwrap();
+    let router = Arc::new(xdelta3_router());
+    let draft = compute_patches(draft, router, 1).unwrap();
 
     assert_eq!(
         draft.patch_bytes.len(),

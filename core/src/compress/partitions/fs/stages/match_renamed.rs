@@ -213,11 +213,11 @@ pub fn match_renamed_fn(mut draft: FsDraft, pass2_min_score: f64) -> FsDraft {
 
             // Reject identical-basename pairs — they are either pure-path renames
             // (handled by Pass 1) or cross-package false positives.
-            let old_base = old_path.rsplit('/').next().unwrap_or(old_path.as_str());
-            let new_base = new_path.rsplit('/').next().unwrap_or(new_path.as_str());
-            if old_base == new_base {
-                continue;
-            }
+            // let old_base = old_path.rsplit('/').next().unwrap_or(old_path.as_str());
+            // let new_base = new_path.rsplit('/').next().unwrap_or(new_path.as_str());
+            // if old_base == new_base {
+            //     continue;
+            // }
             let Some(patch) = build_rename_patch(&draft.records, *rem_rec_idx, *add_rec_idx) else {
                 continue;
             };

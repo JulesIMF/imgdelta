@@ -95,6 +95,7 @@ pub fn collect_fs_content(
         fs_mkfs_params,
         base_entity_count: draft.base_entity_count as u64,
         target_entity_count: draft.target_entity_count as u64,
+        blobs_stored_bytes: draft.blobs_stored_bytes,
         records,
     })
 }

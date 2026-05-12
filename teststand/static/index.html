@@ -587,6 +587,80 @@
       .btn-dl:hover {
         border-color: var(--accent);
       }
+      .img-family-header {
+        font-weight: 700;
+        color: var(--accent);
+        padding: 10px 0 6px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 6px;
+        font-size: 13px;
+      }
+      .img-family-section {
+        margin-bottom: 20px;
+      }
+      .img-state-badge {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .img-state-missing {
+        background: #21262d;
+        color: var(--dim);
+      }
+      .img-state-ready {
+        background: #1a3a2a;
+        color: var(--green);
+      }
+      .img-state-downloading {
+        background: #1f3a5f;
+        color: var(--accent);
+      }
+      .img-state-evicting {
+        background: #3d2a1c;
+        color: #e0824a;
+      }
+      .img-progress {
+        height: 4px;
+        background: #21262d;
+        border-radius: 2px;
+        overflow: hidden;
+        margin-top: 3px;
+        width: 120px;
+        display: inline-block;
+        vertical-align: middle;
+      }
+      .img-progress-bar {
+        height: 100%;
+        background: var(--accent);
+        transition: width 0.4s;
+      }
+      .img-action-btn {
+        padding: 2px 8px;
+        border: none;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        line-height: 1.6;
+      }
+      .img-action-btn.download {
+        background: #1f3a5f;
+        color: var(--accent);
+      }
+      .img-action-btn.download:hover {
+        background: #264d7a;
+      }
+      .img-action-btn.delete {
+        background: #3d1c1c;
+        color: var(--red);
+      }
+      .img-action-btn.delete:hover {
+        background: #5c2020;
+      }
     </style>
   </head>
   <body>
@@ -729,6 +803,22 @@
       <button id="srv-log-btn" onclick="showServerLogs()">
         🖥 Server Logs
       </button>
+      <button
+        id="img-mgr-btn"
+        onclick="showImages()"
+        style="
+          margin: 0 12px 12px;
+          padding: 8px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          color: var(--dim);
+          cursor: pointer;
+          border-radius: 4px;
+          font: inherit;
+        "
+      >
+        🗄 Images
+      </button>
     </div>
 
     <div id="main">
@@ -800,7 +890,9 @@
                   <th>base MB</th>
                   <th>C</th>
                   <th>C*</th>
-                  <th title="entity delta: +added ~changed -removed ↩renamed">Δ</th>
+                  <th title="entity delta: +added ~changed -removed ↩renamed">
+                    Δ
+                  </th>
                 </tr>
               </thead>
               <tbody id="results-body"></tbody>
@@ -843,6 +935,57 @@
             </div>
             <div id="live-log" class="log-lines"></div>
           </div>
+        </div>
+      </div>
+
+      <div
+        id="img-pane"
+        style="display: none; flex: 1; flex-direction: column; overflow: hidden"
+      >
+        <div
+          class="tab-bar"
+          style="justify-content: space-between; align-items: center"
+        >
+          <div
+            style="padding: 10px 16px; font-weight: 700; color: var(--accent)"
+          >
+            Images
+          </div>
+          <div style="padding: 6px 16px; display: flex; gap: 8px">
+            <button
+              onclick="loadImages()"
+              style="
+                padding: 4px 12px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                color: var(--text);
+                cursor: pointer;
+                border-radius: 4px;
+                font: inherit;
+                font-size: 12px;
+              "
+            >
+              ↻ Refresh
+            </button>
+            <button
+              onclick="showExp(null)"
+              style="
+                padding: 4px 12px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                color: var(--dim);
+                cursor: pointer;
+                border-radius: 4px;
+                font: inherit;
+                font-size: 12px;
+              "
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding: 16px">
+          <div id="img-list"></div>
         </div>
       </div>
 
@@ -949,6 +1092,7 @@
       var srvEntries = [];
       var sseCtrl = null;
       var sseTimer = null;
+      var imgPollTimer = null;
 
       document.addEventListener("DOMContentLoaded", function () {
         if (TOKEN) {
@@ -1225,6 +1369,8 @@
           ? "flex"
           : "none";
         document.getElementById("srv-pane").style.display = "none";
+        document.getElementById("img-pane").style.display = "none";
+        clearInterval(imgPollTimer);
         if (id) {
           liveLogEntries = [];
           renderLive();
@@ -1428,19 +1574,35 @@
               : r.run_repetition != null
                 ? r.run_repetition + 1
                 : "-";
-          var ms = "-", deltaCell = "-", deltaTitle = "";
+          var ms = "-",
+            deltaCell = "-",
+            deltaTitle = "";
           try {
             var cs = JSON.parse(r.compress_stats_json || "{}");
             if (cs.elapsed_secs) ms = Math.round(cs.elapsed_secs * 1000);
-            if (cs.entities_added != null || cs.entities_changed != null || cs.entities_removed != null) {
+            if (
+              cs.entities_added != null ||
+              cs.entities_changed != null ||
+              cs.entities_removed != null
+            ) {
               var ea = cs.entities_added || 0;
               var ec = cs.entities_changed || 0;
               var er = cs.entities_removed || 0;
               var en = cs.entities_renamed || 0;
               deltaCell = "+" + ea + " ~" + ec + " -" + er;
-              deltaTitle = "added: " + ea + ", changed: " + ec + ", removed: " + er + ", renamed: " + en;
-              if (cs.entities_in_base != null) deltaTitle += "\nbase entities: " + cs.entities_in_base;
-              if (cs.entities_in_target != null) deltaTitle += ", target entities: " + cs.entities_in_target;
+              deltaTitle =
+                "added: " +
+                ea +
+                ", changed: " +
+                ec +
+                ", removed: " +
+                er +
+                ", renamed: " +
+                en;
+              if (cs.entities_in_base != null)
+                deltaTitle += "\nbase entities: " + cs.entities_in_base;
+              if (cs.entities_in_target != null)
+                deltaTitle += ", target entities: " + cs.entities_in_target;
             }
           } catch (e) {}
           var dMs = "-";
@@ -1475,7 +1637,9 @@
             c +
             '</td><td class="num">' +
             cstar +
-            '</td><td class="num delta" title="' + deltaTitle.replace(/"/g, '&quot;') + '">' +
+            '</td><td class="num delta" title="' +
+            deltaTitle.replace(/"/g, "&quot;") +
+            '">' +
             deltaCell +
             "</td>";
           tbody.appendChild(tr);
@@ -1584,8 +1748,125 @@
         });
         document.getElementById("empty-state").style.display = "none";
         document.getElementById("exp-detail").style.display = "none";
+        document.getElementById("img-pane").style.display = "none";
         document.getElementById("srv-pane").style.display = "flex";
+        clearInterval(imgPollTimer);
         loadSrv();
+      }
+
+      function showImages() {
+        selectedId = null;
+        document.querySelectorAll(".exp-item").forEach(function (el) {
+          el.classList.remove("selected");
+        });
+        document.getElementById("empty-state").style.display = "none";
+        document.getElementById("exp-detail").style.display = "none";
+        document.getElementById("srv-pane").style.display = "none";
+        document.getElementById("img-pane").style.display = "flex";
+        loadImages();
+        clearInterval(imgPollTimer);
+        imgPollTimer = setInterval(function () {
+          if (document.getElementById("img-pane").style.display !== "none")
+            loadImages();
+          else clearInterval(imgPollTimer);
+        }, 3000);
+      }
+
+      async function loadImages() {
+        try {
+          var r = await apiFetch("/images");
+          var data = await r.json();
+          renderImages(data);
+        } catch (e) {
+          console.error("loadImages", e);
+        }
+      }
+
+      function renderImages(families) {
+        var el = document.getElementById("img-list");
+        if (!el) return;
+        var html = "";
+        families.forEach(function (fam) {
+          html += '<div class="img-family-section">';
+          html +=
+            '<div class="img-family-header">' +
+            esc(fam.label || fam.name) +
+            "</div>";
+          html +=
+            '<table class="rtable"><thead><tr><th>id</th><th>size</th><th>status</th><th></th></tr></thead><tbody>';
+          (fam.images || []).forEach(function (img) {
+            var sizeFmt = img.size_bytes
+              ? (img.size_bytes / 1e9).toFixed(2) + " GB"
+              : "—";
+            var stateHtml =
+              '<span class="img-state-badge img-state-' +
+              img.state +
+              '">' +
+              img.state +
+              "</span>";
+            if (img.state === "downloading" && img.total_bytes > 0) {
+              var pct = Math.min(
+                100,
+                Math.round((img.progress_bytes / img.total_bytes) * 100),
+              );
+              stateHtml +=
+                " " +
+                pct +
+                '%<div class="img-progress"><div class="img-progress-bar" style="width:' +
+                pct +
+                '%"></div></div>';
+            }
+            var actionHtml = "";
+            if (img.state === "missing") {
+              actionHtml =
+                '<button class="img-action-btn download" onclick=\'downloadImg(' +
+                JSON.stringify(img.id) +
+                ")'>↓ Download</button>";
+            } else if (img.state === "ready") {
+              actionHtml =
+                '<button class="img-action-btn delete" onclick=\'deleteImg(' +
+                JSON.stringify(img.id) +
+                ")'>✕ Delete</button>";
+            }
+            html +=
+              '<tr><td style="font-size:12px">' +
+              esc(img.id) +
+              '</td><td class="num">' +
+              sizeFmt +
+              "</td><td>" +
+              stateHtml +
+              "</td><td>" +
+              actionHtml +
+              "</td></tr>";
+          });
+          html += "</tbody></table></div>";
+        });
+        if (!html)
+          html = '<div style="color:var(--dim)">No families configured.</div>';
+        el.innerHTML = html;
+      }
+
+      async function downloadImg(id) {
+        try {
+          await apiFetch("/images/" + encodeURIComponent(id) + "/download", {
+            method: "POST",
+          });
+          loadImages();
+        } catch (e) {
+          alert("Download failed: " + e.message);
+        }
+      }
+
+      async function deleteImg(id) {
+        if (!confirm("Delete image " + id + " from disk?")) return;
+        try {
+          await apiFetch("/images/" + encodeURIComponent(id), {
+            method: "DELETE",
+          });
+          loadImages();
+        } catch (e) {
+          alert("Delete failed: " + e.message);
+        }
       }
 
       async function loadSrv() {

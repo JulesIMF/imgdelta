@@ -47,7 +47,7 @@ impl PartitionCompressor for FsPartitionCompressor {
         &self,
         ctx: &CompressContext,
         handle: PartitionHandle,
-    ) -> Result<PartitionManifest> {
+    ) -> Result<(PartitionManifest, u64)> {
         let fs_handle = match handle {
             PartitionHandle::Fs(h) => h,
             _ => unreachable!("FsPartitionCompressor called with non-Fs handle"),
@@ -123,6 +123,7 @@ impl PartitionCompressor for FsPartitionCompressor {
             ctx.timing_sink.clone(),
         )
         .await
+        .map(|pm| (pm, 0u64))
     }
 }
 

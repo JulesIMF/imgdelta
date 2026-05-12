@@ -108,6 +108,9 @@ pub async fn compress(
                 crate::operations::StageTimings::default(),
             ));
 
+        // Bytes uploaded to blob storage by BiosBoot / Raw / Mbr compressors.
+        let mut non_fs_blobs_stored_bytes: u64 = 0;
+
         // Shared directory for all FS partition patch files.
         let all_patches_dir = tempfile::TempDir::new()?;
 
@@ -145,7 +148,8 @@ pub async fn compress(
                 PartitionHandle::Mbr(_) => Box::new(MbrCompressor),
             };
 
-            let pm = compressor.compress(&ctx, target_ph).await?;
+            let (pm, part_blobs_stored) = compressor.compress(&ctx, target_ph).await?;
+            non_fs_blobs_stored_bytes += part_blobs_stored;
             partition_manifests.push(pm);
         }
 
@@ -197,10 +201,13 @@ pub async fn compress(
         // ── 8. Compute stats from manifest ────────────────────────────────
         let elapsed = started_at.elapsed();
         let manifest_stored_bytes = manifest_bytes_gz.len() as u64;
+        // non_fs_blobs_stored_bytes: blobs from BiosBoot/Raw/Mbr partitions.
+        // Fs-partition blobs are tracked in PartitionContent::Fs.blobs_stored_bytes
+        // and summed inside stats_from_manifest — no double-counting.
         let mut stats = stats_from_manifest(
             &manifest,
             elapsed,
-            archive_stored_bytes + manifest_stored_bytes,
+            archive_stored_bytes + manifest_stored_bytes + non_fs_blobs_stored_bytes,
         );
         stats.stage_timings = timing_sink
             .lock()
@@ -219,6 +226,8 @@ pub async fn compress(
             entities_renamed = stats.entities_renamed,
             entities_in_base = stats.entities_in_base,
             entities_in_target = stats.entities_in_target,
+            blobs_stored_bytes =
+                stats.total_stored_bytes - archive_stored_bytes - manifest_stored_bytes,
             archive_stored_bytes,
             manifest_stored_bytes,
             total_stored_bytes = stats.total_stored_bytes,
@@ -270,9 +279,11 @@ fn stats_from_manifest(
             records,
             base_entity_count,
             target_entity_count,
+            blobs_stored_bytes,
             ..
         } = &pm.content
         {
+            stats.total_stored_bytes += blobs_stored_bytes;
             stats.entities_in_base += base_entity_count;
             stats.entities_in_target += target_entity_count;
             for r in records {

@@ -7,7 +7,7 @@
 pub mod api;
 pub mod auth;
 
-use axum::{middleware, routing::get, routing::post, Router};
+use axum::{middleware, routing::delete, routing::get, routing::post, Router};
 use tower_http::cors::CorsLayer;
 
 use api::ApiState;
@@ -30,6 +30,9 @@ pub fn build_router(state: ApiState, auth_token: String) -> Router {
         .route("/logs/server", get(api::get_server_logs))
         .route("/logs/:run_id", get(api::get_run_logs))
         .route("/events", get(api::sse_events))
+        .route("/images", get(api::list_images))
+        .route("/images/:id/download", post(api::start_image_download))
+        .route("/images/:id", delete(api::evict_image))
         .layer(middleware::from_fn_with_state(
             auth_token.clone(),
             auth::auth_middleware,

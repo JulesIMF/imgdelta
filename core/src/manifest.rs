@@ -301,6 +301,10 @@ pub enum PartitionContent {
         /// Zero on manifests produced by older tooling (`#[serde(default)]`).
         #[serde(default)]
         target_entity_count: u64,
+        /// Bytes actually written to blob storage by the upload_blobs stage
+        /// (excluding deduped blobs).  Zero on old manifests.
+        #[serde(default)]
+        blobs_stored_bytes: u64,
         records: Vec<Record>,
     },
     /// MBR boot-code area (bytes 0–439 of the raw disk).
@@ -700,6 +704,7 @@ mod tests {
             fs_mkfs_params: None,
             base_entity_count: 0,
             target_entity_count: 0,
+            blobs_stored_bytes: 0,
             records: vec![
                 make_record_added(),
                 make_record_deleted(),
@@ -742,6 +747,7 @@ mod tests {
                     fs_mkfs_params: None,
                     base_entity_count: 0,
                     target_entity_count: 0,
+                    blobs_stored_bytes: 0,
                     records: vec![make_record_added()],
                 },
             }],

@@ -4,6 +4,8 @@
 // image-delta — incremental disk-image compression toolkit
 // RouterEncoder: selects a PatchEncoder per file path using glob rules
 
+use tracing::debug;
+
 use crate::encoding::PassthroughEncoder;
 use crate::encoding::{AlgorithmCode, FilePatch, FileSnapshot, PatchEncoder};
 use crate::Result;
@@ -46,11 +48,20 @@ pub trait RoutingRule: Send + Sync {
 pub struct RouterEncoder {
     rules: Vec<Box<dyn RoutingRule>>,
     fallback: Arc<dyn PatchEncoder>,
+    passthrough_threshold: Option<f64>,
 }
 
 impl RouterEncoder {
     pub fn new(rules: Vec<Box<dyn RoutingRule>>, fallback: Arc<dyn PatchEncoder>) -> Self {
-        Self { rules, fallback }
+        Self {
+            rules,
+            fallback,
+            passthrough_threshold: None,
+        }
+    }
+
+    pub fn set_passthrough_threshold(&mut self, threshold: f64) {
+        self.passthrough_threshold = Some(threshold);
     }
 
     /// Select the encoder for a given file, evaluating rules in order.
@@ -110,7 +121,19 @@ impl PatchEncoder for RouterEncoder {
             size: target.size,
             header: target.header,
         };
-        self.select(&file_info).encode(base, target)
+        let res = self.select(&file_info).encode(base, target)?;
+        if let Some(threshold) = self.passthrough_threshold {
+            if (res.bytes.len() as f64) > (file_info.size as f64 * threshold) {
+                debug!(
+                    "RouterEncoder: encoded patch for '{}' is larger than the file itself ({} > {}), using passthrough",
+                    file_info.path,
+                    res.bytes.len(),
+                    file_info.size
+                );
+                return PassthroughEncoder::new().encode(base, target);
+            }
+        }
+        Ok(res)
     }
 
     /// Decode `patch` by routing to the encoder that produced it.
