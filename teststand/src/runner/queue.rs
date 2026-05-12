@@ -51,6 +51,7 @@ impl Queue {
         self.inner.lock().await.len()
     }
 
+    #[allow(dead_code)]
     pub async fn is_empty(&self) -> bool {
         self.inner.lock().await.is_empty()
     }
@@ -58,5 +59,14 @@ impl Queue {
     /// Snapshot of all queued items (not yet running).
     pub async fn list_items(&self) -> Vec<QueueItem> {
         self.inner.lock().await.iter().cloned().collect()
+    }
+
+    /// Remove the item with the given experiment ID from the queue.
+    /// Returns `true` if an item was removed.
+    pub async fn remove_by_id(&self, experiment_id: &str) -> bool {
+        let mut q = self.inner.lock().await;
+        let before = q.len();
+        q.retain(|item| item.experiment_id != experiment_id);
+        q.len() < before
     }
 }

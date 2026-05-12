@@ -119,6 +119,52 @@ pub async fn create_experiment(
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
 }
 
+// POST /api/experiments/:id/abort — abort a running experiment
+pub async fn abort_experiment(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse> {
+    let exp = db::get_experiment(&s.db, &id)
+        .await?
+        .ok_or_else(|| Error::NotFound(id.clone()))?;
+    if exp.status != "running" {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "experiment is not running" })),
+        ));
+    }
+    db::update_experiment_status(&s.db, &id, "aborted").await?;
+    s.runner.abort_running(&id).await;
+    let _ = s.progress_tx.send(ProgressEvent::ExperimentFinished {
+        experiment_id: id.clone(),
+        status: "aborted".into(),
+    });
+    Ok((StatusCode::OK, Json(json!({ "ok": true }))))
+}
+
+// POST /api/experiments/:id/cancel — cancel a queued experiment
+pub async fn cancel_experiment(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse> {
+    let exp = db::get_experiment(&s.db, &id)
+        .await?
+        .ok_or_else(|| Error::NotFound(id.clone()))?;
+    if exp.status != "queued" {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "experiment is not queued" })),
+        ));
+    }
+    s.runner.queue.remove_by_id(&id).await;
+    db::update_experiment_status(&s.db, &id, "cancelled").await?;
+    let _ = s.progress_tx.send(ProgressEvent::ExperimentFinished {
+        experiment_id: id.clone(),
+        status: "cancelled".into(),
+    });
+    Ok((StatusCode::OK, Json(json!({ "ok": true }))))
+}
+
 // GET /api/results/:id  — download JSONL for an experiment
 pub async fn download_results(
     State(s): State<ApiState>,

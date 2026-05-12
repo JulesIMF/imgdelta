@@ -32,6 +32,10 @@ pub struct Runner {
     image_manager: Arc<ImageManager>,
     progress_tx: ProgressTx,
     notify: Arc<NotifyManager>,
+    /// AbortHandle of the currently running experiment task (None when idle).
+    current_abort: Arc<tokio::sync::Mutex<Option<tokio::task::AbortHandle>>>,
+    /// ID of the currently running experiment (None when idle).
+    current_exp_id: Arc<tokio::sync::Mutex<Option<String>>>,
 }
 
 impl Runner {
@@ -52,10 +56,13 @@ impl Runner {
             image_manager,
             progress_tx,
             notify,
+            current_abort: Arc::new(tokio::sync::Mutex::new(None)),
+            current_exp_id: Arc::new(tokio::sync::Mutex::new(None)),
         })
     }
 
     /// Queue reference for inspecting pending items.
+    #[allow(dead_code)]
     pub fn queue(&self) -> &Queue {
         &self.queue
     }
@@ -66,12 +73,60 @@ impl Runner {
         tokio::spawn(async move {
             loop {
                 let item = runner.queue.pop_wait().await;
-                info!(experiment_id = %item.experiment_id, "starting experiment");
-                if let Err(e) = runner.run_experiment(item).await {
-                    error!(err = %e, "experiment failed");
+                let exp_id = item.experiment_id.clone();
+                info!(experiment_id = %exp_id, "starting experiment");
+
+                *runner.current_exp_id.lock().await = Some(exp_id.clone());
+
+                // Spawn the experiment as a sub-task so it can be aborted.
+                let runner2 = Arc::clone(&runner);
+                let handle = tokio::spawn(async move {
+                    if let Err(e) = runner2.run_experiment(item).await {
+                        error!(err = %e, "experiment failed");
+                    }
+                });
+                *runner.current_abort.lock().await = Some(handle.abort_handle());
+
+                match handle.await {
+                    Ok(()) => {}
+                    Err(e) if e.is_cancelled() => {
+                        // Aborted via abort_running(); DB status already set by caller.
+                        info!(experiment_id = %exp_id, "experiment task aborted");
+                    }
+                    Err(e) => {
+                        error!(experiment_id = %exp_id, err = %e, "experiment task panicked");
+                        db::update_experiment_status(&runner.db, &exp_id, "error")
+                            .await
+                            .ok();
+                    }
                 }
+
+                *runner.current_abort.lock().await = None;
+                *runner.current_exp_id.lock().await = None;
             }
         });
+    }
+
+    /// Abort the currently running experiment task if its ID matches `exp_id`.
+    /// Returns `true` if the task was found and aborted.
+    pub async fn abort_running(&self, exp_id: &str) -> bool {
+        let id_guard = self.current_exp_id.lock().await;
+        if id_guard.as_deref() != Some(exp_id) {
+            return false;
+        }
+        let abort_guard = self.current_abort.lock().await;
+        if let Some(handle) = abort_guard.as_ref() {
+            handle.abort();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Return the ID of the currently running experiment, if any.
+    #[allow(dead_code)]
+    pub async fn current_experiment_id(&self) -> Option<String> {
+        self.current_exp_id.lock().await.clone()
     }
 
     fn log(

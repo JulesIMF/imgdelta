@@ -144,7 +144,7 @@ pub async fn get_experiment(db: &Db, id: &str) -> Result<Option<Experiment>> {
 }
 
 pub async fn update_experiment_status(db: &Db, id: &str, status: &str) -> Result<()> {
-    let finished: Option<i64> = if status == "done" || status == "error" {
+    let finished: Option<i64> = if matches!(status, "done" | "error" | "aborted" | "cancelled") {
         Some(now_ts())
     } else {
         None
@@ -156,6 +156,19 @@ pub async fn update_experiment_status(db: &Db, id: &str, status: &str) -> Result
         .execute(db)
         .await?;
     Ok(())
+}
+
+/// On startup, mark every experiment that was left in `running` state
+/// (i.e. the process was killed mid-run) as `aborted`.
+pub async fn abort_stale_running(db: &Db) -> Result<u64> {
+    let ts = now_ts();
+    let res = sqlx::query(
+        "UPDATE experiments SET status='aborted', finished_at=? WHERE status='running'",
+    )
+    .bind(ts)
+    .execute(db)
+    .await?;
+    Ok(res.rows_affected())
 }
 
 pub async fn insert_run(db: &Db, r: &Run) -> Result<()> {

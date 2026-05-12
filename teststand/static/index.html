@@ -160,6 +160,38 @@
         background: #3d1c1c;
         color: var(--red);
       }
+      .status-aborted {
+        background: #3d2a1c;
+        color: #e0824a;
+      }
+      .status-cancelled {
+        background: #252525;
+        color: var(--dim);
+      }
+      .exp-action-btn {
+        margin-top: 4px;
+        padding: 2px 8px;
+        border: none;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        line-height: 1.6;
+      }
+      .exp-action-btn.abort {
+        background: #5c1e1e;
+        color: var(--red);
+      }
+      .exp-action-btn.abort:hover {
+        background: #7a2020;
+      }
+      .exp-action-btn.cancel {
+        background: #2a2a2a;
+        color: var(--dim);
+      }
+      .exp-action-btn.cancel:hover {
+        background: #363636;
+      }
       #new-exp-btn {
         margin: 12px;
         padding: 8px;
@@ -1106,9 +1138,23 @@
           var d = document.createElement("div");
           d.className = "exp-item" + (e.id === selectedId ? " selected" : "");
           d.setAttribute("data-id", e.id);
-          d.onclick = function () {
+          d.onclick = function (ev) {
+            // Don't select when clicking an action button
+            if (ev.target.classList.contains("exp-action-btn")) return;
             showExp(e.id);
           };
+          var actionBtn = "";
+          if (e.status === "running") {
+            actionBtn =
+              '<br><button class="exp-action-btn abort" onclick="abortExp(\'' +
+              e.id +
+              "', event)\">✕ Abort</button>";
+          } else if (e.status === "queued") {
+            actionBtn =
+              '<br><button class="exp-action-btn cancel" onclick="cancelExp(\'' +
+              e.id +
+              "', event)\">✕ Cancel</button>";
+          }
           d.innerHTML =
             '<div class="name">' +
             esc(e.name) +
@@ -1121,9 +1167,46 @@
             e.kind +
             " &middot; " +
             e.family +
+            actionBtn +
             "</div>";
           el.appendChild(d);
         });
+      }
+
+      async function abortExp(id, ev) {
+        ev.stopPropagation();
+        if (!confirm("Abort running experiment?")) return;
+        try {
+          var r = await apiFetch("/experiments/" + id + "/abort", {
+            method: "POST",
+          });
+          if (!r.ok) {
+            var j = await r.json().catch(() => ({}));
+            alert("Abort failed: " + (j.error || r.status));
+          } else {
+            await loadExps();
+          }
+        } catch (e) {
+          alert("Abort error: " + e);
+        }
+      }
+
+      async function cancelExp(id, ev) {
+        ev.stopPropagation();
+        if (!confirm("Cancel queued experiment?")) return;
+        try {
+          var r = await apiFetch("/experiments/" + id + "/cancel", {
+            method: "POST",
+          });
+          if (!r.ok) {
+            var j = await r.json().catch(() => ({}));
+            alert("Cancel failed: " + (j.error || r.status));
+          } else {
+            await loadExps();
+          }
+        } catch (e) {
+          alert("Cancel error: " + e);
+        }
       }
 
       function showExp(id) {

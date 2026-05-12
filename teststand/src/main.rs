@@ -84,6 +84,15 @@ async fn main() -> Result<()> {
     // Database
     let db = db::open(&cfg.db_path()).await?;
 
+    // Mark experiments that were running when the process was last killed as aborted.
+    let aborted = db::abort_stale_running(&db).await?;
+    if aborted > 0 {
+        tracing::warn!(
+            count = aborted,
+            "marked stale running experiments as aborted"
+        );
+    }
+
     // Image manager
     let image_manager = ImageManager::new(cfg.images_dir());
     for family in &families.families {

@@ -336,6 +336,7 @@ pub fn fmt_duration(secs: f64) -> String {
 }
 
 /// Build a completion summary suitable for a Telegram HTML message.
+#[allow(clippy::too_many_arguments)]
 pub fn fmt_completion_summary(
     exp_name: &str,
     status: &str,
@@ -361,7 +362,7 @@ pub fn fmt_completion_summary(
         if status == "done" {
             "completed".to_owned()
         } else {
-            format!("FAILED")
+            "FAILED".to_owned()
         },
         fmt_duration(elapsed_secs),
     )
