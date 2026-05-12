@@ -355,6 +355,24 @@ impl Runner {
             .await
             .map_err(crate::error::Error::Io)?;
 
+        // Resolve compressor config: experiment overrides teststand.toml default.
+        let compressor_cfg = spec.compressor.as_ref().unwrap_or(&self.config.compressor);
+        let router = compressor_cfg
+            .build_router()
+            .map_err(|e| crate::error::Error::Config(format!("router: {e}")))?;
+
+        self.log(
+            exp_id,
+            None,
+            "info",
+            format!(
+                "encoder = {:?}, passthrough_threshold = {:.2}, routing_rules = {}",
+                compressor_cfg.default_encoder,
+                compressor_cfg.passthrough_threshold,
+                compressor_cfg.routing.len(),
+            ),
+        );
+
         let runs_total = spec.runs_per_pair as i64;
         let total_pairs = spec.workers.len() * targets.len() * spec.runs_per_pair;
         let mut done_pairs = 0u32;
@@ -422,25 +440,32 @@ impl Runner {
                         ),
                     );
 
-                    let pt = spec
-                        .passthrough_threshold
-                        .unwrap_or(self.config.compressor.passthrough_threshold);
+                    // Each repetition gets its own isolated storage directory so
+                    // deduplication from a previous run does not affect blob-byte
+                    // counts or storage_bytes metrics.
+                    let run_storage_dir = storage_dir
+                        .join(format!("w{workers}"))
+                        .join(format!("run{run_idx}"));
+                    tokio::fs::create_dir_all(&run_storage_dir)
+                        .await
+                        .map_err(crate::error::Error::Io)?;
 
                     let pair_result = compress_pair(
                         &target_spec.id,
                         Some(&base_spec.id),
                         &target_path,
                         &base_path,
-                        &storage_dir,
+                        &run_storage_dir,
                         workers,
-                        pt,
+                        std::sync::Arc::clone(&router),
                         true,
                         &target_spec.format,
                     )
                     .await;
 
-                    // Measure total storage dir after every compress call.
-                    let storage_bytes = executor::dir_size_bytes(&storage_dir).unwrap_or(0) as i64;
+                    // Measure total storage for this isolated run.
+                    let storage_bytes =
+                        executor::dir_size_bytes(&run_storage_dir).unwrap_or(0) as i64;
 
                     match pair_result {
                         Ok(pr) => {

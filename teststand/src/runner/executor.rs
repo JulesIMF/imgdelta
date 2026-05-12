@@ -26,15 +26,6 @@ pub struct PairResult {
     pub target_file_bytes: u64,
 }
 
-/// Build a minimal passthrough router (no delta encoding configured yet).
-fn build_passthrough_router() -> Arc<RouterEncoder> {
-    use image_delta_core::encoding::{PassthroughEncoder, RouterEncoder};
-    Arc::new(RouterEncoder::new(
-        vec![],
-        Arc::new(PassthroughEncoder::new()),
-    ))
-}
-
 /// Build an `Arc<dyn Image>` appropriate for the given format string.
 /// Supported: "qcow2" (mounts via qemu-nbd), anything else → DirectoryImage.
 fn make_image(format: &str) -> Arc<dyn image_delta_core::Image> {
@@ -49,6 +40,8 @@ fn make_image(format: &str) -> Arc<dyn image_delta_core::Image> {
 /// `target_path` / `base_path` are either:
 ///   - a `.qcow2` file (format = "qcow2")  → opened via qemu-nbd
 ///   - a directory    (format = "directory") → walked directly
+///
+/// The `router` encodes patches; build it with [`CompressorConfig::build_router`].
 #[allow(clippy::too_many_arguments)]
 pub async fn compress_pair(
     image_id: &str,
@@ -57,7 +50,7 @@ pub async fn compress_pair(
     base_path: &Path,
     storage_dir: &Path,
     workers: usize,
-    passthrough_threshold: f64,
+    router: Arc<RouterEncoder>,
     run_decompress: bool,
     format: &str,
 ) -> Result<PairResult> {
@@ -73,7 +66,6 @@ pub async fn compress_pair(
         LocalStorage::new(storage_dir.to_path_buf())
             .map_err(|e| Error::Other(format!("storage: {e}")))?,
     );
-    let router = build_passthrough_router();
 
     let compress_stats = compress(
         make_image(format),
@@ -85,7 +77,7 @@ pub async fn compress_pair(
             image_id: image_id.to_owned(),
             base_image_id: base_image_id.map(str::to_owned),
             workers,
-            passthrough_threshold,
+            passthrough_threshold: router.passthrough_threshold().unwrap_or(1.0),
             overwrite: true,
             debug_dir: None,
         },
@@ -117,7 +109,7 @@ pub async fn compress_pair(
         match decompress(
             make_image(format),
             storage2,
-            build_passthrough_router(),
+            Arc::clone(&router),
             &output_path,
             opts,
         )

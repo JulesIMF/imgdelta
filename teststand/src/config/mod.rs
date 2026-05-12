@@ -12,8 +12,129 @@ pub use experiment::ExperimentSpec;
 #[allow(unused_imports)]
 pub use families::{load_family_file, FamiliesConfig, FamilySpec, ImageSpec};
 
-use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use image_delta_core::encoding::{
+    PassthroughEncoder, PatchEncoder, TextDiffEncoder, Xdelta3Encoder,
+};
+use image_delta_core::{ElfRule, GlobRule, MagicRule, RouterEncoder, RoutingRule, SizeRule};
+
+// ── Encoder / routing config (mirrors cli/src/config.rs, no cli crate dep) ──
+
+/// Which delta encoder to use.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EncoderKind {
+    #[default]
+    Xdelta3,
+    TextDiff,
+    Passthrough,
+}
+
+/// One entry in the `[[compressor.routing]]` array.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RoutingRuleConfig {
+    Glob {
+        pattern: String,
+        encoder: EncoderKind,
+    },
+    Elf {
+        encoder: EncoderKind,
+    },
+    Size {
+        max_bytes: u64,
+        encoder: EncoderKind,
+    },
+    Magic {
+        hex: String,
+        encoder: EncoderKind,
+    },
+}
+
+/// Compressor configuration embedded in teststand.toml or an ExperimentSpec.
+///
+/// Example (in teststand.toml):
+/// ```toml
+/// [compressor]
+/// workers = 4
+/// passthrough_threshold = 1.0
+/// default_encoder = "xdelta3"
+///
+/// [[compressor.routing]]
+/// type = "glob"
+/// pattern = "**/*.gz"
+/// encoder = "passthrough"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CompressorConfig {
+    #[serde(default = "default_workers")]
+    pub workers: usize,
+    /// Fall back to passthrough if `delta_size >= source_size * threshold`.
+    #[serde(default = "default_threshold")]
+    pub passthrough_threshold: f64,
+    /// Encoder used when no routing rule matches.
+    #[serde(default)]
+    pub default_encoder: EncoderKind,
+    /// Per-file-type routing rules evaluated in order.
+    #[serde(default)]
+    pub routing: Vec<RoutingRuleConfig>,
+}
+
+impl Default for CompressorConfig {
+    fn default() -> Self {
+        Self {
+            workers: default_workers(),
+            passthrough_threshold: default_threshold(),
+            default_encoder: EncoderKind::Xdelta3,
+            routing: Vec::new(),
+        }
+    }
+}
+
+impl CompressorConfig {
+    /// Build an `Arc<RouterEncoder>` from this configuration.
+    pub fn build_router(&self) -> crate::error::Result<Arc<RouterEncoder>> {
+        let fallback: Arc<dyn PatchEncoder> = make_encoder(&self.default_encoder);
+        let mut rules: Vec<Box<dyn RoutingRule>> = Vec::new();
+        for rule_cfg in &self.routing {
+            let rule: Box<dyn RoutingRule> = match rule_cfg {
+                RoutingRuleConfig::Glob { pattern, encoder } => Box::new(
+                    GlobRule::new(pattern, make_encoder(encoder))
+                        .map_err(|e| crate::error::Error::Config(e.to_string()))?,
+                ),
+                RoutingRuleConfig::Elf { encoder } => Box::new(ElfRule::new(make_encoder(encoder))),
+                RoutingRuleConfig::Size { max_bytes, encoder } => {
+                    Box::new(SizeRule::new(*max_bytes, make_encoder(encoder)))
+                }
+                RoutingRuleConfig::Magic { hex, encoder } => {
+                    let bytes = hex::decode(hex).map_err(|e| {
+                        crate::error::Error::Config(format!("invalid magic hex '{hex}': {e}"))
+                    })?;
+                    Box::new(MagicRule::new(bytes, make_encoder(encoder)))
+                }
+            };
+            rules.push(rule);
+        }
+        let mut router = RouterEncoder::new(rules, fallback);
+        router.set_passthrough_threshold(self.passthrough_threshold);
+        Ok(Arc::new(router))
+    }
+}
+
+fn make_encoder(kind: &EncoderKind) -> Arc<dyn PatchEncoder> {
+    match kind {
+        EncoderKind::Xdelta3 => Arc::new(Xdelta3Encoder::new()),
+        EncoderKind::TextDiff => Arc::new(TextDiffEncoder::new()),
+        EncoderKind::Passthrough => Arc::new(PassthroughEncoder::new()),
+    }
+}
+
+// ── Top-level config ──────────────────────────────────────────────────────────
 
 /// Top-level teststand configuration (teststand.toml).
 #[derive(Debug, Deserialize, Clone)]
@@ -32,27 +153,9 @@ pub struct TeststandConfig {
     pub prefetch_ahead: usize,
     /// Optional Telegram configuration.
     pub telegram: Option<TelegramConfig>,
-    /// imgdelta compressor defaults (workers, passthrough_threshold).
+    /// Default compressor settings; overridable per experiment.
     #[serde(default)]
-    pub compressor: CompressorDefaults,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct CompressorDefaults {
-    #[serde(default = "default_workers")]
-    #[allow(dead_code)]
-    pub workers: usize,
-    #[serde(default = "default_threshold")]
-    pub passthrough_threshold: f64,
-}
-
-impl Default for CompressorDefaults {
-    fn default() -> Self {
-        Self {
-            workers: default_workers(),
-            passthrough_threshold: default_threshold(),
-        }
-    }
+    pub compressor: CompressorConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -136,3 +239,7 @@ pub fn load_experiment(text: &str) -> crate::error::Result<ExperimentSpec> {
     let spec: ExperimentSpec = toml::from_str(text)?;
     Ok(spec)
 }
+
+// Silence unused import warning for HashMap (used by LoggingConfig in cli but not here).
+#[allow(dead_code)]
+type _HashMap = HashMap<String, String>;

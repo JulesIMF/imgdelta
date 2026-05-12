@@ -64,6 +64,11 @@ impl RouterEncoder {
         self.passthrough_threshold = Some(threshold);
     }
 
+    /// Return the configured passthrough threshold, if any.
+    pub fn passthrough_threshold(&self) -> Option<f64> {
+        self.passthrough_threshold
+    }
+
     /// Select the encoder for a given file, evaluating rules in order.
     ///
     /// Prefer calling [`PatchEncoder::encode`] on `RouterEncoder` directly —

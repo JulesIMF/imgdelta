@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::CompressorConfig;
+
 /// Experiment TOML submitted via the web UI or CLI.
 ///
 /// Each experiment compresses every selected image against `images[0]` (the
@@ -19,6 +21,16 @@ use serde::{Deserialize, Serialize};
 /// runs_per_pair = 3
 /// # leave images empty to use all images in the family
 /// images = ["centos-stream-8-v20220613", "centos-stream-8-v20220620"]
+///
+/// # Optional: override encoder from teststand.toml default.
+/// [compressor]
+/// default_encoder = "xdelta3"
+/// passthrough_threshold = 1.0
+///
+/// [[compressor.routing]]
+/// type = "glob"
+/// pattern = "**/*.gz"
+/// encoder = "passthrough"
 /// ```
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ExperimentSpec {
@@ -32,8 +44,9 @@ pub struct ExperimentSpec {
     /// How many times to repeat compress for each (target, workers) combo.
     #[serde(default = "default_runs")]
     pub runs_per_pair: usize,
-    /// Override passthrough threshold (default from teststand.toml).
-    pub passthrough_threshold: Option<f64>,
+    /// Compressor configuration for this experiment.
+    /// If omitted, the teststand.toml `[compressor]` defaults are used.
+    pub compressor: Option<CompressorConfig>,
     /// Restrict to these image IDs from the family (in declaration order).
     /// images[0] is used as the base; images[1..] are the targets.
     /// If omitted, all images in the family are used.
