@@ -25,6 +25,7 @@ pub fn build_router(state: ApiState, auth_token: String) -> Router {
         .route("/experiments/:id/logs", get(api::get_experiment_logs))
         .route("/experiments/:id/abort", post(api::abort_experiment))
         .route("/experiments/:id/cancel", post(api::cancel_experiment))
+        .route("/experiments/:id/recreate", post(api::recreate_experiment))
         .route("/results/:id", get(api::download_results))
         .route("/results/:id/csv", get(api::download_results_csv))
         .route("/logs/server", get(api::get_server_logs))

@@ -137,11 +137,47 @@ pub async fn abort_experiment(
     }
     db::update_experiment_status(&s.db, &id, "aborted").await?;
     s.runner.abort_running(&id).await;
+    // Reset any images stuck in Downloading state so the next experiment can
+    // retry the download instead of waiting on a cancelled future.
+    s.image_manager.reset_downloading().await;
     let _ = s.progress_tx.send(ProgressEvent::ExperimentFinished {
         experiment_id: id.clone(),
         status: "aborted".into(),
     });
     Ok((StatusCode::OK, Json(json!({ "ok": true }))))
+}
+
+// POST /api/experiments/:id/recreate — clone an experiment and enqueue it
+pub async fn recreate_experiment(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse> {
+    let exp = db::get_experiment(&s.db, &id)
+        .await?
+        .ok_or_else(|| Error::NotFound(id.clone()))?;
+    let mut spec: ExperimentSpec = serde_json::from_str(&exp.spec_json)
+        .map_err(|e| Error::Other(format!("spec deserialise: {e}")))?;
+    // Append a short suffix so the name is unique.
+    spec.name = format!("{} (copy)", spec.name);
+    let new_id = db::new_id();
+    let spec_json = serde_json::to_string(&spec)?;
+    db::insert_experiment(
+        &s.db,
+        &new_id,
+        &spec.name,
+        &spec.family,
+        "BaseRelative",
+        &spec_json,
+    )
+    .await?;
+    s.runner
+        .queue
+        .push(QueueItem {
+            experiment_id: new_id.clone(),
+            spec,
+        })
+        .await;
+    Ok((StatusCode::CREATED, Json(json!({ "id": new_id }))))
 }
 
 // POST /api/experiments/:id/cancel — cancel a queued experiment

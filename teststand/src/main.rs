@@ -98,6 +98,8 @@ async fn main() -> Result<()> {
     for family in &families.families {
         image_manager.register(family.images.clone()).await;
     }
+    // Reset any images that were left in Downloading state by a previous run.
+    image_manager.reset_downloading().await;
 
     // Shared run queue (passed to both Runner and NotifyManager)
     let runner_queue = Queue::new();

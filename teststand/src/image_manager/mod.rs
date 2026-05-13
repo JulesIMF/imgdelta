@@ -177,6 +177,20 @@ impl ImageManager {
         Ok(())
     }
 
+    /// Reset any images that are stuck in `Downloading` state back to `Missing`.
+    ///
+    /// Called on startup and after an experiment is aborted so that a future
+    /// `ensure()` call will retry the download instead of waiting forever.
+    pub async fn reset_downloading(&self) {
+        let mut map = self.state.lock().await;
+        for entry in map.values_mut() {
+            if matches!(entry.state, ImageState::Downloading { .. }) {
+                entry.state = ImageState::Missing;
+            }
+        }
+        self.notify.notify_waiters();
+    }
+
     pub async fn image_state(&self, id: &str) -> Option<String> {
         let map = self.state.lock().await;
         map.get(id).map(|e| match &e.state {

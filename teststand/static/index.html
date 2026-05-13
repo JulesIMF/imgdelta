@@ -192,6 +192,13 @@
       .exp-action-btn.cancel:hover {
         background: #363636;
       }
+      .exp-action-btn.recreate {
+        background: #1a2a3a;
+        color: #6ab0f5;
+      }
+      .exp-action-btn.recreate:hover {
+        background: #22364d;
+      }
       #new-exp-btn {
         margin: 12px;
         padding: 8px;
@@ -1292,12 +1299,24 @@
             actionBtn =
               '<br><button class="exp-action-btn abort" onclick="abortExp(\'' +
               e.id +
-              "', event)\">✕ Abort</button>";
+              "', event)\">✕ Abort</button>" +
+              '<button class="exp-action-btn recreate" style="margin-left:4px" onclick="recreateExp(\'' +
+              e.id +
+              "', event)\">↺ Recreate</button>";
           } else if (e.status === "queued") {
             actionBtn =
               '<br><button class="exp-action-btn cancel" onclick="cancelExp(\'' +
               e.id +
-              "', event)\">✕ Cancel</button>";
+              "', event)\">✕ Cancel</button>" +
+              '<button class="exp-action-btn recreate" style="margin-left:4px" onclick="recreateExp(\'' +
+              e.id +
+              "', event)\">↺ Recreate</button>";
+          } else {
+            // done / error / aborted / cancelled
+            actionBtn =
+              '<br><button class="exp-action-btn recreate" onclick="recreateExp(\'' +
+              e.id +
+              "', event)\">↺ Recreate</button>";
           }
           d.innerHTML =
             '<div class="name">' +
@@ -1315,6 +1334,23 @@
             "</div>";
           el.appendChild(d);
         });
+      }
+
+      async function recreateExp(id, ev) {
+        ev.stopPropagation();
+        try {
+          var r = await apiFetch("/experiments/" + id + "/recreate", {
+            method: "POST",
+          });
+          if (!r.ok) {
+            var j = await r.json().catch(() => ({}));
+            alert("Recreate failed: " + (j.error || r.status));
+          } else {
+            await loadExps();
+          }
+        } catch (e) {
+          alert("Recreate error: " + e);
+        }
       }
 
       async function abortExp(id, ev) {
