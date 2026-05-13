@@ -22,6 +22,7 @@ path = "src/lib.rs"
 image-delta-core = { path = "../core", features = ["qcow2"] }
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
+libc = "0.2"
 sqlx = { version = "0.7", features = [
   "sqlite",
   "runtime-tokio-rustls",

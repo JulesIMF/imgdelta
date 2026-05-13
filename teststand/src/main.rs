@@ -76,6 +76,18 @@ async fn main() -> Result<()> {
     let cfg = Arc::new(load_config(&cli.config)?);
     let families = Arc::new(load_families(&cli.families)?);
 
+    // Apply nice value if configured.
+    if let Some(nice_val) = cfg.nice {
+        // SAFETY: setpriority is always safe to call.
+        let ret = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, nice_val) };
+        if ret != 0 {
+            let err = std::io::Error::last_os_error();
+            tracing::warn!(nice = nice_val, err = %err, "setpriority failed, continuing with default priority");
+        } else {
+            tracing::info!(nice = nice_val, "process nice value set");
+        }
+    }
+
     // Ensure base directories exist (per-experiment dirs are created by the runner)
     std::fs::create_dir_all(cfg.workdir.as_path())?;
     std::fs::create_dir_all(cfg.images_dir())?;
@@ -125,11 +137,8 @@ async fn main() -> Result<()> {
     // Send startup notification (non-fatal)
     let port = cli.port.unwrap_or(cfg.port);
     {
-        let n = Arc::clone(&notify);
         let msg = format!("\u{1F680} teststand started on port {port}");
-        tokio::spawn(async move {
-            n.send(&msg).await;
-        });
+        notify.send(&msg);
     }
 
     // Web

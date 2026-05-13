@@ -34,51 +34,54 @@ impl NotifyManager {
         })
     }
 
-    /// Collect all subscriber chat IDs: config list + DB-registered ones.
-    async fn all_subscribers(&self) -> Vec<i64> {
-        let mut ids: Vec<i64> = self
-            .telegram
-            .as_ref()
-            .map(|t| t.subscribers.clone())
-            .unwrap_or_default();
+    /// Send a plain-text / HTML notification to all subscribers.
+    ///
+    /// Fire-and-forget: spawns a background task so the caller is never blocked
+    /// waiting for Telegram.  Network errors are logged as warnings.
+    pub fn send(&self, message: &str) -> tokio::task::JoinHandle<()> {
+        let Some(tg) = self.telegram.clone() else {
+            return tokio::spawn(async {});
+        };
+        if !tg.enabled {
+            return tokio::spawn(async {});
+        }
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", tg.bot_token);
+        let message = message.to_owned();
+        let client = self.client.clone();
+        let db = self.db.clone();
+        let subscribers_cfg = tg.subscribers.clone();
 
-        match db::list_telegram_subscribers(&self.db).await {
-            Ok(db_ids) => {
-                for id in db_ids {
-                    if !ids.contains(&id) {
-                        ids.push(id);
+        tokio::spawn(async move {
+            let mut ids = subscribers_cfg;
+            match db::list_telegram_subscribers(&db).await {
+                Ok(db_ids) => {
+                    for id in db_ids {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
                     }
                 }
+                Err(e) => warn!(err = %e, "failed to load telegram subscribers from DB"),
             }
-            Err(e) => warn!(err = %e, "failed to load telegram subscribers from DB"),
-        }
-        ids
-    }
-
-    /// Send a plain-text / HTML notification to all subscribers.
-    /// Logs a warning on failure but never panics.
-    pub async fn send(&self, message: &str) {
-        let Some(tg) = &self.telegram else { return };
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", tg.bot_token);
-        let subscribers = self.all_subscribers().await;
-
-        for chat_id in subscribers {
-            match self
-                .client
-                .post(&url)
-                .json(&serde_json::json!({
-                    "chat_id": chat_id,
-                    "text": message,
-                    "parse_mode": "HTML"
-                }))
-                .send()
-                .await
-            {
-                Ok(r) if r.status().is_success() => info!(chat_id, "telegram notification sent"),
-                Ok(r) => warn!(chat_id, status = %r.status(), "telegram notification failed"),
-                Err(e) => warn!(chat_id, err = %e, "telegram notification error"),
+            for chat_id in ids {
+                match client
+                    .post(&url)
+                    .json(&serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": &message,
+                        "parse_mode": "HTML"
+                    }))
+                    .send()
+                    .await
+                {
+                    Ok(r) if r.status().is_success() => {
+                        info!(chat_id, "telegram notification sent")
+                    }
+                    Ok(r) => warn!(chat_id, status = %r.status(), "telegram notification failed"),
+                    Err(e) => warn!(chat_id, err = %e, "telegram notification error"),
+                }
             }
-        }
+        })
     }
 
     /// Send a raw message to a single chat_id (used by the bot reply).
@@ -227,6 +230,9 @@ impl NotifyManager {
         let Some(tg) = self.telegram.clone() else {
             return;
         };
+        if !tg.enabled {
+            return;
+        }
         let mgr = Arc::clone(&self);
         tokio::spawn(async move {
             mgr.bot_loop(&tg.bot_token).await;

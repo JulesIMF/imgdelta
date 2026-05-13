@@ -2574,6 +2574,7 @@ dependencies = [
  "hex",
  "image-delta-core",
  "image-delta-synthetic-fs",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

@@ -181,14 +181,26 @@ pub struct TeststandConfig {
     /// Default compressor settings; overridable per experiment.
     #[serde(default)]
     pub compressor: CompressorConfig,
+    /// Unix nice value to set at startup (0–19).  Recommended: 10.
+    /// If the call fails (e.g. process lacks permission to lower niceness),
+    /// a warning is logged and the process continues with its current priority.
+    pub nice: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct TelegramConfig {
+    /// Set to false to disable all Telegram notifications and bot commands
+    /// without removing the credentials from the config file.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub bot_token: String,
     /// Telegram user / chat IDs to send notifications to.
     #[serde(default)]
     pub subscribers: Vec<i64>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl TeststandConfig {

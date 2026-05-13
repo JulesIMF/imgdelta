@@ -198,7 +198,7 @@ impl Runner {
                 target_count,
                 spec.workers,
             );
-            self.notify.send(&msg).await;
+            self.notify.send(&msg);
         }
 
         let started_at = std::time::Instant::now();
@@ -219,7 +219,7 @@ impl Runner {
                         started_at.elapsed().as_secs_f64(),
                     )
                     .await;
-                self.notify.send(&msg).await;
+                self.notify.send(&msg);
             }
             Err(e) => {
                 error!(err = %e, "experiment error");
@@ -236,7 +236,7 @@ impl Runner {
                         started_at.elapsed().as_secs_f64(),
                     )
                     .await;
-                self.notify.send(&msg).await;
+                self.notify.send(&msg);
             }
         }
 
@@ -559,18 +559,16 @@ impl Runner {
                                 format!("compress failed: {msg}"),
                             );
                             if is_timeout {
-                                self.notify
-                                    .send(&format!(
-                                        "⏱ <b>Run timed out</b>\n\
-                                         Experiment: <code>{exp_id}</code>\n\
-                                         Target: <code>{}</code>\n\
-                                         Workers: <code>{workers}</code>  run {}/{}\n\
-                                         {msg}",
-                                        target_spec.id,
-                                        run_idx + 1,
-                                        spec.runs_per_pair,
-                                    ))
-                                    .await;
+                                self.notify.send(&format!(
+                                    "⏱ <b>Run timed out</b>\n\
+                                     Experiment: <code>{exp_id}</code>\n\
+                                     Target: <code>{}</code>\n\
+                                     Workers: <code>{workers}</code>  run {}/{}\n\
+                                     {msg}",
+                                    target_spec.id,
+                                    run_idx + 1,
+                                    spec.runs_per_pair,
+                                ));
                             }
                             done_pairs += 1;
                             let _ = self.progress_tx.send(ProgressEvent::ExperimentProgress {
