@@ -398,17 +398,30 @@ impl Runner {
         // Download base image once.
         let base_path = self.image_manager.ensure(&base_spec.id).await?;
 
+        // Iteration order: workers → run → targets.
+        // All targets in a single run share one storage directory so that blobs
+        // uploaded while compressing earlier targets are reused (blob_lookup hit)
+        // for later targets in the same run.  The storage is wiped between runs
+        // so that consecutive repetitions start with identical, fresh state.
         for workers in &spec.workers {
             let workers = *workers;
-            for (target_idx, target_spec) in targets.iter().enumerate() {
-                let target_path = self.image_manager.ensure(&target_spec.id).await?;
+            for run_idx in 0..spec.runs_per_pair {
+                // One storage directory shared by all targets in this run.
+                let run_storage_dir = storage_dir
+                    .join(format!("w{workers}"))
+                    .join(format!("run{run_idx}"));
+                tokio::fs::create_dir_all(&run_storage_dir)
+                    .await
+                    .map_err(crate::error::Error::Io)?;
 
-                for run_idx in 0..spec.runs_per_pair {
+                for (target_idx, target_spec) in targets.iter().enumerate() {
+                    let target_path = self.image_manager.ensure(&target_spec.id).await?;
+
                     let run_id = db::new_id();
                     let run = Run {
                         id: run_id.clone(),
                         experiment_id: exp_id.to_owned(),
-                        run_index: (target_idx * spec.runs_per_pair + run_idx) as i64,
+                        run_index: (run_idx * targets.len() + target_idx) as i64,
                         workers: workers as i64,
                         phase: "compress".into(),
                         status: "pending".into(),
@@ -440,17 +453,7 @@ impl Runner {
                         ),
                     );
 
-                    // Each repetition gets its own isolated storage directory so
-                    // deduplication from a previous run does not affect blob-byte
-                    // counts or storage_bytes metrics.
-                    let run_storage_dir = storage_dir
-                        .join(format!("w{workers}"))
-                        .join(format!("run{run_idx}"));
-                    tokio::fs::create_dir_all(&run_storage_dir)
-                        .await
-                        .map_err(crate::error::Error::Io)?;
-
-                    let pair_result = compress_pair(
+                    let compress_fut = compress_pair(
                         &target_spec.id,
                         Some(&base_spec.id),
                         &target_path,
@@ -460,10 +463,27 @@ impl Runner {
                         std::sync::Arc::clone(&router),
                         true,
                         &target_spec.format,
-                    )
-                    .await;
+                    );
 
-                    // Measure total storage for this isolated run.
+                    let timeout_secs = spec.run_timeout_secs.filter(|&s| s > 0);
+                    let pair_result: Result<executor::PairResult> = if let Some(secs) = timeout_secs
+                    {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(secs),
+                            compress_fut,
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(_elapsed) => Err(crate::error::Error::Config(format!(
+                                "run timed out after {secs}s"
+                            ))),
+                        }
+                    } else {
+                        compress_fut.await
+                    };
+
+                    // Measure cumulative storage size for this run after each target.
                     let storage_bytes =
                         executor::dir_size_bytes(&run_storage_dir).unwrap_or(0) as i64;
 
@@ -531,12 +551,27 @@ impl Runner {
                         }
                         Err(e) => {
                             let msg = e.to_string();
+                            let is_timeout = msg.contains("timed out after");
                             self.log(
                                 exp_id,
                                 Some(&run_id),
                                 "error",
                                 format!("compress failed: {msg}"),
                             );
+                            if is_timeout {
+                                self.notify
+                                    .send(&format!(
+                                        "⏱ <b>Run timed out</b>\n\
+                                         Experiment: <code>{exp_id}</code>\n\
+                                         Target: <code>{}</code>\n\
+                                         Workers: <code>{workers}</code>  run {}/{}\n\
+                                         {msg}",
+                                        target_spec.id,
+                                        run_idx + 1,
+                                        spec.runs_per_pair,
+                                    ))
+                                    .await;
+                            }
                             done_pairs += 1;
                             let _ = self.progress_tx.send(ProgressEvent::ExperimentProgress {
                                 experiment_id: exp_id.to_owned(),
@@ -548,6 +583,17 @@ impl Runner {
                             db::append_log(&self.db, &run_id, "error", &msg).await?;
                         }
                     }
+                }
+
+                // Wipe shared storage after all targets in this run are done so
+                // the next repetition starts with a clean slate.
+                if let Err(e) = tokio::fs::remove_dir_all(&run_storage_dir).await {
+                    self.log(
+                        exp_id,
+                        None,
+                        "warn",
+                        format!("could not clean storage {}: {e}", run_storage_dir.display()),
+                    );
                 }
             }
         }

@@ -18,7 +18,6 @@ auth_token = "secret"
     let cfg: TeststandConfig = toml::from_str(toml).expect("parse failed");
     assert_eq!(cfg.port, 8080);
     assert!(cfg.telegram.is_none());
-    assert_eq!(cfg.compressor.workers, 4);
 }
 
 #[test]

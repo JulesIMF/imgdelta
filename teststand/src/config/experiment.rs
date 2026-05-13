@@ -56,6 +56,12 @@ pub struct ExperimentSpec {
     pub keep_images: Option<bool>,
     /// Extra notes stored with results.
     pub notes: Option<String>,
+    /// Per-run wall-clock timeout in seconds.
+    ///
+    /// If a single compress run exceeds this duration it is cancelled, marked
+    /// as failed, a Telegram notification is sent, and the experiment continues
+    /// with the next run.  If omitted (or zero), no timeout is applied.
+    pub run_timeout_secs: Option<u64>,
 }
 
 fn default_workers() -> Vec<usize> {

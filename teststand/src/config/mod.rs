@@ -61,7 +61,6 @@ pub enum RoutingRuleConfig {
 /// Example (in teststand.toml):
 /// ```toml
 /// [compressor]
-/// workers = 4
 /// passthrough_threshold = 1.0
 /// default_encoder = "xdelta3"
 ///
@@ -70,10 +69,12 @@ pub enum RoutingRuleConfig {
 /// pattern = "**/*.gz"
 /// encoder = "passthrough"
 /// ```
+///
+/// Note: `workers` is NOT part of compressor config in teststand — it comes
+/// from the experiment spec `workers = [1, 2, 4, 8]` and is the variable
+/// being benchmarked.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CompressorConfig {
-    #[serde(default = "default_workers")]
-    pub workers: usize,
     /// Fall back to passthrough if `delta_size >= source_size * threshold`.
     #[serde(default = "default_threshold")]
     pub passthrough_threshold: f64,
@@ -88,7 +89,6 @@ pub struct CompressorConfig {
 impl Default for CompressorConfig {
     fn default() -> Self {
         Self {
-            workers: default_workers(),
             passthrough_threshold: default_threshold(),
             default_encoder: EncoderKind::Xdelta3,
             routing: Vec::new(),
@@ -98,7 +98,32 @@ impl Default for CompressorConfig {
 
 impl CompressorConfig {
     /// Build an `Arc<RouterEncoder>` from this configuration.
+    ///
+    /// Emits a `tracing::info!` line listing all routing rules so misconfigured
+    /// or inactive rules are visible in logs.
     pub fn build_router(&self) -> crate::error::Result<Arc<RouterEncoder>> {
+        // Dump routing rules to the log so operators can verify configuration.
+        tracing::info!(
+            default_encoder = ?self.default_encoder,
+            passthrough_threshold = self.passthrough_threshold,
+            routing_rules = self.routing.len(),
+            "building router",
+        );
+        for (i, rule) in self.routing.iter().enumerate() {
+            let desc = match rule {
+                RoutingRuleConfig::Glob { pattern, encoder } => {
+                    format!("[{i}] glob({pattern:?}) → {encoder:?}")
+                }
+                RoutingRuleConfig::Elf { encoder } => format!("[{i}] elf → {encoder:?}"),
+                RoutingRuleConfig::Size { max_bytes, encoder } => {
+                    format!("[{i}] size(<={max_bytes}) → {encoder:?}")
+                }
+                RoutingRuleConfig::Magic { hex, encoder } => {
+                    format!("[{i}] magic(0x{hex}) → {encoder:?}")
+                }
+            };
+            tracing::info!("{desc}");
+        }
         let fallback: Arc<dyn PatchEncoder> = make_encoder(&self.default_encoder);
         let mut rules: Vec<Box<dyn RoutingRule>> = Vec::new();
         for rule_cfg in &self.routing {
@@ -194,9 +219,6 @@ fn default_port() -> u16 {
 }
 fn default_prefetch() -> usize {
     2
-}
-fn default_workers() -> usize {
-    4
 }
 fn default_threshold() -> f64 {
     1.0
